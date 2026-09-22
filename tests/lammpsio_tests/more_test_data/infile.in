@@ -1,0 +1,65 @@
+echo screen
+variable dcdfreq index 2000
+
+clear
+units metal
+dimension 3
+boundary p p p
+newton on
+
+shell mkdir output
+log output/log.log
+
+atom_style atomic
+atom_modify map array
+read_data 2_337_before.data
+
+# Only needed if read_data did NOT already create a triclinic box:
+# change_box all triclinic
+
+neighbor 2.0 bin
+neigh_modify delay 0 every 1 check yes one 5000 page 100000
+
+timestep 0.0005
+
+variable netforce atom sqrt(fx*fx+fy*fy+fz*fz)
+
+# Integration + thermostat
+fix 2 all nve
+fix 3 all langevin 300 300 0.01 699483 zero yes
+
+# Shear
+fix 4 all deform 1 xy erate 1e-4 remap x units box
+
+# Thermodynamics
+thermo 100
+thermo_style custom step time temp press pxy density pe ke etotal lx ly lz xy
+thermo_modify line multi format float %g flush yes
+
+# Trajectories
+dump dcd_dump all dcd ${dcdfreq} output/2_337_shear_only.dcd
+dump_modify dcd_dump unwrap yes
+
+dump traj_dump all custom 10 output/2_337_shear_only.lammpstrj id type x y z xu yu zu ix iy iz vx vy vz fx fy fz v_netforce
+dump_modify traj_dump sort id
+
+# Restarts
+restart 20000 output/rst1.2_337_shear_only output/rst2.2_337_shear_only
+
+# Separate thermo table
+variable current_step equal step
+variable current_temp equal temp
+variable current_pe equal pe
+
+fix mythermofile all print 100 "${current_step} ${current_temp} ${current_pe}" file output/thermo_output_2_337_shear_only.dat screen no title "Step Temperature PotentialEnergy"
+
+# ------------------------------------------------------------
+# TIMING
+# ------------------------------------------------------------
+# Request detailed LAMMPS timing information for the production run.
+# Timing information will be written to output/log.log and the screen.
+timer full
+
+# IMPORTANT FOR FAIR-CHEM:
+# run must remain the final executable command
+run 100000

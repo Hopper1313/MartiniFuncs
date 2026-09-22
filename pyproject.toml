@@ -8,7 +8,8 @@ version = "0.1.0"
 description = "Martini Collab Tools"
 requires-python = ">=3.10"
 dependencies = [
-    "ase",
+    "ase>=3.29",
+    "networkx>=3.1",
     "mccoygroup-mcutils",
     "mccoygroup-psience",
     "rdkit",
@@ -17,5 +18,10 @@ dependencies = [
     "periodictable",
 ]
 
+[project.optional-dependencies]
+uma = ["fairchem-core>=2.22,<3"]
+notebooks = ["ipython", "ipykernel", "jupyterlab", "matplotlib"]
+
 [tool.setuptools.packages.find]
 where = ["."]
+include = ["MartiniFuncs*"]

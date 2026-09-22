@@ -1,0 +1,6 @@
+units metal
+atom_style atomic
+boundary p p p
+read_data initial.data
+if "$(count(all)) != 1360" then "quit 1"
+print "Validated: 1360 atoms read successfully"

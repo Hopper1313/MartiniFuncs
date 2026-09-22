@@ -1,0 +1,165 @@
+{
+  "dump": "C:\\Users\\nicho\\Documents\\Martini collab\\MartiniFuncs\\tests\\lammpsio_tests\\multiple_frames.lammpstrj",
+  "input": "C:\\Users\\nicho\\Documents\\Martini collab\\MartiniFuncs\\tests\\lammpsio_tests\\infile.in",
+  "frames": 9,
+  "atoms": 1360,
+  "time_range_ps": [
+    0.0,
+    4.0
+  ],
+  "sample_interval_ps": 0.5,
+  "molecules": {
+    "CPD": 40,
+    "dienophile": 40
+  },
+  "temperature_dof": 4077,
+  "raw_column_checks_passed": true,
+  "max_reference_errors": {
+    "temperature_K": 0.00013995282324685832,
+    "density_g_cm3": 2.2945488620251808e-08,
+    "velocity_angstrom_ps": 3.552713678800501e-15,
+    "force_magnitude_eV_angstrom": 1.1230058597933024e-05
+  },
+  "pair_detection_failures": [],
+  "pair_episode_count": 10,
+  "completed_episode_count": 7,
+  "pair_episode_count_reconstruction_passed": true,
+  "single_sample_episodes": 7,
+  "left_censored_episodes": 2,
+  "right_censored_episodes": 1,
+  "max_observed_pair_span_ps": 0.5,
+  "correlations": {
+    "CPD": {
+      "velocity": {
+        "lag_ps": [
+          0.0,
+          0.5,
+          1.0,
+          1.5,
+          2.0,
+          2.5,
+          3.0,
+          3.5,
+          4.0
+        ],
+        "correlation": [
+          14.811642530597767,
+          0.18835710780618678,
+          -0.0676894663862457,
+          0.01009513617295698,
+          0.8314152295876142,
+          0.4872867724869413,
+          -1.1034242280375806,
+          1.7187235555807565,
+          -2.029685819765871
+        ]
+      },
+      "net_force": {
+        "lag_ps": [
+          0.0,
+          0.5,
+          1.0,
+          1.5,
+          2.0,
+          2.5,
+          3.0,
+          3.5,
+          4.0
+        ],
+        "correlation": [
+          0.3733366235635112,
+          0.01886931115612727,
+          0.009223282723250653,
+          -0.00031092032188280807,
+          -0.022402504585466474,
+          -0.02730383704526531,
+          0.009684312856562748,
+          -0.04609508449104336,
+          0.04530114148352735
+        ]
+      }
+    },
+    "dienophile": {
+      "velocity": {
+        "lag_ps": [
+          0.0,
+          0.5,
+          1.0,
+          1.5,
+          2.0,
+          2.5,
+          3.0,
+          3.5,
+          4.0
+        ],
+        "correlation": [
+          4.69064338660556,
+          -0.14263503070307076,
+          -0.014313031069326548,
+          -0.15937659496636833,
+          -0.04741958856101476,
+          -0.027841178799113502,
+          -0.0952893648330023,
+          -0.42620169324364365,
+          0.9466487073682469
+        ]
+      },
+      "net_force": {
+        "lag_ps": [
+          0.0,
+          0.5,
+          1.0,
+          1.5,
+          2.0,
+          2.5,
+          3.0,
+          3.5,
+          4.0
+        ],
+        "correlation": [
+          0.8076893523741063,
+          0.03461360983117377,
+          -0.011760539289709828,
+          0.011329062816639974,
+          0.038736862832914304,
+          -0.06007871692671925,
+          -0.05003043593327158,
+          0.001321768558587566,
+          0.05390571998198481
+        ]
+      }
+    }
+  },
+  "atomic_msd_window_ps": [
+    0.0,
+    4.0
+  ],
+  "atomic_msd_angstrom2": [
+    0.0,
+    0.7871771398114105,
+    0.668179381738477,
+    0.6540654011641185,
+    1.0134340377910067,
+    0.7017854081258399,
+    0.8138861485027303,
+    0.8898507182982272,
+    1.7391818955009746
+  ],
+  "diffusion_status": "Not physically estimated: changing NPT cell and unvalidated unwrapping/fit regime",
+  "elapsed_seconds": 3.1909720001276582,
+  "temperature_K": {
+    "mean": 398.4345556178399,
+    "min": 387.0005900183879,
+    "max": 421.6704637275312
+  },
+  "density_g_cm3": {
+    "mean": 1.425933018039817,
+    "min": 1.414126136059649,
+    "max": 1.4557795636480455
+  },
+  "candidate_pairs": {
+    "mean": 1.4444444444444444,
+    "min": 1.0,
+    "max": 2.0
+  }
+}

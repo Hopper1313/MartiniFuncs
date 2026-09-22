@@ -8,3 +8,10 @@ dist/
 *.egg-info/
 .pytest_cache/
 .mypy_cache/
+# Local MLIP checkpoints are supplied separately, never distributed here.
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+2_337_shear_only.lammpstrj
+*.lammpstrj

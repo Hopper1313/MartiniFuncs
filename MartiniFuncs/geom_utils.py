@@ -204,6 +204,8 @@ def get_all_prereactive_pairs(
     scale: float = 1.3,
     reactive_radius: float = 3.25,
     printing: bool = False,
+    *,
+    criteria=None,
 ):
     """Find all CPD / dienophile molecular pairs inside ``reactive_radius``.
 
@@ -219,8 +221,12 @@ def get_all_prereactive_pairs(
     Unlike the previous implementation, molecular and reactive-site centroids
     are calculated in unwrapped molecular coordinate frames, so the function
     does not require ``repair_fragmented_molecules`` first.
+
+    ``criteria`` optionally accepts PairCriteria. The default preserves the
+    distance screen; use assess_prereactive_pairs separately to retain reasons
+    and geometry measurements for rejected candidates.
     """
-    if reactive_radius <= 0:
+    if not np.isfinite(reactive_radius) or reactive_radius <= 0:
         raise ValueError("reactive_radius must be > 0")
 
     elements = get_element_map(atoms, index_array="global_index")
@@ -244,9 +250,9 @@ def get_all_prereactive_pairs(
     mal_centers = []
     for comp in mal_components:
         mal_atoms = _subset(atoms, comp)
-        mal_graph = mfg.build_bond_graph(mal_atoms, index_array="global_index")
+        mal_graph = mfg.build_bond_graph(mal_atoms, scale=scale, index_array="global_index")
         mal_cc = get_mal_CC(mal_graph, elements)
-        if not mal_cc:
+        if len(mal_cc) != 2:
             raise ValueError(
                 f"Could not identify MAL reactive C=C for component {comp[:5]}..."
             )
@@ -323,6 +329,13 @@ def get_all_prereactive_pairs(
         for (m, c), _ in ordered
     ]
     cpd_shift = [value[1].tolist() for _, value in ordered]
+
+    if criteria is not None:
+        from .pair_selection import assess_prereactive_pairs
+        assessments = assess_prereactive_pairs(atoms, pairs, cpd_shift,
+                                               criteria=criteria, scale=scale)
+        keep = [a.pair_index for a in assessments if a.accepted]
+        pairs, cpd_shift = [pairs[i] for i in keep], [cpd_shift[i] for i in keep]
 
     if printing:
         print(len(pairs), "pre-reactive pairs found")
@@ -520,6 +533,36 @@ def _raw_vector(raw_atoms: Mapping[int, Mapping[str, float]], atom_ids, cols):
     return np.asarray(values, dtype=float)
 
 
+def _source_vectors(atoms, source, ids):
+    """Join synchronized normalized frames, or historical raw tuples, by ID."""
+    from .lammpsio import LammpsFrame
+    if isinstance(source, LammpsFrame):
+        if atoms.info.get("timestep") != source.timestep:
+            raise ValueError("Geometry and force source have different timesteps")
+        local = mfg.local_indices(source.atoms, ids)
+        if "lammps_forces" not in source.atoms.arrays:
+            raise ValueError("Frame has no force columns")
+        result = {"forces": source.atoms.arrays["lammps_forces"][local],
+                  "force_units": "eV/Angstrom", "velocity_units": "ASE",
+                  "lammps_units": source.units, "timestep": source.timestep,
+                  "frame_index": source.index,
+                  "source": source.atoms.info["source"],
+                  "id_offset": source.id_offset,
+                  "source_cell": source.atoms.cell.array.copy(),
+                  "source_pbc": source.atoms.pbc.copy()}
+        if "momenta" in source.atoms.arrays:
+            result["velocities"] = source.atoms.get_velocities()[local]
+        return result
+    if "timestep" in atoms.info and atoms.info["timestep"] != source[0]:
+        raise ValueError("Geometry and raw force data have different timesteps; specify the same frame index")
+    raw = source[-1]
+    result = {"forces": _raw_vector(raw, ids, ("fx", "fy", "fz")),
+              "force_units": "source", "velocity_units": "source", "timestep": source[0]}
+    if all(all(k in raw[int(i)] for k in ("vx", "vy", "vz")) for i in ids):
+        result["velocities"] = _raw_vector(raw, ids, ("vx", "vy", "vz"))
+    return result
+
+
 @add_global_index
 def get_pair_positions_and_forces(
     atoms: Atoms,
@@ -530,8 +573,9 @@ def get_pair_positions_and_forces(
     bond_scale: float = 1.3,
 ):
     """Backward-compatible pair extraction using persistent IDs safely."""
+    if len(pairs) != len(shifts):
+        raise ValueError("pairs and shifts must have the same length")
     graph = mfg.build_bond_graph(atoms, scale=bond_scale)
-    raw_atoms = mylammpsread[-1]
     data = {}
 
     for k, ((cpd_ids, mal_ids), cpd_shift) in enumerate(zip(pairs, shifts)):
@@ -555,8 +599,7 @@ def get_pair_positions_and_forces(
         data[k] = {
             "atom_ids": ids,
             "positions": xyz,
-            "forces": _raw_vector(raw_atoms, ids, ("fx", "fy", "fz")),
-            "velocities": _raw_vector(raw_atoms, ids, ("vx", "vy", "vz")),
+            **_source_vectors(atoms, mylammpsread, ids),
             "symbols": np.asarray(atoms.get_chemical_symbols(), dtype=object)[local],
             "cpd_local_indices": cpd_local_indices,
             "mal_local_indices": mal_local_indices,
@@ -572,7 +615,6 @@ def get_pair_positions_and_forces(
 
 def get_cluster_positions_and_forces(atoms: Atoms, mylammpsread, clusters):
     """Attach LAMMPS forces/velocities to records from get_pair_shell_clusters."""
-    raw_atoms = mylammpsread[-1]
     data = {}
 
     for k, cluster in enumerate(clusters):
@@ -580,8 +622,7 @@ def get_cluster_positions_and_forces(atoms: Atoms, mylammpsread, clusters):
         data[k] = {
             "atom_ids": ids,
             "positions": np.asarray(cluster["cluster_xyz"], dtype=float),
-            "forces": _raw_vector(raw_atoms, ids, ("fx", "fy", "fz")),
-            "velocities": _raw_vector(raw_atoms, ids, ("vx", "vy", "vz")),
+            **_source_vectors(atoms, mylammpsread, ids),
             "symbols": np.asarray(cluster["symbols"], dtype=object),
             # Preserve the identity of the original reactive pair all the way
             # to XYZ output. "local" means row index in this extracted cluster.
@@ -745,6 +786,14 @@ def pair_data_to_extxyz(data, filename):
         cluster.info["n_mal"] = int(len(mal_local))
         cluster.info["n_shell"] = int(natoms - len(cpd_local) - len(mal_local))
 
+        for key in ("force_units", "velocity_units", "lammps_units", "timestep",
+                    "frame_index", "source", "id_offset", "source_cell", "source_pbc"):
+            if key in record:
+                cluster.info[key] = record[key]
+        for key in ("force_units", "velocity_units", "lammps_units", "timestep",
+                    "frame_index", "source", "id_offset", "source_cell", "source_pbc"):
+            if key in record:
+                cluster.info[key] = record[key]
         images.append(cluster)
 
     write(
@@ -812,30 +861,14 @@ def pair_data_to_xyz(data, filename):
 
 
 def align_atoms(mobile, reference, indices=None):
-    aligned = mobile.copy()
+    """Align finite clusters by row correspondence; rotate stored vectors too.
 
-    if indices is None:
-        indices = np.arange(len(mobile))
+    Returns the historical ``(aligned, rmsd)`` tuple. For persistent-ID matching
+    and access to the rotation/translation, use ``geometry.align_geometry``.
+    """
+    from .geometry import align_geometry
 
-    P = mobile.positions[indices]
-    Q = reference.positions[indices]
-
-    P_centroid = P.mean(axis=0)
-    Q_centroid = Q.mean(axis=0)
-    P0 = P - P_centroid
-    Q0 = Q - Q_centroid
-
-    H = P0.T @ Q0
-    U, _, Vt = np.linalg.svd(H)
-    R = Vt.T @ U.T
-
-    if np.linalg.det(R) < 0:
-        Vt[-1, :] *= -1
-        R = Vt.T @ U.T
-
-    aligned.positions = (mobile.positions - P_centroid) @ R.T + Q_centroid
-    diff = aligned.positions[indices] - reference.positions[indices]
-    rmsd = np.sqrt(np.mean(np.sum(diff**2, axis=1)))
+    aligned, rmsd, _ = align_geometry(mobile, reference, indices, id_array=None)
     return aligned, rmsd
 
 
@@ -860,7 +893,7 @@ def get_pairs_distance_distribution(atoms: Atoms, scale: float = 1.3):
     mal_pos = []
     for comp in mal_components:
         mal_atoms = _subset(atoms, comp)
-        mal_graph = mfg.build_bond_graph(mal_atoms, index_array="global_index")
+        mal_graph = mfg.build_bond_graph(mal_atoms, scale=scale, index_array="global_index")
         mal_cc = get_mal_CC(mal_graph, elements)
         mal_pos.append(_site_center_of_mass(atoms, graph, comp, mal_cc))
     mal_pos = np.asarray(mal_pos)

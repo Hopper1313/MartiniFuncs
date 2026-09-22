@@ -10,6 +10,11 @@ ANG_TO_BOHR = UnitsData.convert("Angstroms", "BohrRadius")
 BOHR_TO_ANG = UnitsData.convert("BohrRadius", "Angstroms")
 
 def ase_atoms_to_molecule(ase_atoms, charge=0,energy_evaluator=['aimnet2',None]):
+    """Convert ASE coordinates in Angstrom to Psience coordinates in Bohr.
+
+    This legacy helper also attaches an evaluator. For geometry-only display,
+    use visualization.to_display_molecule, which applies the same conversion.
+    """
     coords_bohr = ase_atoms.get_positions() * ANG_TO_BOHR
     symbols = ase_atoms.get_chemical_symbols()
     # energy_evaluator={'method':'aimnet2', 'model':path/to/jpt}
@@ -20,6 +25,7 @@ def ase_atoms_to_molecule(ase_atoms, charge=0,energy_evaluator=['aimnet2',None])
     return mol
 
 def molecule_to_ase_atoms(molecule):
+    """Convert Psience coordinates in Bohr to ASE coordinates in Angstrom."""
     coords_ang = molecule.coords * BOHR_TO_ANG
     symbols = molecule.atoms
     ase_atoms = Atoms(symbols=symbols, positions=coords_ang)

@@ -1,0 +1,20 @@
+# Requires external fairchem driver: uma-s-1p1, task omol.
+# This input does not install a LAMMPS potential or load model weights.
+# Keep run as the final executable command for the external driver.
+units metal
+atom_style atomic
+boundary p p p
+atom_modify map array
+read_data initial.data
+neighbor 2.0 bin
+neigh_modify every 1 delay 0 check yes
+timestep 0.0005
+velocity all create 400 4928459 mom yes rot yes dist gaussian
+fix integrate all npt temp 400 400 0.05 iso 25000 25000 0.5
+thermo 100
+thermo_style custom step time temp pe ke etotal press vol density lx ly lz
+variable netforce atom sqrt(fx*fx+fy*fy+fz*fz)
+dump trajectory all custom 1000 npt.lammpstrj id type mass element x y z ix iy iz vx vy vz fx fy fz v_netforce
+dump_modify trajectory element C H N O sort id
+restart 100000 npt.restart.*
+run 100000 every 100000 "write_data npt.final.data" "write_restart npt.final.restart"

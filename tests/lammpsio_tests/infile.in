@@ -1,0 +1,62 @@
+# UMA NPT equilibration of ~2.5 GPa compressed neat system
+# Types: 1=C 2=H 3=N 4=O
+# Requires fairchem-lammps + UMA-s-1p2 "omol"
+# No pair_style / bonded force-field terms
+
+units           metal
+atom_style      atomic
+boundary        p p p
+
+read_data       neat_rand_p24673_2p5GPa.data
+
+mass            1 12.011
+mass            2 1.008
+mass            3 14.007
+mass            4 15.999
+
+# Convert orthogonal box to triclinic now so the equilibrated
+# configuration is directly usable for subsequent xy shear
+change_box      all triclinic
+
+neighbor        2.0 bin
+neigh_modify    every 10 delay 0 check yes
+comm_modify     cutoff 6.0
+
+# 0.0005 ps = 0.5 fs
+timestep        0.0005
+
+# Generate initial Maxwell-Boltzmann velocities at 400 K
+velocity        all create 400.0 4928459 mom yes rot yes dist gaussian
+
+# NPT equilibration:
+# T = 400 K
+# P = 25000 bar = 2.5 GPa
+# Tdamp = 100 timesteps = 0.05 ps
+# Pdamp = 200 timesteps = 0.10 ps
+fix             1 all npt temp 400.0 400.0 0.05 &
+                          iso 25000.0 25000.0 0.1
+
+thermo_style    custom step time temp pe ke etotal press &
+                       pxx pyy pzz pxy vol density lx ly lz xy
+thermo          2000
+
+# Per-atom force magnitude
+variable        netforce atom sqrt(fx*fx+fy*fy+fz*fz)
+
+dump            1 all custom 1000 equilibrate_2p5.lammpstrj &
+                id type mass element x y z &
+                ix iy iz vx vy vz &
+                fx fy fz v_netforce
+
+dump_modify     1 element C H N O sort id
+
+# Periodic binary checkpoints every 100,000 steps
+restart         100000 equil_2p5.restart.*
+
+timer           full
+
+# 2,000,000 steps × 0.5 fs = 1000 ps = 1.0 ns
+# write final data/restart once after equilibration
+#
+# MUST remain the final top-level command for fairchem-lammps
+run             2000000 every 2000000 "write_data equilibrated_2p5.data" "write_restart equilibrated_2p5.restart"
