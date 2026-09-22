@@ -1,0 +1,1298 @@
+"""Geometry / reaction utilities for MartiniFuncs.
+
+This module treats ``global_index`` as a persistent atom ID. Whenever IDs are
+used to access an ASE ``Atoms`` object they are first converted to local ASE
+indices via :mod:`MartiniFuncs.graph`.
+"""
+
+from __future__ import annotations
+
+import functools
+import inspect
+from collections.abc import Iterable, Mapping, Sequence
+
+import numpy as np
+from ase import Atoms
+from ase.geometry import get_distances
+from ase.neighborlist import primitive_neighbor_list
+
+from . import graph as mfg
+
+
+# -----------------------------------------------------------------------------
+# Compatibility decorator / ID helpers
+# -----------------------------------------------------------------------------
+
+
+def add_global_index(func):
+    """Backward-compatible decorator ensuring ``atoms.global_index`` exists."""
+    sig = inspect.signature(func)
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        bound = sig.bind(*args, **kwargs)
+        bound.apply_defaults()
+        atoms = bound.arguments.get("atoms")
+        if atoms is not None:
+            mfg.ensure_index_array(atoms, "global_index")
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
+@add_global_index
+def get_element_map(atoms: Atoms, index_array: str = "global_index") -> dict[int, str]:
+    """Return ``persistent_atom_id -> element symbol``."""
+    ids, _ = mfg.get_index_maps(atoms, index_array=index_array)
+    return {
+        int(atom_id): symbol
+        for atom_id, symbol in zip(ids, atoms.get_chemical_symbols())
+    }
+
+
+def _subset(atoms: Atoms, atom_ids: Iterable[int], index_array="global_index") -> Atoms:
+    """Slice ``atoms`` using persistent IDs rather than local ASE indices."""
+    local = mfg.local_indices(atoms, atom_ids, index_array=index_array)
+    return atoms[local]
+
+
+def _weighted_com(xyz: np.ndarray, masses: np.ndarray) -> np.ndarray:
+    return np.average(np.asarray(xyz, float), axis=0, weights=np.asarray(masses, float))
+
+
+def _site_center_of_mass(
+    atoms: Atoms,
+    graph,
+    component: Sequence[int],
+    site_ids: Iterable[int],
+    index_array: str = "global_index",
+) -> np.ndarray:
+    """COM of a subset of atoms in the *unwrapped frame of its molecule*."""
+    site_ids = [int(i) for i in site_ids]
+    shifts, _ = mfg.unwrap_component(
+        atoms,
+        graph,
+        component,
+        index_array=index_array,
+    )
+    local = mfg.local_indices(atoms, site_ids, index_array=index_array)
+    shift_array = np.vstack([shifts[i] for i in site_ids])
+    xyz = atoms.positions[local] + shift_array @ atoms.cell.array
+    return _weighted_com(xyz, atoms.get_masses()[local])
+
+
+def _wrap_points(points: np.ndarray, cell, pbc) -> tuple[np.ndarray, np.ndarray]:
+    """Wrap arbitrary Cartesian points and return removed integer cell shifts.
+
+    Returns ``wrapped, image`` with ``points = wrapped + image @ cell``.
+    Only periodic dimensions are wrapped.
+    """
+    points = np.asarray(points, dtype=float)
+    cell = np.asarray(cell, dtype=float)
+    pbc = np.asarray(pbc, dtype=bool)
+
+    frac = np.linalg.solve(cell.T, points.T).T
+    image = np.zeros_like(frac, dtype=int)
+    image[:, pbc] = np.floor(frac[:, pbc]).astype(int)
+    wrapped = points - image @ cell
+    return wrapped, image
+
+
+# -----------------------------------------------------------------------------
+# Reaction-site identification
+# -----------------------------------------------------------------------------
+
+
+@add_global_index
+def get_diels_alder_reaction_indices_from_pair(atoms: Atoms):
+    """Identify the reactive atoms in an isolated CPD + dienophile pair."""
+    graph_all = mfg.build_bond_graph(atoms, index_array="global_index")
+    molecules = mfg.connected_components(
+        graph_all,
+        atom_ids=mfg.atom_ids(atoms),
+    )
+
+    if len(molecules) != 2:
+        raise ValueError(
+            f"Expected exactly two molecules, got {len(molecules)} with sizes "
+            f"{[len(m) for m in molecules]}."
+        )
+
+    if len(molecules[0]) == 11 and len(molecules[1]) == 23:
+        cpd_index, n4t_index = 0, 1
+    elif len(molecules[1]) == 11 and len(molecules[0]) == 23:
+        cpd_index, n4t_index = 1, 0
+    else:
+        raise ValueError(
+            f"Unexpected molecule sizes, got {[len(m) for m in molecules]}, "
+            "but expected 11 and 23."
+        )
+
+    n4t_atoms = _subset(atoms, molecules[n4t_index])
+    graph_n4t = mfg.build_bond_graph(n4t_atoms, index_array="global_index")
+    elements_n4t = get_element_map(n4t_atoms, index_array="global_index")
+    occcco = mfg.find_element_chains(graph_n4t, elements_n4t, "OCCCCO")[0]
+    n4t_cc = [occcco[2], occcco[3]]
+
+    cpd_atoms = _subset(atoms, molecules[cpd_index])
+    graph_cpd = mfg.build_bond_graph(cpd_atoms, index_array="global_index")
+    elements_cpd = get_element_map(cpd_atoms, index_array="global_index")
+    hch = mfg.find_element_chains(graph_cpd, elements_cpd, "HCH")[0]
+
+    # H-C1-H identifies the bridge carbon. Its one-bond neighborhood contains
+    # the two ring carbons that define the diene termini.
+    _, c_ch2_c_graph = mfg.extract_neighborhood(graph_cpd, [hch[1]], n=1)
+    ccc = mfg.find_element_chains(c_ch2_c_graph, elements_cpd, "CCC")[0]
+    cpd_cxxc = [ccc[0], ccc[2]]
+
+    cccc_candidates = mfg.find_element_chains(graph_cpd, elements_cpd, "CCCC")
+    cccc = [
+        chain
+        for chain in cccc_candidates
+        if (chain[0] in cpd_cxxc) and (chain[-1] in cpd_cxxc)
+    ][0]
+    ring = mfg.find_rings(graph_cpd, max_size=5)[0]
+
+    return {
+        "CPD": {
+            "reactive carbons": cpd_cxxc,
+            "c=cc=c": cccc,
+            "ring": ring,
+        },
+        "dienophile": {
+            "reactive carbons": n4t_cc,
+            "occcco": occcco,
+        },
+    }
+
+
+def get_mal_CC(bond_graph, elements):
+    """Return the maleimide C=C atoms from element-pattern intersections."""
+    hcch = mfg.find_element_chains(bond_graph, elements, "HCCH")
+    occcco = mfg.find_element_chains(bond_graph, elements, "OCCCCO")
+    hcch_atoms = {i for chain in hcch for i in chain}
+    occcco_atoms = {i for chain in occcco for i in chain}
+    return hcch_atoms & occcco_atoms
+
+
+# -----------------------------------------------------------------------------
+# Molecular pair search
+# -----------------------------------------------------------------------------
+
+
+def _reaction_components(atoms: Atoms, scale: float):
+    graph = mfg.build_bond_graph(
+        atoms,
+        scale=scale,
+        index_array="global_index",
+    )
+    components = mfg.connected_components(
+        graph,
+        atom_ids=mfg.atom_ids(atoms),
+    )
+
+    cpd = [c for c in components if len(c) == 11]
+    mal = [c for c in components if len(c) == 23]
+    product = [c for c in components if len(c) == 34]
+    other = [c for c in components if len(c) not in (11, 23, 34)]
+    return graph, components, cpd, mal, product, other
+
+
+@add_global_index
+def get_all_prereactive_pairs(
+    atoms: Atoms,
+    scale: float = 1.3,
+    reactive_radius: float = 3.25,
+    printing: bool = False,
+):
+    """Find all CPD / dienophile molecular pairs inside ``reactive_radius``.
+
+    Returns the same API as the historical implementation:
+
+    ``pairs``
+        ``[[cpd_atom_ids, mal_atom_ids], ...]`` using persistent atom IDs.
+
+    ``cpd_shift``
+        Integer lattice translation to apply to the *unwrapped CPD molecule*
+        so it lies beside the corresponding unwrapped MAL molecule.
+
+    Unlike the previous implementation, molecular and reactive-site centroids
+    are calculated in unwrapped molecular coordinate frames, so the function
+    does not require ``repair_fragmented_molecules`` first.
+    """
+    if reactive_radius <= 0:
+        raise ValueError("reactive_radius must be > 0")
+
+    elements = get_element_map(atoms, index_array="global_index")
+    graph, _, cpd_components, mal_components, _, other = _reaction_components(
+        atoms, scale
+    )
+
+    if other:
+        raise ValueError(
+            f"There are {len(other)} molecules that do not match expected sizes "
+            "(11, 23, 34 atoms). Check bond scale / chemistry."
+        )
+
+    # CPD search point = COM of the entire unwrapped CPD molecule.
+    cpd_centers = np.asarray([
+        mfg.component_center_of_mass(atoms, graph, comp)
+        for comp in cpd_components
+    ])
+
+    # MAL search point = COM of the reactive C=C in the unwrapped MAL frame.
+    mal_centers = []
+    for comp in mal_components:
+        mal_atoms = _subset(atoms, comp)
+        mal_graph = mfg.build_bond_graph(mal_atoms, index_array="global_index")
+        mal_cc = get_mal_CC(mal_graph, elements)
+        if not mal_cc:
+            raise ValueError(
+                f"Could not identify MAL reactive C=C for component {comp[:5]}..."
+            )
+        mal_centers.append(
+            _site_center_of_mass(atoms, graph, comp, mal_cc)
+        )
+    mal_centers = np.asarray(mal_centers)
+
+    if printing:
+        print(len(mal_centers), "mal CC double bonds found")
+        print(len(cpd_centers), "CPD molecules found")
+
+    if len(cpd_centers) == 0 or len(mal_centers) == 0:
+        return [], []
+
+    # Put both point sets into one primary periodic representation while
+    # remembering which image was removed from each unwrapped centroid.
+    mal_wrapped, mal_image = _wrap_points(mal_centers, atoms.cell.array, atoms.pbc)
+    cpd_wrapped, cpd_image = _wrap_points(cpd_centers, atoms.cell.array, atoms.pbc)
+
+    nmal = len(mal_wrapped)
+    ncpd = len(cpd_wrapped)
+    positions = np.vstack((mal_wrapped, cpd_wrapped))
+
+    # Dummy species labels let ASE discard MAL-MAL / CPD-CPD pairs at cutoff
+    # evaluation time. Only 1-2 contacts are relevant.
+    numbers = np.concatenate((
+        np.ones(nmal, dtype=int),
+        np.full(ncpd, 2, dtype=int),
+    ))
+
+    i, j, d, S = primitive_neighbor_list(
+        "ijdS",
+        pbc=atoms.pbc,
+        cell=atoms.cell,
+        positions=positions,
+        cutoff={(1, 2): float(reactive_radius)},
+        numbers=numbers,
+        self_interaction=False,
+    )
+
+    mask = (i < nmal) & (j >= nmal)
+    mal_i = i[mask]
+    cpd_i = j[mask] - nmal
+    distances = d[mask]
+    relative_shifts = S[mask]
+
+    if len(mal_i) == 0:
+        return [], []
+
+    # Multiple periodic images of the same molecular pair can in principle be
+    # inside a large cutoff. Retain only the closest image for each pair.
+    best: dict[tuple[int, int], tuple[float, np.ndarray]] = {}
+    for m, c, dist, shift in zip(mal_i, cpd_i, distances, relative_shifts):
+        key = (int(m), int(c))
+        prev = best.get(key)
+        if prev is None or float(dist) < prev[0]:
+            # Unwrapped centroids satisfy:
+            #   C_unwrapped = C_wrapped + cpd_image @ cell
+            # The translation applied to the unwrapped CPD is therefore:
+            #   T = S + mal_image - cpd_image
+            pair_shift = (
+                np.asarray(shift, dtype=int)
+                + mal_image[int(m)]
+                - cpd_image[int(c)]
+            )
+            best[key] = (float(dist), pair_shift)
+
+    # Deterministic order: distance, then MAL/CPD component indices.
+    ordered = sorted(best.items(), key=lambda kv: (kv[1][0], kv[0][0], kv[0][1]))
+
+    pairs = [
+        [list(cpd_components[c]), list(mal_components[m])]
+        for (m, c), _ in ordered
+    ]
+    cpd_shift = [value[1].tolist() for _, value in ordered]
+
+    if printing:
+        print(len(pairs), "pre-reactive pairs found")
+
+    return pairs, cpd_shift
+
+
+# -----------------------------------------------------------------------------
+# Pair -> atom shell -> completed shell molecules -> finite local cluster
+# -----------------------------------------------------------------------------
+
+
+@add_global_index
+def get_pair_shell_clusters(
+    atoms: Atoms,
+    pairs,
+    shifts,
+    *,
+    shell_radius: float = 3.0,
+    scale: float = 1.3,
+    graph=None,
+    components=None,
+):
+    """Build complete finite local clusters around pre-reactive molecular pairs.
+
+    The geometric shell is defined as all atoms within ``shell_radius`` of any
+    atom in the placed reactive pair. Any molecule touched by that geometric
+    shell is then completed and unwrapped using the existing bond graph.
+
+    Parameters
+    ----------
+    atoms
+        Full periodic frame.
+    pairs, shifts
+        Output of :func:`get_all_prereactive_pairs`.
+    shell_radius
+        Atom-to-pair shell cutoff in Angstrom.
+    scale
+        Bond-graph scale, used only if ``graph`` is not supplied.
+    graph, components
+        Optional precomputed molecular graph/components for reuse.
+
+    Returns
+    -------
+    list[dict]
+        One record per molecular pair. ``cluster_xyz`` and ``symbols`` can be
+        written directly as a finite XYZ structure.
+    """
+    if len(pairs) != len(shifts):
+        raise ValueError("pairs and shifts must have the same length")
+
+    if graph is None:
+        graph = mfg.build_bond_graph(
+            atoms,
+            scale=scale,
+            index_array="global_index",
+        )
+    if components is None:
+        components = mfg.connected_components(
+            graph,
+            atom_ids=mfg.atom_ids(atoms),
+        )
+
+    atom_to_component = mfg.component_lookup(components)
+    shell_index = mfg.build_shell_neighbor_index(
+        atoms,
+        cutoff=shell_radius,
+        index_array="global_index",
+    )
+
+    symbols_all = np.asarray(atoms.get_chemical_symbols(), dtype=object)
+    clusters = []
+
+    for pair_number, ((cpd_ids, mal_ids), cpd_image_shift) in enumerate(
+        zip(pairs, shifts)
+    ):
+        cpd_ids = [int(i) for i in cpd_ids]
+        mal_ids = [int(i) for i in mal_ids]
+        cpd_image_shift = np.asarray(cpd_image_shift, dtype=int)
+
+        # MAL is the reference image. CPD receives the molecular shift returned
+        # by get_all_prereactive_pairs(). Each molecule is unwrapped internally.
+        cpd_arr, cpd_xyz, cpd_shifts = mfg.place_component(
+            atoms,
+            graph,
+            cpd_ids,
+            image_shift=cpd_image_shift,
+        )
+        mal_arr, mal_xyz, mal_shifts = mfg.place_component(
+            atoms,
+            graph,
+            mal_ids,
+            image_shift=(0, 0, 0),
+        )
+
+        pair_shift_map = {**mal_shifts, **cpd_shifts}
+        pair_ids = np.concatenate((cpd_arr, mal_arr))
+        pair_xyz = np.vstack((cpd_xyz, mal_xyz))
+
+        contacts = mfg.get_shell_contacts(
+            pair_shift_map,
+            shell_index,
+            exclude_pair=True,
+        )
+
+        shell_components = mfg.place_shell_components(
+            atoms,
+            graph,
+            components,
+            atom_to_component,
+            contacts,
+            exclude_atom_ids=pair_ids,
+            index_array="global_index",
+        )
+
+        id_chunks = [cpd_arr, mal_arr]
+        xyz_chunks = [cpd_xyz, mal_xyz]
+        cluster_shift_map = {**cpd_shifts, **mal_shifts}
+
+        for shell in shell_components:
+            id_chunks.append(np.asarray(shell["indices"], dtype=int))
+            xyz_chunks.append(np.asarray(shell["xyz"], dtype=float))
+            cluster_shift_map.update(shell["shifts"])
+
+        cluster_ids = np.concatenate(id_chunks)
+        cluster_xyz = np.vstack(xyz_chunks)
+        cluster_local = mfg.local_indices(atoms, cluster_ids)
+        cluster_symbols = symbols_all[cluster_local]
+        cluster_shift_array = np.vstack([
+            cluster_shift_map[int(atom_id)]
+            for atom_id in cluster_ids
+        ])
+
+        # Local indices refer to rows in the extracted finite cluster/XYZ.
+        # The cluster is deliberately assembled as CPD + MAL + shell molecules,
+        # so the original reactive pair always occupies the first rows.
+        cpd_local_indices = np.arange(len(cpd_arr), dtype=int)
+        mal_local_indices = np.arange(
+            len(cpd_arr),
+            len(cpd_arr) + len(mal_arr),
+            dtype=int,
+        )
+        cluster_local_indices = np.arange(len(cluster_ids), dtype=int)
+
+        clusters.append({
+            "pair_index": pair_number,
+            "cpd_ids": cpd_arr,
+            "mal_ids": mal_arr,
+            "cpd_local_indices": cpd_local_indices,
+            "mal_local_indices": mal_local_indices,
+            "cpd_shift": cpd_image_shift.copy(),
+            "pair_ids": pair_ids,
+            "pair_local_indices": np.concatenate((
+                cpd_local_indices,
+                mal_local_indices,
+            )),
+            "pair_xyz": pair_xyz,
+            "pair_shifts": pair_shift_map,
+            "shell_contacts": contacts,
+            "shell_components": shell_components,
+            "cluster_ids": cluster_ids,
+            # Explicit cluster identity metadata. Local indices are row
+            # numbers in cluster_xyz / the written XYZ; global IDs are the
+            # persistent IDs from the source Atoms object.
+            "cluster_local_indices": cluster_local_indices,
+            "cluster_global_ids": cluster_ids.copy(),
+            "cluster_xyz": cluster_xyz,
+            "cluster_shifts": cluster_shift_array,
+            "symbols": cluster_symbols,
+        })
+
+    return clusters
+
+
+# -----------------------------------------------------------------------------
+# Positions / velocities / forces for pair or cluster output
+# -----------------------------------------------------------------------------
+
+
+def _raw_vector(raw_atoms: Mapping[int, Mapping[str, float]], atom_ids, cols):
+    values = []
+    for atom_id in atom_ids:
+        atom_id = int(atom_id)
+        if atom_id not in raw_atoms:
+            raise KeyError(
+                f"Persistent atom ID {atom_id} is absent from raw LAMMPS data."
+            )
+        record = raw_atoms[atom_id]
+        missing = [col for col in cols if col not in record]
+        if missing:
+            raise KeyError(
+                f"LAMMPS atom {atom_id} is missing columns {missing}."
+            )
+        values.append(tuple(record[col] for col in cols))
+    return np.asarray(values, dtype=float)
+
+
+@add_global_index
+def get_pair_positions_and_forces(
+    atoms: Atoms,
+    mylammpsread,
+    pairs,
+    shifts,
+    *,
+    bond_scale: float = 1.3,
+):
+    """Backward-compatible pair extraction using persistent IDs safely."""
+    graph = mfg.build_bond_graph(atoms, scale=bond_scale)
+    raw_atoms = mylammpsread[-1]
+    data = {}
+
+    for k, ((cpd_ids, mal_ids), cpd_shift) in enumerate(zip(pairs, shifts)):
+        cpd_arr, cpd_xyz, _ = mfg.place_component(
+            atoms, graph, cpd_ids, image_shift=cpd_shift
+        )
+        mal_arr, mal_xyz, _ = mfg.place_component(
+            atoms, graph, mal_ids, image_shift=(0, 0, 0)
+        )
+        ids = np.concatenate((cpd_arr, mal_arr))
+        xyz = np.vstack((cpd_xyz, mal_xyz))
+        local = mfg.local_indices(atoms, ids)
+
+        cpd_local_indices = np.arange(len(cpd_arr), dtype=int)
+        mal_local_indices = np.arange(
+            len(cpd_arr),
+            len(cpd_arr) + len(mal_arr),
+            dtype=int,
+        )
+
+        data[k] = {
+            "atom_ids": ids,
+            "positions": xyz,
+            "forces": _raw_vector(raw_atoms, ids, ("fx", "fy", "fz")),
+            "velocities": _raw_vector(raw_atoms, ids, ("vx", "vy", "vz")),
+            "symbols": np.asarray(atoms.get_chemical_symbols(), dtype=object)[local],
+            "cpd_local_indices": cpd_local_indices,
+            "mal_local_indices": mal_local_indices,
+            "cpd_global_ids": np.asarray(cpd_arr, dtype=int),
+            "mal_global_ids": np.asarray(mal_arr, dtype=int),
+            # For pair-only output, the extracted pair is the whole cluster.
+            "cluster_local_indices": np.arange(len(ids), dtype=int),
+            "cluster_global_ids": np.asarray(ids, dtype=int),
+        }
+
+    return data
+
+
+def get_cluster_positions_and_forces(atoms: Atoms, mylammpsread, clusters):
+    """Attach LAMMPS forces/velocities to records from get_pair_shell_clusters."""
+    raw_atoms = mylammpsread[-1]
+    data = {}
+
+    for k, cluster in enumerate(clusters):
+        ids = np.asarray(cluster["cluster_ids"], dtype=int)
+        data[k] = {
+            "atom_ids": ids,
+            "positions": np.asarray(cluster["cluster_xyz"], dtype=float),
+            "forces": _raw_vector(raw_atoms, ids, ("fx", "fy", "fz")),
+            "velocities": _raw_vector(raw_atoms, ids, ("vx", "vy", "vz")),
+            "symbols": np.asarray(cluster["symbols"], dtype=object),
+            # Preserve the identity of the original reactive pair all the way
+            # to XYZ output. "local" means row index in this extracted cluster.
+            "cpd_local_indices": np.asarray(
+                cluster["cpd_local_indices"], dtype=int
+            ),
+            "mal_local_indices": np.asarray(
+                cluster["mal_local_indices"], dtype=int
+            ),
+            "cpd_global_ids": np.asarray(cluster["cpd_ids"], dtype=int),
+            "mal_global_ids": np.asarray(cluster["mal_ids"], dtype=int),
+            "cluster_local_indices": np.asarray(
+                cluster["cluster_local_indices"], dtype=int
+            ),
+            "cluster_global_ids": np.asarray(
+                cluster["cluster_global_ids"], dtype=int
+            ),
+        }
+
+    return data
+
+def pair_data_to_extxyz(data, filename):
+    """Write pair/cluster records as an ASE Extended XYZ trajectory.
+
+    Each extracted cluster is converted to an :class:`ase.Atoms` object and
+    written with ``format="extxyz"``.  The atom identity metadata is stored as
+    per-atom arrays, so it survives an ``ase.io.read`` round trip without
+    parsing the XYZ comment line.
+
+    Per-atom arrays written
+    -----------------------
+    ``global_index``
+        Persistent atom ID from the original periodic structure.
+
+    ``local_index``
+        Zero-based row/index of the atom in this extracted cluster.
+
+    ``pair_role``
+        ``"CPD"`` for the CPD reactant, ``"MAL"`` for the dienophile, and
+        ``"shell"`` for atoms belonging only to the surrounding shell.
+
+    ``forces`` / ``velocities``
+        The vectors already present in the pair/cluster data record.
+
+    Notes
+    -----
+    The filename may still end in ``.xyz``.  ``format="extxyz"`` explicitly
+    selects ASE's Extended XYZ writer.
+    """
+    from ase.io import write
+
+    images = []
+    nclusters = len(data)
+
+    for i in range(nclusters):
+        record = data[i]
+
+        positions = np.asarray(record["positions"], dtype=float)
+        symbols = np.asarray(record["symbols"], dtype=object)
+        natoms = len(positions)
+
+        if positions.shape != (natoms, 3):
+            raise ValueError(
+                f"Cluster {i}: positions must have shape (N, 3); "
+                f"got {positions.shape}."
+            )
+        if len(symbols) != natoms:
+            raise ValueError(
+                f"Cluster {i}: symbols has length {len(symbols)}, "
+                f"but positions has length {natoms}."
+            )
+
+        cluster = Atoms(
+            symbols=symbols.tolist(),
+            positions=positions,
+            pbc=False,
+        )
+
+        # ------------------------------------------------------------------
+        # Persistent and local identity
+        # ------------------------------------------------------------------
+        global_ids = np.asarray(
+            record.get("cluster_global_ids", record.get("atom_ids", [])),
+            dtype=int,
+        )
+        local_ids = np.asarray(
+            record.get("cluster_local_indices", np.arange(natoms, dtype=int)),
+            dtype=int,
+        )
+
+        if global_ids.shape != (natoms,):
+            raise ValueError(
+                f"Cluster {i}: cluster_global_ids/atom_ids must contain "
+                f"one ID per atom; got {len(global_ids)} IDs for {natoms} atoms."
+            )
+        if local_ids.shape != (natoms,):
+            raise ValueError(
+                f"Cluster {i}: cluster_local_indices must contain one index "
+                f"per atom; got {len(local_ids)} for {natoms} atoms."
+            )
+
+        cluster.new_array("global_index", global_ids.copy())
+        cluster.new_array("local_index", local_ids.copy())
+
+        # ------------------------------------------------------------------
+        # Original reactive-pair membership
+        # ------------------------------------------------------------------
+        cpd_local = np.asarray(
+            record.get("cpd_local_indices", []),
+            dtype=int,
+        )
+        mal_local = np.asarray(
+            record.get("mal_local_indices", []),
+            dtype=int,
+        )
+
+        for name, idx in (("CPD", cpd_local), ("MAL", mal_local)):
+            if np.any((idx < 0) | (idx >= natoms)):
+                raise IndexError(
+                    f"Cluster {i}: {name}_local_indices contains an index "
+                    f"outside [0, {natoms})."
+                )
+
+        if np.intersect1d(cpd_local, mal_local).size:
+            raise ValueError(
+                f"Cluster {i}: CPD and MAL local-index sets overlap."
+            )
+
+        pair_role = np.full(natoms, "shell", dtype="U5")
+        pair_role[cpd_local] = "CPD"
+        pair_role[mal_local] = "MAL"
+        cluster.new_array("pair_role", pair_role)
+
+        # ------------------------------------------------------------------
+        # Existing dynamical data
+        # ------------------------------------------------------------------
+        if "forces" in record:
+            forces = np.asarray(record["forces"], dtype=float)
+            if forces.shape != (natoms, 3):
+                raise ValueError(
+                    f"Cluster {i}: forces must have shape ({natoms}, 3); "
+                    f"got {forces.shape}."
+                )
+            cluster.new_array("lammps_forces", forces.copy())
+
+        if "velocities" in record:
+            velocities = np.asarray(record["velocities"], dtype=float)
+            if velocities.shape != (natoms, 3):
+                raise ValueError(
+                    f"Cluster {i}: velocities must have shape ({natoms}, 3); "
+                    f"got {velocities.shape}."
+                )
+            cluster.new_array("velocities", velocities.copy())
+
+        # Small structure-level metadata belongs in Atoms.info.  The long
+        # atom mappings stay in per-atom arrays above rather than bloating the
+        # Extended XYZ header/comment line.
+        cluster.info["cluster_index"] = int(i)
+        cluster.info["n_clusters"] = int(nclusters)
+        cluster.info["n_cpd"] = int(len(cpd_local))
+        cluster.info["n_mal"] = int(len(mal_local))
+        cluster.info["n_shell"] = int(natoms - len(cpd_local) - len(mal_local))
+
+        images.append(cluster)
+
+    write(
+        filename,
+        images,
+        format="extxyz",
+    )
+
+
+
+def pair_data_to_xyz(data, filename):
+    """Write pair/cluster data with pair identity stored in the XYZ comment.
+
+    Local indices are 0-based row indices in the extracted XYZ structure.
+    Global IDs are persistent atom IDs from ``global_index``.
+    """
+
+    def _index_list(values):
+        return "[" + ",".join(str(int(x)) for x in values) + "]"
+
+    with open(filename, "w") as f:
+        for i in range(len(data)):
+            positions = np.asarray(data[i]["positions"])
+            symbols = data[i]["symbols"]
+            forces = np.asarray(data[i]["forces"])
+            velocities = np.asarray(data[i]["velocities"])
+
+            cpd_local = data[i].get("cpd_local_indices", [])
+            mal_local = data[i].get("mal_local_indices", [])
+            cpd_global = data[i].get("cpd_global_ids", [])
+            mal_global = data[i].get("mal_global_ids", [])
+            cluster_local = data[i].get(
+                "cluster_local_indices", np.arange(len(positions), dtype=int)
+            )
+            cluster_global = data[i].get(
+                "cluster_global_ids", data[i].get("atom_ids", [])
+            )
+
+            f.write(f"{len(positions)}\n")
+            f.write(
+                f"Cluster {i + 1}/{len(data)} "
+                f"CPD_local={_index_list(cpd_local)} "
+                f"MAL_local={_index_list(mal_local)} "
+                f"CPD_global={_index_list(cpd_global)} "
+                f"MAL_global={_index_list(mal_global)} "
+                f"cluster_local={_index_list(cluster_local)} "
+                f"cluster_global={_index_list(cluster_global)} "
+                f"columns=x,y,z,vx,vy,vz,fx,fy,fz\n"
+            )
+
+            for sym, pos, vel, force in zip(
+                symbols, positions, velocities, forces
+            ):
+                f.write(
+                    f"{sym} "
+                    f"{pos[0]:>12.8f} {pos[1]:>12.8f} {pos[2]:>12.8f} "
+                    f"{vel[0]:>12.8f} {vel[1]:>12.8f} {vel[2]:>12.8f} "
+                    f"{force[0]:>12.8f} {force[1]:>12.8f} {force[2]:>12.8f}\n"
+                )
+
+
+# -----------------------------------------------------------------------------
+# Generic geometry utilities
+# -----------------------------------------------------------------------------
+
+
+def align_atoms(mobile, reference, indices=None):
+    aligned = mobile.copy()
+
+    if indices is None:
+        indices = np.arange(len(mobile))
+
+    P = mobile.positions[indices]
+    Q = reference.positions[indices]
+
+    P_centroid = P.mean(axis=0)
+    Q_centroid = Q.mean(axis=0)
+    P0 = P - P_centroid
+    Q0 = Q - Q_centroid
+
+    H = P0.T @ Q0
+    U, _, Vt = np.linalg.svd(H)
+    R = Vt.T @ U.T
+
+    if np.linalg.det(R) < 0:
+        Vt[-1, :] *= -1
+        R = Vt.T @ U.T
+
+    aligned.positions = (mobile.positions - P_centroid) @ R.T + Q_centroid
+    diff = aligned.positions[indices] - reference.positions[indices]
+    rmsd = np.sqrt(np.mean(np.sum(diff**2, axis=1)))
+    return aligned, rmsd
+
+
+@add_global_index
+def get_pairs_distance_distribution(atoms: Atoms, scale: float = 1.3):
+    """Return MIC distances for every CPD-C=C / MAL-site pair."""
+    elements = get_element_map(atoms, index_array="global_index")
+    graph, _, cpd_components, mal_components, _, other = _reaction_components(
+        atoms, scale
+    )
+
+    if other:
+        raise ValueError(
+            f"There are {len(other)} molecules that do not match expected sizes."
+        )
+
+    cpd_pos = np.asarray([
+        mfg.component_center_of_mass(atoms, graph, comp)
+        for comp in cpd_components
+    ])
+
+    mal_pos = []
+    for comp in mal_components:
+        mal_atoms = _subset(atoms, comp)
+        mal_graph = mfg.build_bond_graph(mal_atoms, index_array="global_index")
+        mal_cc = get_mal_CC(mal_graph, elements)
+        mal_pos.append(_site_center_of_mass(atoms, graph, comp, mal_cc))
+    mal_pos = np.asarray(mal_pos)
+
+    if len(cpd_pos) == 0 or len(mal_pos) == 0:
+        return np.empty(0, dtype=float)
+
+    _, distances = get_distances(
+        cpd_pos,
+        mal_pos,
+        cell=atoms.cell,
+        pbc=atoms.pbc,
+    )
+    return distances.ravel()
+
+
+######################################################################
+#######-------------------------------------------------------########
+####### Below is before refactoring.  Saving for reference.   ########
+#######-------------------------------------------------------########
+######################################################################
+
+# from . import graph as mfg
+# import inspect
+# import functools
+# import numpy as np
+# from ase import Atoms
+# import numpy as np
+# from ase.neighborlist import primitive_neighbor_list
+# from ase.geometry import get_distances
+
+
+
+# # A decorator to add global_index to atoms objects
+# def add_global_index(func):
+#     sig = inspect.signature(func)
+
+#     @functools.wraps(func)
+#     def wrapper(*args, **kwargs):
+#         bound = sig.bind(*args, **kwargs)
+#         bound.apply_defaults()
+
+#         atoms = bound.arguments.get("atoms")
+
+#         if atoms is not None:
+#             if "global_index" not in atoms.arrays:
+#                 atoms.arrays["global_index"] = np.arange(len(atoms), dtype=int)
+
+#         return func(*args, **kwargs)
+
+#     return wrapper
+
+# @add_global_index
+# def get_element_map(atoms, index_array="global_index"):
+
+#     if index_array in atoms.arrays:
+#         indices = atoms.arrays[index_array]
+#     else:
+#         indices = np.arange(len(atoms))
+
+#     return {
+#         int(i): symbol
+#         for i, symbol in zip(
+#             indices,
+#             atoms.get_chemical_symbols()
+#         )
+#     }
+
+# @add_global_index
+# def get_diels_alder_reaction_indices_from_pair(atoms: Atoms):
+
+#     graph_all = mfg.build_bond_graph(atoms, index_array='global_index')
+#     molecules = mfg.connected_components(graph_all, n_atoms = len(atoms))
+
+#     # Figure out which molecule is cpd by its length
+#     if len(molecules[0]) == 11 and len(molecules[1]) == 23:
+#         cpd_index = 0
+#         n4t_index = 1
+#     elif len(molecules[1]) == 11 and len(molecules[0]) == 23:
+#         cpd_index = 1
+#         n4t_index = 0
+#     else:
+#         raise ValueError(f"Unexpected molecule sizes, got {[len(m) for m in molecules]}, but expected 11 and 23")
+
+#     graph_n4t = mfg.build_bond_graph(atoms[molecules[n4t_index]], index_array='global_index')
+#     elements_map = get_element_map(atoms[molecules[n4t_index]], index_array='global_index')
+#     occcco = mfg.find_element_chains(graph_n4t, elements_map, 'OCCCCO')[0]
+#     n4t_cc = [occcco[2],occcco[3]]
+
+#     graph_cpd = mfg.build_bond_graph(atoms[molecules[cpd_index]], index_array='global_index')
+#     elements_map = get_element_map(atoms[molecules[cpd_index]], index_array='global_index')
+#     hch = mfg.find_element_chains(graph_cpd, elements_map, 'HCH')[0]
+
+#     '''         H2
+#                 C1
+#               /   \
+#            H C2    C5 H
+#              \\   //
+#               C3 - C4
+#             H       H
+
+#     hch identifies the H-C1-H 
+#     c_ch2_c identifies C2-C1-C5
+#     '''
+#     c_ch2_c = mfg.extract_neighborhood(graph_cpd, [hch[1]], n=1)
+#     ccc = mfg.find_element_chains(c_ch2_c[1], elements_map, 'CCC')[0]
+#     cpd_cxxc = [ccc[0], ccc[2]]
+#     cccc = mfg.find_element_chains(graph_cpd, elements_map, 'CCCC')
+
+#     # Take only the CCCC chain that contains the double bonds
+#     cccc = [i for i in cccc if (i[0]==cpd_cxxc[0] or i[0]==cpd_cxxc[-1]) and (i[-1]==cpd_cxxc[1] or i[-1]==cpd_cxxc[-1])][0]
+#     ring = mfg.find_rings(graph_cpd, max_size=5)[0]
+
+#     return {
+#         'CPD': {
+#             # 'c_ch2_c': c_ch2_c,
+#             # 'ccc': ccc,
+#             'reactive carbons': cpd_cxxc,
+#             'c=cc=c': cccc,
+#             'ring': ring
+#         },
+#         'dienophile': {
+#             'reactive carbons': n4t_cc,
+#             'occcco': occcco
+#         }
+#     }
+
+# def get_mal_CC(bond_graph, elements):
+#     hcch = mfg.find_element_chains(bond_graph, elements, 'HCCH')
+#     occcco = mfg.find_element_chains(bond_graph, elements, 'OCCCCO')
+#     hcch_atoms = {i for chain in hcch for i in chain}
+#     occcco_atoms = {i for chain in occcco for i in chain}
+#     # Common atoms
+#     # common_atoms = [atom for atom in hcch_atoms if atom in occcco_atoms]
+#     common_atoms = hcch_atoms & occcco_atoms
+#     return common_atoms
+    
+# @add_global_index
+# def get_all_prereactive_pairs(atoms: Atoms, scale=1.3, reactive_radius = 3.25, printing=False):
+#     '''
+#     Get all prereactive pairs of CPD and n-4-tosylmaleimide molecules.
+
+#     Parameters:
+#     atoms : Atoms object
+#         The atomic structure containing all molecules.
+#     scale : float, optional
+#         The scale factor for bond graph construction. Default is 1.3.
+#     reactive_radius : float, optional
+#         The radius within which molecules are considered prereactive. Default is 3.25, which corresponds to the distance at the wb97m-d3bj/def2tvzppd level of theory and uma-omol level of theory.
+
+#     Returns:
+#     pairs : list of lists
+#         Each sublist contains the indices of a prereactive CPD and n-4-tosylmaleimide pair.
+#     cpd_shift : list of lists
+#         Each sublist contains the lattice shift applied to the CPD molecule to minimize distance.
+
+#     '''    
+
+#     elements = get_element_map(atoms, index_array="global_index")
+#     graph = mfg.build_bond_graph(atoms, scale=scale, index_array="global_index")
+#     all_molecules = mfg.connected_components(graph, n_atoms = len(atoms))
+
+#     cpd_idx = [i for i in all_molecules if len(i) == 11]
+#     mal_idx = [i for i in all_molecules if len(i) == 23]
+#     product_idx = [i for i in all_molecules if len(i) == 34]
+#     other = [i for i in all_molecules if len(i) not in [11, 23, 34]]
+#     Ncpd = len(cpd_idx)
+#     Nmal = len(mal_idx)
+#     Nproduct = len(product_idx)
+#     Nother = len(other)
+#     if Nother > 0:
+#         print(f"Warning: There are {Nother} molecules that do not match expected sizes. Increase scale")
+#         return
+    
+#     CPD_com = [(atoms[i].get_center_of_mass(), i) for i in cpd_idx]
+
+#     mal_bondgraphs = [mfg.build_bond_graph(atoms[component], index_array="global_index") for component in mal_idx]
+#     mal_CCs = [get_mal_CC(bond_graph, elements) for bond_graph in mal_bondgraphs]
+#     mal_CC_centroid = [(atoms[list(i)].get_center_of_mass(), i) for i in mal_CCs]
+#     if printing:
+#         print(len(mal_CC_centroid), 'mal CC double bonds found')
+#         print(len(CPD_com), 'CPD molecules found')
+
+
+#     radius = reactive_radius
+#     pairs = []
+#     cpd_shift = []
+#     ccc=0
+#     # for i in CPD_com:
+#     #     for j,g in zip(mal_CC_centroid, mal_bondgraphs):
+#     #         mal_com = j[0]
+#     #         mal_fragidxs = j[1]
+#     #         cpd_com = i[0]
+#     #         cpd_idx = i[1]
+#     #         # Iterate over cell lattice vectors to see if the distance is minimized across periodic boundaries
+#     #         for a in [-1, 0, 1]:
+#     #             for b in [-1, 0, 1]:
+#     #                 for c in [-1, 0, 1]:
+#     #                     shifted_cpd_com = cpd_com + a * atoms.cell[0] + b * atoms.cell[1] + c * atoms.cell[2]
+#     #                     if np.linalg.norm(mal_com - shifted_cpd_com) < radius:
+#     #                         pairs.append([cpd_idx, list(mfg.complete_molecule(g,mal_fragidxs)[0])])
+#     #                         cpd_shift.append([a,b,c])
+#     #                         ccc+=1
+#     #                         break
+#     #                 else:
+#     #                     continue
+#     #                 break
+#     #             else:
+#     #                 continue
+#     #             break
+#     # Extract positions / metadata
+#     cpd_pos = np.asarray([x[0] for x in CPD_com])
+#     cpd_ids = [x[1] for x in CPD_com]
+
+#     mal_pos = np.asarray([x[0] for x in mal_CC_centroid])
+
+#     # Do this ONCE per mal molecule, rather than once per pair found
+#     mal_molecules = [
+#         list(mfg.complete_molecule(g, j[1])[0])
+#         for j, g in zip(mal_CC_centroid, mal_bondgraphs)
+#     ]
+
+#     nmal = len(mal_pos)
+
+#     # Put MAL first and CPD second.
+#     # This choice makes S correspond directly to the shift applied to CPD.
+#     positions = np.vstack((mal_pos, cpd_pos))
+
+#     i, j, d, S = primitive_neighbor_list(
+#         'ijdS',
+#         pbc=atoms.pbc,
+#         cell=atoms.cell,
+#         positions=positions,
+#         cutoff=radius,
+#         self_interaction=False
+#     )
+
+#     # We only want:
+#     #     i = MAL
+#     #     j = CPD
+#     #
+#     # Ignore MAL-MAL, CPD-CPD, and the reverse CPD-MAL pairs.
+#     mask = (i < nmal) & (j >= nmal)
+
+#     mal_i = i[mask]
+#     cpd_i = j[mask] - nmal
+#     distances = d[mask]
+#     shifts = S[mask]
+
+#     pairs = [
+#         [cpd_ids[c], mal_molecules[m]]
+#         for m, c in zip(mal_i, cpd_i)
+#     ]
+
+#     cpd_shift = shifts.tolist()
+
+#     ccc = len(pairs)
+#     if printing:
+#         print(ccc, 'pre-reactive pairs found')
+#             # if np.linalg.norm(mal_com - cpd_com) < radius:
+#             #     pairs.append([cpd_idxs, list(mfg.complete_molecule(g,mal_fragidxs)[0])])
+#     return pairs, cpd_shift
+
+# def get_pair_positions_and_forces(atoms: Atoms, mylammpsread, pairs, shifts):
+
+#     def get_fxfyfz(mylammpsread, indices):
+#         fxfyfz = []
+#         for i in indices:
+#             atom = mylammpsread[-1][i]
+#             # print(atom)
+#             fxfyfz.append((atom['fx'], atom['fy'], atom['fz']))
+#         return fxfyfz
+
+#     def get_vxvyvz(mylammpsread, indices):
+#         vxvyvz = []
+#         for i in indices:
+#             atom = mylammpsread[-1][i]
+#             # print(atom)
+#             vxvyvz.append((atom['vx'], atom['vy'], atom['vz']))
+#         return vxvyvz
+    
+#     data = {}
+#     i=0
+#     for (cpd_idxs, mal_idxs), (a, b, c) in zip(pairs, shifts):
+#         cpd_positions = atoms[cpd_idxs].get_positions() + a * atoms.cell[0] + b * atoms.cell[1] + c * atoms.cell[2]
+#         mal_positions = atoms[mal_idxs].get_positions()
+#         symbols_cpd = atoms[cpd_idxs].get_chemical_symbols()
+#         symbols_mal = atoms[mal_idxs].get_chemical_symbols()
+#         forces_cpd = get_fxfyfz(mylammpsread, cpd_idxs)
+#         forces_mal = get_fxfyfz(mylammpsread, mal_idxs)
+#         velocities_cpd = get_vxvyvz(mylammpsread, cpd_idxs)
+#         velocities_mal = get_vxvyvz(mylammpsread, mal_idxs)
+
+#         positions = []
+#         forces = []
+#         symbols = []
+#         velocities = []
+#         for pos_cpd, force_cpd, symbol_cpd, vel_cpd in zip(cpd_positions, forces_cpd, symbols_cpd, velocities_cpd):
+#             positions.append(pos_cpd)
+#             forces.append(force_cpd)
+#             symbols.append(symbol_cpd)
+#             velocities.append(vel_cpd)
+#         for pos_mal, force_mal, symbol_mal, vel_mal in zip(mal_positions, forces_mal, symbols_mal, velocities_mal):
+#             positions.append(pos_mal)
+#             forces.append(force_mal)
+#             symbols.append(symbol_mal)
+#             velocities.append(vel_mal)
+#         data[i] = {}
+#         data[i]['positions'] = positions
+#         data[i]['forces'] = forces
+#         data[i]['symbols'] = symbols
+#         data[i]['velocities'] = velocities
+#         i += 1
+#     return data
+
+# def pair_data_to_xyz(data, filename):
+#     '''
+#     Convert pair data to an XYZ file.
+
+#     Parameters:
+#     data : dict
+#         Dictionary containing positions, forces, and symbols for each pair.
+#     filename : str
+#         Name of the output XYZ file.
+
+#     Returns:
+#     None
+#     '''
+#     with open(filename, 'w') as f:
+#         for i in range(len(data)):
+#             positions = data[i]['positions']
+#             symbols = data[i]['symbols']
+#             forces = data[i]['forces']
+#             velocities = data[i]['velocities']
+#             f.write(f"{len(positions)}\n")
+#             f.write(f"Pair {i+1}/{len(data)}: x y z vx vy vz fx fy fz\n")
+#             for sym, pos, vel, force in zip(symbols, positions, velocities, forces):
+#                 f.write(f"{sym} {pos[0]:>12.8f} {pos[1]:>12.8f} {pos[2]:>12.8f} {vel[0]:>12.8f} {vel[1]:>12.8f} {vel[2]:>12.8f} {force[0]:>12.8f} {force[1]:>12.8f} {force[2]:>12.8f}\n")
+
+# def align_atoms(mobile, reference, indices=None):
+#     aligned = mobile.copy()
+
+#     if indices is None:
+#         indices = np.arange(len(mobile))
+
+#     P = mobile.positions[indices]
+#     Q = reference.positions[indices]
+
+#     # Centroids
+#     P_centroid = P.mean(axis=0)
+#     Q_centroid = Q.mean(axis=0)
+
+#     # Center selected atoms
+#     P0 = P - P_centroid
+#     Q0 = Q - Q_centroid
+
+#     # Kabsch rotation
+#     H = P0.T @ Q0
+#     U, S, Vt = np.linalg.svd(H)
+#     R = Vt.T @ U.T
+
+#     # Avoid reflection
+#     if np.linalg.det(R) < 0:
+#         Vt[-1, :] *= -1
+#         R = Vt.T @ U.T
+
+#     # Transform all atoms
+#     aligned.positions = (
+#         (mobile.positions - P_centroid) @ R.T
+#         + Q_centroid
+#     )
+
+#     # RMSD over the atoms used for alignment
+#     diff = aligned.positions[indices] - reference.positions[indices]
+#     rmsd = np.sqrt(np.mean(np.sum(diff**2, axis=1)))
+
+#     return aligned, rmsd
+
+# def get_pairs_distance_distribution(atoms, scale=1.3):
+
+#     elements = get_element_map(atoms, index_array="global_index")
+
+#     graph = mfg.build_bond_graph(
+#         atoms,
+#         scale=scale,
+#         index_array="global_index"
+#     )
+
+#     all_molecules = mfg.connected_components(
+#         graph,
+#         n_atoms=len(atoms)
+#     )
+
+#     cpd_idx = [x for x in all_molecules if len(x) == 11]
+#     mal_idx = [x for x in all_molecules if len(x) == 23]
+#     other = [x for x in all_molecules if len(x) not in (11, 23, 34)]
+
+#     if other:
+#         print(
+#             f"Warning: There are {len(other)} molecules that do not "
+#             "match expected sizes. Increase scale"
+#         )
+#         return
+
+#     cpd_pos = np.array([
+#         atoms[idx].get_center_of_mass()
+#         for idx in cpd_idx
+#     ])
+
+#     mal_bondgraphs = [
+#         mfg.build_bond_graph(
+#             atoms[idx],
+#             index_array="global_index"
+#         )
+#         for idx in mal_idx
+#     ]
+
+#     mal_CCs = [
+#         get_mal_CC(g, elements)
+#         for g in mal_bondgraphs
+#     ]
+
+#     mal_pos = np.array([
+#         atoms[list(idx)].get_center_of_mass()
+#         for idx in mal_CCs
+#     ])
+
+#     _, distances = get_distances(
+#         cpd_pos,
+#         mal_pos,
+#         cell=atoms.cell,
+#         pbc=atoms.pbc
+#     )
+
+#     return distances.ravel()
