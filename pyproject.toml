@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "MartiniFuncs"
+version = "0.1.0"
+description = "Martini Collab Tools"
+requires-python = ">=3.10"
+dependencies = [
+    "ase",
+    "mccoygroup-mcutils",
+    "mccoygroup-psience",
+    "rdkit",
+    "numpy",
+    "pandas",
+    "periodictable",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
