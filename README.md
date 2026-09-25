@@ -4,6 +4,64 @@ Tools for extracting molecular encounters, source forces, and complete molecular
 environments from LAMMPS trajectories. Transition-state generation and reaction
 barrier validation are future pipeline stages.
 
+## Post-simulation CLI and Slurm
+
+See the [CLI guide](docs/postprocessing_cli.md) for automatic directory discovery,
+cached molecular statistics, pair/force/shell exports, reusable frame-window reports,
+and Slurm job/job-array templates. Run `python -m MartiniFuncs.cli --help`, or use
+`martini-postprocess` after reinstalling the package to register the new command.
+
+## Recommended workflow notebooks
+
+Start with the [workflow guide](examples/workflows/README.md) and
+[module/data-flow reference](docs/workflow_api.md). Seven independently runnable
+notebooks cover raw trajectory inspection, initial packing, pair/shell extraction,
+molecular MD statistics, stability/RDFs, local UMA force reproduction and
+reaction-input preparation. They use your files and explicit settings, not saved
+research reports. The older notebooks below remain available as examples.
+
+## Analyze a simulation directory
+
+Use [04_plot_md_statistics_from_directory.ipynb](examples/04_plot_md_statistics_from_directory.ipynb)
+for new runs. Set `SIMULATION_DIR`; unique input and text dump files are discovered
+recursively. Set `INPUT_FILE`, `DUMP_FILE`, or `DATA_FILE` when necessary to select
+the correct files. This notebook uses `MartiniFuncs.trajectory_analysis` directly,
+without any saved NPT reports. It plots scalar histories, species-resolved
+**all-molecule COM MSD**, molecular velocity and net-force correlations, optional
+diffusion fits, and optional CPD/dienophile pair lifetimes. It has no arbitrary
+atomic-subset MSD diagnostic.
+
+The default analysis uses the entire loaded trajectory. Select zero-based source
+frames with inclusive `STARTFRAME` and exclusive `ENDFRAME` in the settings cell. `MAX_FRAMES` limits
+source frames for a preview; `FRAME_STRIDE` controls retained frames. Unwrapping
+still processes every source frame. Molecular arrays remain in memory, but
+atomic frames are streamed. Pair screening is optional and chemically specific; the notebooks expose its
+cached backend and worker controls. Diffusion fitting requires an explicit lag range.
+
+This version requires metal units and a constant timestep. Set notebook `UNITS`
+and `TIMESTEP_PS` directly (defaults: `"metal"`, `0.0005`). The package equivalent is
+`analyze_run(directory, units="metal", timestep_ps=0.0005)`. Explicit values take
+precedence; supplying both skips input parsing and header inference entirely,
+and no input file is required. Optional `type_symbols={1: "C", 2: "H"}` supplies
+element mapping when needed. Setting a physical setting to `None` requests
+metadata fallback; units can also come from a LAMMPS `write_data` header.
+`units_style` remains a compatibility alias. Binary restart files are not parsed
+and timestep size is never guessed from dump steps. `timestep_ps` always denotes
+ps per MD step, not the interval between saved frames.
+
+Frame readers already accept `units=...`; force validation accepts it through
+the Python API and CLI `--units`, bypassing input parsing when provided.
+Force comparisons do not require timestep size. Molecular statistics accept
+explicit `times_ps`, and run templates accept explicit `timestep_ps`.
+Temperature DOF must
+match the simulation (the notebook explicitly selects `3N-3` for unconstrained
+atoms). Missing velocities/forces are reported. Molecular membership is fixed
+from the initial bond graph and species are grouped by formula, so reactions
+and isomer distinctions need additional handling. Orthorhombic NPT COM unwrapping
+does not support sheared cells or moving box centers; other metrics remain
+available when MSD is disabled. Pressure/potential-energy thermo-log parsing is
+not yet implemented.
+
 ## Installation and tests
 
 Use Python 3.10+ and `pip install -e .`. The reader is tested with ASE 3.29.0.

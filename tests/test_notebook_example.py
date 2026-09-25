@@ -25,7 +25,7 @@ class NotebookExampleTests(unittest.TestCase):
     def _run_example(self, dataset="equilibration"):
         from McUtils.Plots import Disk, Line
         root = Path(__file__).resolve().parents[1]
-        notebook = json.loads((root / "examples/01_extract_and_visualize.ipynb").read_text())
+        notebook = json.loads((root / "examples/01_extract_and_visualize.ipynb").read_text(encoding="utf-8"))
         namespace = {"__name__": "__main__"}
         with patch("pathlib.Path.cwd", return_value=root), \
                 patch("McUtils.Plots.Disk", wraps=Disk) as disks, \

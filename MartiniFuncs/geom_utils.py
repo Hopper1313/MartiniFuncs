@@ -57,6 +57,9 @@ def _subset(atoms: Atoms, atom_ids: Iterable[int], index_array="global_index") -
 
 
 def _weighted_com(xyz: np.ndarray, masses: np.ndarray) -> np.ndarray:
+    """Return sum_i(masses[i]*xyz[i])/sum_i masses[i]; xyz is (N,3)
+    in Angstrom and masses are positive atomic masses.
+    """
     return np.average(np.asarray(xyz, float), axis=0, weights=np.asarray(masses, float))
 
 
@@ -67,7 +70,11 @@ def _site_center_of_mass(
     site_ids: Iterable[int],
     index_array: str = "global_index",
 ) -> np.ndarray:
-    """COM of a subset of atoms in the *unwrapped frame of its molecule*."""
+    """COM of a subset of atoms in the *unwrapped frame of its molecule*.
+
+    Unwrap the component with lattice shifts n_i, then compute
+    sum_{i in site_ids} m_i*(r_i+n_i @ cell)/sum_{i in site_ids} m_i.
+    """
     site_ids = [int(i) for i in site_ids]
     shifts, _ = mfg.unwrap_component(
         atoms,
@@ -86,6 +93,9 @@ def _wrap_points(points: np.ndarray, cell, pbc) -> tuple[np.ndarray, np.ndarray]
 
     Returns ``wrapped, image`` with ``points = wrapped + image @ cell``.
     Only periodic dimensions are wrapped.
+
+    For row-cell H, f=points @ inverse(H); image=floor(f) only on
+    periodic axes and zero elsewhere. wrapped=points-image @ H.
     """
     points = np.asarray(points, dtype=float)
     cell = np.asarray(cell, dtype=float)
@@ -225,6 +235,12 @@ def get_all_prereactive_pairs(
     ``criteria`` optionally accepts PairCriteria. The default preserves the
     distance screen; use assess_prereactive_pairs separately to retain reasons
     and geometry measurements for rejected candidates.
+
+    Screen d=min_n |R_CPD+n @ cell-R_CC| < reactive_radius, where
+    R_CPD is the mass-weighted COM of all CPD atoms and R_CC is the
+    mass-weighted COM of the dienophile reactive C=C. Both are computed from
+    whole molecules. Keep the nearest periodic image; returned shift is
+    S+mal_image-cpd_image. This is not a forming-bond distance criterion.
     """
     if not np.isfinite(reactive_radius) or reactive_radius <= 0:
         raise ValueError("reactive_radius must be > 0")
@@ -268,10 +284,37 @@ def get_all_prereactive_pairs(
     if len(cpd_centers) == 0 or len(mal_centers) == 0:
         return [], []
 
+    pairs, cpd_shift = _pairs_from_centers(
+        cpd_centers, mal_centers, cpd_components, mal_components,
+        atoms.cell.array, atoms.pbc, reactive_radius)
+
+    if criteria is not None:
+        from .pair_selection import assess_prereactive_pairs
+        assessments = assess_prereactive_pairs(atoms, pairs, cpd_shift,
+                                               criteria=criteria, scale=scale)
+        keep = [a.pair_index for a in assessments if a.accepted]
+        pairs, cpd_shift = [pairs[i] for i in keep], [cpd_shift[i] for i in keep]
+
+    if printing:
+        print(len(pairs), "pre-reactive pairs found")
+
+    return pairs, cpd_shift
+
+
+def _pairs_from_centers(cpd_centers, mal_centers, cpd_components, mal_components,
+                        cell, pbc, reactive_radius):
+    """Shared center-distance screen, preserving image choice and candidate order.
+
+    Select |C_CPD + shift @ cell - C_CC| < reactive_radius (Angstrom).
+    Wrapped neighbor shift S becomes shift=S+mal_image-cpd_image for whole
+    molecules. Sort by distance, then MAL and CPD component indices.
+    """
+    if not len(cpd_centers) or not len(mal_centers):
+        return [], []
     # Put both point sets into one primary periodic representation while
     # remembering which image was removed from each unwrapped centroid.
-    mal_wrapped, mal_image = _wrap_points(mal_centers, atoms.cell.array, atoms.pbc)
-    cpd_wrapped, cpd_image = _wrap_points(cpd_centers, atoms.cell.array, atoms.pbc)
+    mal_wrapped, mal_image = _wrap_points(mal_centers, cell, pbc)
+    cpd_wrapped, cpd_image = _wrap_points(cpd_centers, cell, pbc)
 
     nmal = len(mal_wrapped)
     ncpd = len(cpd_wrapped)
@@ -286,8 +329,8 @@ def get_all_prereactive_pairs(
 
     i, j, d, S = primitive_neighbor_list(
         "ijdS",
-        pbc=atoms.pbc,
-        cell=atoms.cell,
+        pbc=pbc,
+        cell=cell,
         positions=positions,
         cutoff={(1, 2): float(reactive_radius)},
         numbers=numbers,
@@ -329,16 +372,6 @@ def get_all_prereactive_pairs(
         for (m, c), _ in ordered
     ]
     cpd_shift = [value[1].tolist() for _, value in ordered]
-
-    if criteria is not None:
-        from .pair_selection import assess_prereactive_pairs
-        assessments = assess_prereactive_pairs(atoms, pairs, cpd_shift,
-                                               criteria=criteria, scale=scale)
-        keep = [a.pair_index for a in assessments if a.accepted]
-        pairs, cpd_shift = [pairs[i] for i in keep], [cpd_shift[i] for i in keep]
-
-    if printing:
-        print(len(pairs), "pre-reactive pairs found")
 
     return pairs, cpd_shift
 
@@ -383,6 +416,11 @@ def get_pair_shell_clusters(
     list[dict]
         One record per molecular pair. ``cluster_xyz`` and ``symbols`` can be
         written directly as a finite XYZ structure.
+
+    Select contacts with min_{i in pair}|r_j+Q_j @ cell-(r_i+Q_i @ cell)|
+    < shell_radius, then retain each touched molecule in full. A shell molecule's
+    closest contact sets its image; bond shifts place its remaining atoms.
+    Thus completed molecule atoms can lie outside the geometric cutoff.
     """
     if len(pairs) != len(shifts):
         raise ValueError("pairs and shifts must have the same length")
@@ -571,11 +609,19 @@ def get_pair_positions_and_forces(
     shifts,
     *,
     bond_scale: float = 1.3,
+    graph=None,
 ):
-    """Backward-compatible pair extraction using persistent IDs safely."""
+    """Backward-compatible pair extraction using persistent IDs safely.
+
+    Placed coordinates obey r'_i=r_i+(n_i+shift) @ cell for CPD and
+    r'_i=r_i+n_i @ cell for the dienophile, using graph bond shifts n_i.
+    Source vectors are selected by persistent IDs, without recalculation or rotation.
+    An optional graph must belong to this frame; it avoids rebuilding connectivity.
+    """
     if len(pairs) != len(shifts):
         raise ValueError("pairs and shifts must have the same length")
-    graph = mfg.build_bond_graph(atoms, scale=bond_scale)
+    if graph is None:
+        graph = mfg.build_bond_graph(atoms, scale=bond_scale)
     data = {}
 
     for k, ((cpd_ids, mal_ids), cpd_shift) in enumerate(zip(pairs, shifts)):
@@ -614,7 +660,12 @@ def get_pair_positions_and_forces(
 
 
 def get_cluster_positions_and_forces(atoms: Atoms, mylammpsread, clusters):
-    """Attach LAMMPS forces/velocities to records from get_pair_shell_clusters."""
+    """Attach LAMMPS forces/velocities to records from get_pair_shell_clusters.
+
+    Positions already include lattice translations r'=r+Q @ cell. Source
+    forces/velocities are looked up by persistent ID in the same output order;
+    translations do not change vector components.
+    """
     data = {}
 
     for k, cluster in enumerate(clusters):
@@ -671,6 +722,11 @@ def pair_data_to_extxyz(data, filename):
     -----
     The filename may still end in ``.xyz``.  ``format="extxyz"`` explicitly
     selects ASE's Extended XYZ writer.
+
+    No numerical unit conversion occurs: lammps_forces and velocities are
+    copied verbatim with their record unit metadata. A LammpsFrame-derived
+    record has eV/Angstrom forces and ASE internal velocities; legacy tuples
+    retain raw source units. The stored velocities array is not ASE momenta.
     """
     from ase.io import write
 
@@ -790,10 +846,6 @@ def pair_data_to_extxyz(data, filename):
                     "frame_index", "source", "id_offset", "source_cell", "source_pbc"):
             if key in record:
                 cluster.info[key] = record[key]
-        for key in ("force_units", "velocity_units", "lammps_units", "timestep",
-                    "frame_index", "source", "id_offset", "source_cell", "source_pbc"):
-            if key in record:
-                cluster.info[key] = record[key]
         images.append(cluster)
 
     write(
@@ -865,6 +917,10 @@ def align_atoms(mobile, reference, indices=None):
 
     Returns the historical ``(aligned, rmsd)`` tuple. For persistent-ID matching
     and access to the rotation/translation, use ``geometry.align_geometry``.
+
+    Equal-weight Kabsch fit: minimize sum_i |r_mobile,i @ R+t-r_reference,i|^2
+    with det(R)=+1. Return the aligned copy and sqrt(mean squared distance);
+    matching is by row, as delegated to geometry.align_geometry(id_array=None).
     """
     from .geometry import align_geometry
 
@@ -874,7 +930,12 @@ def align_atoms(mobile, reference, indices=None):
 
 @add_global_index
 def get_pairs_distance_distribution(atoms: Atoms, scale: float = 1.3):
-    """Return MIC distances for every CPD-C=C / MAL-site pair."""
+    """Return MIC distances between whole-CPD COMs and dienophile C=C COMs.
+
+    For each whole-CPD COM R_CPD and reactive dienophile C=C COM R_CC,
+    return min_n |R_CPD-R_CC+n @ cell| in Angstrom, flattened across all pairs.
+    The CPD point is not a reactive C=C midpoint.
+    """
     elements = get_element_map(atoms, index_array="global_index")
     graph, _, cpd_components, mal_components, _, other = _reaction_components(
         atoms, scale
@@ -995,7 +1056,7 @@ def get_pairs_distance_distribution(atoms: Atoms, scale: float = 1.3):
 #               C3 - C4
 #             H       H
 
-#     hch identifies the H-C1-H 
+#     hch identifies the H-C1-H
 #     c_ch2_c identifies C2-C1-C5
 #     '''
 #     c_ch2_c = mfg.extract_neighborhood(graph_cpd, [hch[1]], n=1)
@@ -1030,7 +1091,7 @@ def get_pairs_distance_distribution(atoms: Atoms, scale: float = 1.3):
 #     # common_atoms = [atom for atom in hcch_atoms if atom in occcco_atoms]
 #     common_atoms = hcch_atoms & occcco_atoms
 #     return common_atoms
-    
+
 # @add_global_index
 # def get_all_prereactive_pairs(atoms: Atoms, scale=1.3, reactive_radius = 3.25, printing=False):
 #     '''
@@ -1050,7 +1111,7 @@ def get_pairs_distance_distribution(atoms: Atoms, scale: float = 1.3):
 #     cpd_shift : list of lists
 #         Each sublist contains the lattice shift applied to the CPD molecule to minimize distance.
 
-#     '''    
+#     '''
 
 #     elements = get_element_map(atoms, index_array="global_index")
 #     graph = mfg.build_bond_graph(atoms, scale=scale, index_array="global_index")
@@ -1067,7 +1128,7 @@ def get_pairs_distance_distribution(atoms: Atoms, scale: float = 1.3):
 #     if Nother > 0:
 #         print(f"Warning: There are {Nother} molecules that do not match expected sizes. Increase scale")
 #         return
-    
+
 #     CPD_com = [(atoms[i].get_center_of_mass(), i) for i in cpd_idx]
 
 #     mal_bondgraphs = [mfg.build_bond_graph(atoms[component], index_array="global_index") for component in mal_idx]
@@ -1174,7 +1235,7 @@ def get_pairs_distance_distribution(atoms: Atoms, scale: float = 1.3):
 #             # print(atom)
 #             vxvyvz.append((atom['vx'], atom['vy'], atom['vz']))
 #         return vxvyvz
-    
+
 #     data = {}
 #     i=0
 #     for (cpd_idxs, mal_idxs), (a, b, c) in zip(pairs, shifts):

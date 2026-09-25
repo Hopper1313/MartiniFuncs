@@ -22,6 +22,9 @@ dependencies = [
 uma = ["fairchem-core>=2.22,<3"]
 notebooks = ["ipython", "ipykernel", "jupyterlab", "matplotlib"]
 
+[project.scripts]
+martini-postprocess = "MartiniFuncs.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["MartiniFuncs*"]

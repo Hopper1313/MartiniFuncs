@@ -47,6 +47,9 @@ def get_molecule_center_of_mass(atoms, atom_ids, *, positions_unwrapped=False):
     """One molecule's COM in Angstrom, selected by persistent global_index IDs.
 
     Unwrapping here means making this molecule whole, not temporal unwrapping.
+
+    R = sum_i(m_i r_i) / sum_i(m_i), using masses and positions at the
+    selected persistent IDs. The molecule must be whole; R is in Angstrom.
     """
     rows = _rows(atoms, atom_ids)
     return np.average(_positions(atoms, positions_unwrapped)[rows], axis=0,
@@ -54,14 +57,22 @@ def get_molecule_center_of_mass(atoms, atom_ids, *, positions_unwrapped=False):
 
 
 def get_molecule_com_velocity(atoms, atom_ids):
-    """One molecule's mass-weighted translational velocity in Angstrom/ps."""
+    """One molecule's mass-weighted translational velocity in Angstrom/ps.
+
+    V = sum_i(m_i v_i) / sum_i(m_i). ASE velocities from atoms are
+    multiplied by 1000*ase.units.fs to express V in Angstrom/ps.
+    """
     rows = _rows(atoms, atom_ids)
     return np.average(_velocities(atoms)[rows], axis=0,
                       weights=atoms.get_masses()[rows]) * (1000 * units.fs)
 
 
 def get_molecule_net_force(atoms, atom_ids, *, force_array="lammps_forces"):
-    """Resultant source force in eV/Angstrom; never invokes a calculator."""
+    """Resultant source force in eV/Angstrom; never invokes a calculator.
+
+    F_mol = sum_i F_i over selected IDs in atoms.arrays[force_array].
+    No averaging or subtraction of intramolecular forces is performed.
+    """
     return _forces(atoms, force_array)[_rows(atoms, atom_ids)].sum(axis=0)
 
 
@@ -77,7 +88,12 @@ def _forces(atoms, name):
 
 
 def get_frame_kinetic_energy(atoms, *, remove_com=False):
-    """Whole-frame kinetic energy in eV, optionally subtracting COM motion."""
+    """Whole-frame kinetic energy in eV, optionally subtracting COM motion.
+
+    K = (1/2) sum_i m_i |v_i - V|^2. Here V is the frame mass-weighted
+    COM velocity when remove_com=True, otherwise zero. ASE internal mass and
+    velocity units give K in eV; use all atoms in the supplied frame.
+    """
     velocities = _velocities(atoms).copy()
     masses = atoms.get_masses()
     if remove_com:
@@ -90,6 +106,9 @@ def get_frame_temperature(atoms, *, degrees_of_freedom, remove_com=False):
 
     Caller accounts for constraints and any removed motion in the DOF. Removing
     COM velocity is not a correction for a shear/flow velocity profile.
+
+    T = 2 K / (f k_B), where K is get_frame_kinetic_energy(atoms,
+    remove_com=remove_com), f=degrees_of_freedom, and k_B is in eV/K.
     """
     if not np.isfinite(degrees_of_freedom) or degrees_of_freedom <= 0:
         raise ValueError("degrees_of_freedom must be positive and finite")
@@ -98,7 +117,12 @@ def get_frame_temperature(atoms, *, degrees_of_freedom, remove_com=False):
 
 
 def get_frame_density(atoms):
-    """Whole-cell mass density in g/cm³ (not an extracted-cluster density)."""
+    """Whole-cell mass density in g/cm³ (not an extracted-cluster density).
+
+    rho = sum_i m_i * ase.units._amu / (|det(cell)| * 1e-30 * 1000).
+    Masses are in amu, _amu is kg/amu, cell volume is Angstrom^3; the result
+    is g/cm^3.
+    """
     volume = atoms.get_volume()
     if volume <= 0:
         raise ValueError("A positive-volume simulation cell is required")
@@ -106,7 +130,12 @@ def get_frame_density(atoms):
 
 
 def get_frame_force_statistics(atoms, *, force_array="lammps_forces"):
-    """Summarize atomic force magnitudes and whole-frame resultant, eV/Angstrom."""
+    """Summarize atomic force magnitudes and whole-frame resultant, eV/Angstrom.
+
+    For a_i=|F_i| from force_array, return mean(a_i),
+    sqrt(mean(a_i^2)), max(a_i), and sum_i F_i. RMS magnitude averages over
+    atoms; it is sqrt(3) times a Cartesian-component RMS.
+    """
     forces = _forces(atoms, force_array)
     if not len(forces):
         raise ValueError("Frame must contain atoms")
@@ -117,7 +146,14 @@ def get_frame_force_statistics(atoms, *, force_array="lammps_forces"):
 
 
 def get_molecule_rmsd(first, second, atom_ids, *, align=True, positions_unwrapped=False):
-    """Equal-weight RMSD in Angstrom, matching one molecule by persistent IDs."""
+    """Equal-weight RMSD in Angstrom, matching one molecule by persistent IDs.
+
+    RMSD = sqrt(sum_i |a_i R + t - b_i|^2 / N), matching atom_ids in
+    both inputs. If align=False, R=I and t=0. Otherwise center both sets,
+    SVD(a_centered.T @ b_centered)=U S Vt, and set
+    R=U diag(1,1,det(U Vt)) Vt and t=mean(b)-mean(a) R.
+    Atoms have equal weights, independent of their masses.
+    """
     atom_ids = tuple(atom_ids)
     a = _positions(first, positions_unwrapped)[_rows(first, atom_ids)]
     b = _positions(second, positions_unwrapped)[_rows(second, atom_ids)]
@@ -133,7 +169,12 @@ def get_molecule_rmsd(first, second, atom_ids, *, align=True, positions_unwrappe
 
 
 def get_frame_rmsd(first, second, *, align=False, positions_unwrapped=False):
-    """Whole-frame RMSD in Angstrom; collective rigid alignment is opt-in."""
+    """Whole-frame RMSD in Angstrom; collective rigid alignment is opt-in.
+
+    RMSD = sqrt(mean_i |r_first,i R + t - r_second,i|^2) over all IDs.
+    R,t are identity/zero unless align=True; then use the equal-weight
+    proper-rotation fit documented in get_molecule_rmsd.
+    """
     if set(first.arrays["global_index"]) != set(second.arrays["global_index"]):
         raise ValueError("Frames must contain the same persistent atom IDs")
     return get_molecule_rmsd(first, second, first.arrays["global_index"],
@@ -141,13 +182,22 @@ def get_frame_rmsd(first, second, *, align=False, positions_unwrapped=False):
 
 
 def get_molecule_displacement(first, second, atom_ids, *, positions_unwrapped=False):
-    """COM displacement in Angstrom; requires temporally unwrapped positions."""
+    """COM displacement in Angstrom; requires temporally unwrapped positions.
+
+    Delta R = R_second - R_first, with each R=sum(m_i r_i)/sum(m_i)
+    for atom_ids. Coordinates must share a temporally unwrapped reference frame.
+    """
+    atom_ids = tuple(atom_ids)
     return (get_molecule_center_of_mass(second, atom_ids, positions_unwrapped=positions_unwrapped)
             - get_molecule_center_of_mass(first, atom_ids, positions_unwrapped=positions_unwrapped))
 
 
 def get_pair_relative_velocity(atoms, first_ids, second_ids):
-    """Second molecule COM velocity minus first molecule COM velocity, Angstrom/ps."""
+    """Second molecule COM velocity minus first molecule COM velocity, Angstrom/ps.
+
+    Delta V = V_second - V_first; V=sum(m_i v_i)/sum(m_i) for each
+    ID group, converted from ASE velocity units to Angstrom/ps.
+    """
     return get_molecule_com_velocity(atoms, second_ids) - get_molecule_com_velocity(atoms, first_ids)
 
 
@@ -155,6 +205,9 @@ def get_molecule_orientation(atoms, axis_atom_ids, *, positions_unwrapped=False)
     """Directed unit axis from the first to second explicitly chosen atom ID.
 
     This defines an axis, not a complete molecular orientation or plane normal.
+
+    u = (r_second-r_first)/|r_second-r_first|, using axis_atom_ids
+    in the given order and whole-molecule positions. u is dimensionless.
     """
     if len(axis_atom_ids) != 2:
         raise ValueError("Choose exactly two atom IDs to define the molecular axis")
@@ -173,6 +226,10 @@ def get_pair_force_projections(atoms, first_ids, second_ids, *, direction,
 
     Returns first, second, and second-minus-first projections in eV/Angstrom.
     This is not a generalized reaction-coordinate force or environment residual.
+
+    u=direction/|direction|; p_A=(sum_A F_i) dot u and
+    p_B=(sum_B F_i) dot u. difference=p_B-p_A, not a reduced-mass or
+    reaction-coordinate projection.
     """
     axis = np.asarray(direction, dtype=float)
     if axis.shape != (3,) or not np.isfinite(axis).all() or np.linalg.norm(axis) <= 1e-12:
@@ -188,6 +245,9 @@ def get_cell_deformation(first, second):
 
     Returns the deformation map, not a strain tensor. Cells must be nonsingular;
     equivalent lattice-basis changes are not automatically identified.
+
+    A = inverse(H_first) H_second, computed by np.linalg.solve rather
+    than explicit inversion; H contains lattice vectors as rows.
     """
     a, b = first.cell.array, second.cell.array
     if (not np.isfinite(a).all() or not np.isfinite(b).all()
@@ -197,7 +257,12 @@ def get_cell_deformation(first, second):
 
 
 def get_pair_geometry(atoms, pair, shift, *, scale=1.3):
-    """Existing CPD/dienophile diagnostics, distances in Angstrom, angles in degrees."""
+    """Existing CPD/dienophile diagnostics, distances in Angstrom, angles in degrees.
+
+    Delegates to pair_selection.measure_pair_geometry: bond distances
+    are Euclidean in one placed image; angles are degrees(arccos(|a dot b| /
+    (|a||b|))). See that function for the reactive axes and plane definitions.
+    """
     from .pair_selection import measure_pair_geometry
     return measure_pair_geometry(atoms, pair, shift, scale=scale)
 
@@ -248,6 +313,9 @@ def _times(times_ps, length, *, uniform=False):
 
 
 def _series(values, times_ps):
+    """Validate vectors of shape (T,N,3) and uniform timestamps; return vectors
+    and lag[k]=k*(times_ps[1]-times_ps[0]), k=0,...,T-1, in ps.
+    """
     values = np.asarray(values, dtype=float)
     if values.ndim != 3 or values.shape[2] != 3 or values.shape[1] == 0 or not np.isfinite(values).all():
         raise ValueError("Expected finite (frames, selected_objects, 3) array")
@@ -261,6 +329,11 @@ def get_molecular_msd(com_positions, times_ps, *, unwrapped, selection):
     Positions must be temporally unwrapped in a declared lab or deformation-
     corrected frame. No rigid alignment or drift subtraction is applied.
     ``selection`` is a required label identifying the species/group measured.
+
+    For positions R[t,i,:] of T frames and N molecules,
+    MSD[k] = sum_{t=0}^{T-k-1} sum_i |R[t+k,i]-R[t,i]|^2 / ((T-k) N).
+    lag[k]=k*(times_ps[1]-times_ps[0]); timestamps must be uniform.
+    MSD[0]=0, and n_origins[k]=T-k. The average includes all selected molecules.
     """
     if unwrapped is not True:
         raise ValueError("MSD requires explicitly temporally unwrapped positions")
@@ -275,7 +348,11 @@ def get_molecular_msd(com_positions, times_ps, *, unwrapped, selection):
 
 
 def get_atomic_msd(positions, times_ps, *, unwrapped, selection):
-    """Atomic ensemble MSD; same units/conventions as get_molecular_msd."""
+    """Atomic ensemble MSD; same units/conventions as get_molecular_msd.
+
+    MSD[k]=mean_{t,i} |positions[t+k,i]-positions[t,i]|^2 over atoms i
+    and all T-k origins; lag[k]=k*dt. Uses get_molecular_msd with atomic rows.
+    """
     return get_molecular_msd(positions, times_ps, unwrapped=unwrapped, selection=selection)
 
 
@@ -290,6 +367,11 @@ def unwrap_orthorhombic_com(wrapped_com, box_lengths):
 
     Implements Eq. 2 of Bullerjahn et al., JCTC 19 (2023), 3406-3417,
     doi:10.1021/acs.jctc.3c00308, using the destination box length.
+
+    Componentwise, d_t=w_t-w_(t-1), delta_t=d_t-L_t*floor(d_t/L_t+1/2),
+    u_0=w_0 and u_t=u_(t-1)+delta_t. w=wrapped_com and L=box_lengths;
+    L_t is the destination frame's box, not the initial box. No drift or
+    affine box-motion subtraction is added.
     """
     wrapped = np.asarray(wrapped_com, dtype=float)
     lengths = np.asarray(box_lengths, dtype=float)
@@ -311,6 +393,11 @@ def get_molecular_diffusion_coefficient(msd_result, *, fit_start_ps, fit_end_ps)
     Returns D in Angstrom²/ps and cm²/s plus slope, intercept, and fit residual.
     This fit does not establish diffusive behavior or statistical uncertainty.
     It is not appropriate for confined/lower-dimensional diffusion.
+
+    Select inclusive lags fit_start_ps <= t <= fit_end_ps. Unweighted
+    least squares minimizes sum_j (MSD_j-a-b*t_j)^2 with a free intercept;
+    D=b/6, and D[cm^2/s]=1e-4*D[Angstrom^2/ps]. residual_rms is
+    sqrt(mean_j (MSD_j-a-b*t_j)^2). Negative slopes are reported, not clipped.
     """
     if not (np.isfinite(fit_start_ps) and np.isfinite(fit_end_ps) and 0 <= fit_start_ps < fit_end_ps):
         raise ValueError("Specify a finite increasing nonnegative fit interval")
@@ -331,6 +418,11 @@ def get_molecular_diffusion_coefficient(msd_result, *, fit_start_ps, fit_end_ps)
 
 
 def _vector_correlation(values, times_ps, *, selection, subtract_mean=False, normalize=False):
+    """For vectors x[t,i] with T frames and N objects, compute
+    C[k]=sum_{t=0}^{T-k-1} sum_i x[t,i] dot x[t+k,i] / ((T-k) N).
+    subtract_mean removes each object's temporal vector mean first.
+    normalize returns C[k]/C[0]; lags are k*(times_ps[1]-times_ps[0]).
+    """
     if not isinstance(selection, str) or not selection.strip():
         raise ValueError("Provide a species/group selection label")
     vectors, lag = _series(values, times_ps)
@@ -352,24 +444,42 @@ def get_molecular_velocity_autocorrelation(velocities, times_ps, *, selection, s
 
     Input velocities must be Angstrom/ps. Mean subtraction, if requested, is
     the temporal mean of each molecule. Normalized output is dimensionless.
+
+    C_v[k]=mean_{t,i} V[t,i] dot V[t+k,i], over T-k origins and all
+    selected molecules. If subtract_mean, replace each V[t,i] by
+    V[t,i]-mean_t V[t,i]. If normalize, divide by C_v[0]. Lag=k*dt.
     """
     return _vector_correlation(velocities, times_ps, selection=selection,
                                subtract_mean=subtract_mean, normalize=normalize)
 
 
 def get_atomic_velocity_autocorrelation(velocities, times_ps, **kwargs):
-    """Atomic VACF with the same conventions as the molecular COM VACF."""
+    """Atomic VACF with the same conventions as the molecular COM VACF.
+
+    C_v[k]=mean_{t,i} v[t,i] dot v[t+k,i] over atoms and T-k origins.
+    kwargs control per-atom temporal-mean subtraction and division by C_v[0].
+    """
     return get_molecular_velocity_autocorrelation(velocities, times_ps, **kwargs)
 
 
 def get_atomic_force_autocorrelation(forces, times_ps, *, selection, subtract_mean=False, normalize=False):
-    """Atomic force dot-product correlation, (eV/Angstrom)² or dimensionless."""
+    """Atomic force dot-product correlation, (eV/Angstrom)² or dimensionless.
+
+    C_F[k]=mean_{t,i} F[t,i] dot F[t+k,i], over atoms and T-k origins.
+    subtract_mean removes each atom's temporal vector mean; normalize divides
+    by C_F[0]. Input forces must be eV/Angstrom; lag=k*dt in ps.
+    """
     return _vector_correlation(forces, times_ps, selection=selection,
                                subtract_mean=subtract_mean, normalize=normalize)
 
 
 def get_molecular_force_autocorrelation(net_forces, times_ps, **kwargs):
-    """Correlation of molecular resultant forces, not individual atomic forces."""
+    """Correlation of molecular resultant forces, not individual atomic forces.
+
+    Use F_mol[t,i]=sum_{a in molecule i} F_atom[t,a] as net_forces;
+    C[k]=mean_{t,i} F_mol[t,i] dot F_mol[t+k,i]. This includes cross terms
+    between atoms within each molecule. kwargs follow the atomic correlation.
+    """
     return get_atomic_force_autocorrelation(net_forces, times_ps, **kwargs)
 
 
@@ -413,6 +523,10 @@ def get_pair_lifetime(pairs_by_frame, times_ps, *, max_gap_frames=0):
     The iterable of pair lists is consumed once; trajectory coordinates are not
     retained. Timestamps may be irregular. Returned frame indices are local to
     the supplied trajectory/window. Missing frames are not absent detections.
+
+    observed_span_ps=times_ps[last_frame]-times_ps[first_frame]. Two
+    detections at indices i<j remain in one encounter when j-i-1 <=
+    max_gap_frames; detected_frames counts observations, not bridged gaps.
     """
     if not isinstance(max_gap_frames, (int, np.integer)) or max_gap_frames < 0:
         raise ValueError("max_gap_frames must be a nonnegative integer")

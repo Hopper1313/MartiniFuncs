@@ -14,6 +14,9 @@ def ase_atoms_to_molecule(ase_atoms, charge=0,energy_evaluator=['aimnet2',None])
 
     This legacy helper also attaches an evaluator. For geometry-only display,
     use visualization.to_display_molecule, which applies the same conversion.
+
+    r_bohr=r_ASE*ANG_TO_BOHR; ANG_TO_BOHR is McUtils' Angstrom-to-Bohr
+    conversion. This legacy evaluator path is not the UMA workflow.
     """
     coords_bohr = ase_atoms.get_positions() * ANG_TO_BOHR
     symbols = ase_atoms.get_chemical_symbols()
@@ -25,18 +28,26 @@ def ase_atoms_to_molecule(ase_atoms, charge=0,energy_evaluator=['aimnet2',None])
     return mol
 
 def molecule_to_ase_atoms(molecule):
-    """Convert Psience coordinates in Bohr to ASE coordinates in Angstrom."""
+    """Convert Psience coordinates in Bohr to ASE coordinates in Angstrom.
+
+    r_angstrom=molecule.coords*BOHR_TO_ANG. No cell, constraints,
+    forces, or velocities are transferred.
+    """
     coords_ang = molecule.coords * BOHR_TO_ANG
     symbols = molecule.atoms
     ase_atoms = Atoms(symbols=symbols, positions=coords_ang)
     return ase_atoms
 
 def check_if_internal_part_of_multiple_fragments(internal, molecule, only_bonds=True):
+    """Return whether the selected internal atom-index set intersects more
+    than one fragment. only_bonds restricts it to its first two indices;
+    index 0 is a valid atom, not an empty intersection.
+    """
     internal = internal[:2] if only_bonds else internal
     # Count how many fragments the internal is part of
     fragment_count = 0
     for fragment in molecule.fragment_indices:
-        if any(set(internal) & set(fragment)):
+        if set(internal) & set(fragment):
             fragment_count += 1
             if fragment_count > 1:
                 break
@@ -52,7 +63,12 @@ def initialize_constraints_boolean(molecule):
 
 def get_symbol_from_mass(target_mass):
     # Find the atomic number (index) where the absolute difference in mass is minimal
-    atomic_number = min(range(len(atomic_masses)), key=lambda i: abs(atomic_masses[i] - target_mass))
+    """Choose the real element Z minimizing |atomic_masses[Z]-target_mass|
+    with masses in amu. This heuristic cannot identify isotopes or coarse grains.
+    """
+    if not np.isfinite(target_mass) or target_mass <= 0:
+        raise ValueError("Atomic mass must be positive and finite")
+    atomic_number = min(range(1, len(atomic_masses)), key=lambda i: abs(atomic_masses[i] - target_mass))
     return chemical_symbols[atomic_number]
 
 def get_geoms_from_multixyz(xyzfile):

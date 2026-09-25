@@ -46,6 +46,12 @@ def compare_frame_forces(frame, calculator, *, charge, spin, atol):
     No constraints, wrapping, relaxation, or net-force/torque projection is
     applied. ``passed`` requires every Cartesian component to satisfy ``atol``.
     The source Atoms and calculator association are left unchanged.
+
+    For row-aligned forces, E=F_predicted-F_source in eV/Angstrom.
+    component_rmse=sqrt(sum(E^2)/(3N)); component_mae=sum(|E|)/(3N).
+    max_component_error=max(|E|); max_atom_error_norm=max_i sqrt(sum_a E_ia^2).
+    passed means max(|E|)<=atol; worst_lammps_id uses the largest atom norm.
+    Net forces are sum_i F_i; no relative tolerance is used.
     """
     if not np.isfinite(atol) or atol < 0:
         raise ValueError("atol must be finite and nonnegative")
@@ -60,6 +66,8 @@ def compare_frame_forces(frame, calculator, *, charge, spin, atol):
     atoms.info.update(charge=int(charge), spin=int(spin))
     atoms.calc = calculator
     reference = np.asarray(frame.atoms.arrays["lammps_forces"])
+    if reference.shape != (len(atoms), 3) or not len(atoms) or not np.isfinite(reference).all():
+        raise ValueError("Source forces must be finite with nonempty shape (N, 3)")
     predicted = np.asarray(atoms.get_forces(apply_constraint=False))
     if predicted.shape != reference.shape or not np.isfinite(predicted).all():
         raise ValueError("Calculator returned invalid force shape or non-finite forces")
@@ -120,12 +128,17 @@ def validate_forces(dump, checkpoint, *, input_file=None, datafile=None, units=N
     """Reproduce source forces for selected full periodic frames with UMA.
 
     Supply a local uma-s-1p1 checkpoint and a dump with fx/fy/fz. Units come from
-    ``input_file`` or the explicit ``units`` argument; conflicting values fail.
+    ``input_file`` or the explicit ``units`` argument. Explicit units take
+    precedence and bypass input parsing; no timestep is needed for force checks.
     Indices are zero-based nonnegative frame numbers, evaluated in file order.
     Defaults to frame 0. The calculator is loaded once; only one frame is held
     at a time. Timings separate loading and per-frame evaluation (the first
     evaluation can include compilation). All components must satisfy ``atol``
     in eV/Angstrom. Returns a JSON-compatible report; does not write files.
+
+    Each selected full frame is evaluated by compare_frame_forces:
+    E=F_UMA-F_MD, component RMSE=sqrt(mean(E^2)), and a frame passes iff
+    max(abs(E))<=atol in eV/Angstrom. Overall passed requires every frame to pass.
     """
     started = perf_counter()
     requested = list(indices)
@@ -138,7 +151,11 @@ def validate_forces(dump, checkpoint, *, input_file=None, datafile=None, units=N
         raise ValueError("atol must be finite and nonnegative")
     if not isinstance(charge, (int, np.integer)) or not isinstance(spin, (int, np.integer)) or spin < 1:
         raise ValueError("charge must be an integer and spin a positive multiplicity")
-    input_settings = read_lammps_input_settings(input_file) if input_file else None
+    if units is not None:
+        input_settings = {"source": str(input_file) if input_file else None,
+                          "units": units, "units_source": "explicit", "input_parsed": False}
+    else:
+        input_settings = read_lammps_input_settings(input_file) if input_file else None
     if input_settings is not None:
         input_units = input_settings.get("units")
         if units is not None and input_units is not None and units != input_units:

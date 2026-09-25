@@ -12,9 +12,13 @@ class RigidTransform:
     translation: np.ndarray
 
     def positions(self, values):
+        """Apply r_out=r_in @ rotation + translation to row-vector positions.
+        """
         return np.asarray(values) @ self.rotation + self.translation
 
     def vectors(self, values):
+        """Apply v_out=v_in @ rotation; force/velocity vectors have no translation.
+        """
         return np.asarray(values) @ self.rotation
 
 
@@ -32,6 +36,12 @@ def align_geometry(mobile, reference, indices=None, *, id_array="global_index",
     Cartesian vector array names explicitly. Scalar arrays remain unchanged.
     Periodic structures must first be extracted/unwrapped as finite clusters.
     Collinear or single-point fits do not determine a unique rotation.
+
+    For matched selected positions p,q, center with pc=mean(p), qc=mean(q).
+    SVD((p-pc).T @ (q-qc))=U S Vt gives R=U diag(1,1,det(U Vt)) Vt,
+    t=qc-pc @ R. Transform all mobile rows as p @ R+t and vectors as v @ R.
+    RMSD=sqrt(mean_selected |p @ R+t-q|^2), in Angstrom, with equal atom
+    weights. The determinant correction excludes reflections.
     """
     if np.any(mobile.pbc) or np.any(reference.pbc):
         raise ValueError("Extract finite, unwrapped clusters before alignment")

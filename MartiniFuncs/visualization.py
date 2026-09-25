@@ -11,6 +11,9 @@ def to_display_molecule(atoms):
 
     Use the original ASE object for identity, metadata, and calculations. This
     display object does not replace it or preserve its calculator/constraints.
+
+    r_bohr=r_angstrom*UnitsData.convert('Angstroms','BohrRadius').
+    Only coordinates and elements are transferred; no force-unit conversion occurs.
     """
     from McUtils.Data import UnitsData
     from Psience.Molecools import Molecule
@@ -21,10 +24,13 @@ def to_display_molecule(atoms):
 
 
 def force_arrow_displacements(atoms, *, array="lammps_forces", scale=0.2):
-    """Return arrow displacements in Angstrom, with scale in AngstromÂ²/eV.
+    """Return arrow displacements in Angstrom, with scale in Angstrom^2/eV.
 
     Input must be Cartesian forces in eV/Angstrom. No normalization or sign
     change is performed. Zero forces produce zero displacements.
+
+    Arrow displacement d_i=scale*F_i, where F_i is eV/Angstrom and
+    scale is Angstrom^2/eV, giving d_i in Angstrom.
     """
     if not np.isfinite(scale) or scale < 0:
         raise ValueError("scale must be finite and nonnegative")
@@ -49,6 +55,10 @@ def plot_cluster(atoms, *, forces=False, force_array="lammps_forces", force_scal
     to_display_molecule, append local-index bonds to mol.bonds, and plot mol.
     An explicit bonds list is passed through only when requested.
     X3D display requires a trusted notebook and the viewer's JavaScript assets.
+
+    When forces=True, d_angstrom=force_scale*F; mode_vectors=d_angstrom
+    *UnitsData.convert('Angstroms','BohrRadius'). These are display displacements,
+    not physical forces converted to Hartree/Bohr.
     """
     from McUtils.Data import UnitsData
 
@@ -92,6 +102,11 @@ def plot_pair_geometry(atoms, *, disk_radius=2.0, transparency=0.5,
     Molecule.plot explicitly converts back to Angstrom for the figure. The
     McUtils primitives use these figure coordinates directly. Plot units are
     fixed to Angstroms so disks and molecule cannot silently use different units.
+
+    Disk centers are c_CPD=(r_end1+r_end2)/2 and c_CC=(r_CC1+r_CC2)/2.
+    Each unit normal is the smallest right-singular vector of its centered
+    four-carbon coordinates. Draw the line c_CPD to c_CC and disks of
+    radius disk_radius in the Angstrom display frame.
     """
     import McUtils.Plots as plt
     from . import graph as mfg

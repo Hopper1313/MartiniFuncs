@@ -66,6 +66,11 @@ class ForceValidationTests(unittest.TestCase):
             local_uma_calculator(Path(self.temp.name) / "missing.pt", task="omol",
                                  device="cpu", inference_settings="default")
 
+    def test_nonfinite_source_forces_are_rejected(self):
+        self.frame.atoms.arrays["lammps_forces"][0, 0] = np.nan
+        with self.assertRaisesRegex(ValueError, "Source forces must be finite"):
+            compare_frame_forces(self.frame, HarmonicCalculator(), charge=0, spin=1, atol=.01)
+
     def test_selected_frames_reuse_model_and_report_timings(self):
         original = self.path.read_text()
         self.path.write_text(original + original.replace("TIMESTEP\n10", "TIMESTEP\n20")
@@ -75,8 +80,10 @@ class ForceValidationTests(unittest.TestCase):
         calc = HarmonicCalculator()
         calc.martini_inference_settings = MD_INFERENCE_SETTINGS.copy()
         with patch("MartiniFuncs.force_validation.local_uma_calculator", return_value=calc) as loader:
+            input_file = Path(self.temp.name)/"in.continue"
+            input_file.write_text("include unresolved_settings.in\n")
             result = validate_forces(self.path, checkpoint, units="metal", indices=[2, 0],
-                                      charge=0, spin=1, atol=1e-12)
+                                      input_file=input_file, charge=0, spin=1, atol=1e-12)
         loader.assert_called_once()
         self.assertTrue(result["passed"])
         self.assertEqual([r["timestep"] for r in result["frames"]], [10, 30])

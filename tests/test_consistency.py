@@ -1,0 +1,94 @@
+"""Regression checks for issues identified in the package consistency review."""
+from contextlib import redirect_stdout
+from io import StringIO
+from pathlib import Path
+from types import SimpleNamespace
+import tempfile
+import unittest
+from unittest.mock import patch
+
+import numpy as np
+from numpy.testing import assert_allclose
+from ase import Atoms
+
+from MartiniFuncs import coreio, orcaio, shell
+from MartiniFuncs import md_statistics as md
+from MartiniFuncs.trajectory_analysis import analyze_run, molecular_window_statistics
+
+
+class ConsistencyTests(unittest.TestCase):
+    def test_fragment_intersection_includes_atom_zero(self):
+        molecule = SimpleNamespace(fragment_indices=[[0], [1, 2]])
+        self.assertTrue(coreio.check_if_internal_part_of_multiple_fragments([0, 1], molecule))
+        self.assertFalse(coreio.check_if_internal_part_of_multiple_fragments([1, 2], molecule))
+
+    def test_mass_lookup_does_not_return_dummy_element(self):
+        self.assertEqual(coreio.get_symbol_from_mass(1.0), "H")
+        for mass in (0, -1, np.nan, np.inf):
+            with self.assertRaises(ValueError):
+                coreio.get_symbol_from_mass(mass)
+
+    def test_displacement_accepts_one_shot_id_iterables(self):
+        atoms = Atoms("HH", positions=[[0, 0, 0], [.7, 0, 0]])
+        atoms.new_array("global_index", np.array([10, 20]))
+        moved = atoms.copy()
+        moved.positions += [2, 3, 4]
+        assert_allclose(md.get_molecule_displacement(atoms, moved, iter([10, 20])), [2, 3, 4])
+
+    def test_legacy_nonperiodic_graph_has_no_image_duplicates(self):
+        atoms = Atoms("HH", positions=[[0, 0, 0], [.2, 0, 0]], cell=[.5, 5, 5], pbc=True)
+        graph = shell.build_bond_graph(atoms, periodic=False)
+        self.assertEqual(len(graph[0]), 1)
+        assert_allclose(graph[0][0][1], [0, 0, 0])
+        self.assertTrue(atoms.pbc.all())
+
+    def test_centering_returns_atoms_without_repair(self):
+        atoms = Atoms("H", positions=[[1, 2, 3]], cell=[10, 10, 10], pbc=True)
+        self.assertIs(shell.center_positions_on_atomindex(atoms, 0, repair=False), atoms)
+        assert_allclose(atoms.positions, [[5, 5, 5]])
+
+    def test_legacy_shell_passes_repair_parameters(self):
+        import pandas as pd
+        data = pd.DataFrame({"mol": [1, 1]}, index=[1, 2])
+        atoms = Atoms("HH", positions=[[0, 0, 0], [.7, 0, 0]])
+        with patch.object(shell, "identify_all_atoms_within_radius_of_atomindex", return_value=np.array([0, 1])), \
+             patch.object(shell, "repair_fragmented_molecules", side_effect=lambda a, **kw: a) as repair:
+            for function, selection in ((shell.get_shell_for_molid, 1), (shell.get_shell_for_molids, [1])):
+                function(data, atoms, selection, center_on_mol=False, bond_scale=1.4, neighbor_skin=.2)
+                self.assertEqual(repair.call_args.kwargs, {"bond_scale": 1.4, "neighbor_skin": .2})
+
+    def test_orca_constraint_failure_is_not_overwritten(self):
+        # Test validation bookkeeping independently of Psience geometry/evaluators.
+        structures = [SimpleNamespace(coords=np.array([q])) for q in (1., 1.2, 1.)]
+        with patch.object(orcaio, "_get_specs_from_inp", return_value=[(0, 1)]), \
+             patch.object(orcaio, "read", return_value=structures), \
+             patch.object(orcaio, "ase_atoms_to_molecule", side_effect=lambda a: a), \
+             patch.object(orcaio.nput, "internal_coordinate_tensors", side_effect=lambda coords, *a, **kw: [coords]), \
+             redirect_stdout(StringIO()):
+            self.assertTrue(orcaio._validate_constraint_in_optimization("unused", "unused", endpoints_only=True))
+            self.assertFalse(orcaio._validate_constraint_in_optimization("unused", "unused", endpoints_only=False))
+            structures[-1].coords[0] = 1.1
+            self.assertFalse(orcaio._validate_constraint_in_optimization("unused", "unused", endpoints_only=True))
+
+    def test_downsampling_does_not_hide_timestep_reset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "trajectory.lammpstrj"
+            source = Path(__file__).parent / "lammpsio_tests/multiple_frames.lammpstrj"
+            text = source.read_text().replace("ITEM: TIMESTEP\n1000\n", "ITEM: TIMESTEP\n0\n", 1)
+            path.write_text(text)
+            with self.assertRaisesRegex(ValueError, "Timesteps must increase"):
+                analyze_run(directory, units="metal", timestep_ps=.0005, frame_stride=2, max_frames=5)
+
+    def test_uniform_time_rule_matches_direct_statistics(self):
+        times = np.array([0., 1., 2.000005])
+        positions = np.zeros((3, 1, 3))
+        with self.assertRaisesRegex(ValueError, "uniformly"):
+            md.get_molecular_msd(positions, times, unwrapped=True, selection="H2")
+        result = {"frames": [{"frame": i, "time_ps": t} for i, t in enumerate(times)], "species": np.array(["H2"]),
+                  "com_angstrom": positions, "com_velocity_angstrom_ps": None, "net_force_eV_angstrom": None}
+        with self.assertRaisesRegex(ValueError, "uniformly"):
+            molecular_window_statistics(result, )
+
+
+if __name__ == "__main__":
+    unittest.main()

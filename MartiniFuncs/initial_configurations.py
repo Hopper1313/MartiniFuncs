@@ -49,6 +49,10 @@ def _orthorhombic_lengths(cell):
 
 def _rotation(rng):
     # Uniform SO(3) rotation from a normalized Gaussian quaternion.
+    """Draw q=(w,x,y,z) from four independent standard normals and normalize
+    q/|q|. Its quaternion rotation is R=(w^2-v dot v)I+2 v v.T+2w[v]_cross,
+    v=(x,y,z), giving a uniform proper rotation; packing uses row vectors @ R.T.
+    """
     w, x, y, z = rng.normal(size=4)
     norm = np.sqrt(w*w+x*x+y*y+z*z)
     w, x, y, z = np.array([w, x, y, z])/norm
@@ -74,6 +78,13 @@ def pack_molecules(species, cell, *, seed, min_distance=2.0, max_attempts_per_mo
     Atoms carry 1-based molecule_id/lammps_id, 0-based global_index and
     template_atom_index, and molecule_name. Velocities, constraints, calculators,
     and charges are not copied: this is neutral geometry-only MLIP input.
+
+    Center template r_i about c=sum(m_i*r_i)/sum(m_i). Propose
+    r'_i=(r_i-c) @ R.T+t with uniform rotation R and t uniform in the box.
+    For each existing atom j, reduce d=r'_i-r_j by L*floor(d/L+1/2);
+    reject if any |d|<min_distance. The self-image bound is
+    2*max_i |r_i-c|+min_distance <= min(L). Store image_flags=floor(r'/L)
+    and wrapped positions r'-image_flags*L. All lengths are Angstrom.
     """
     lengths = _orthorhombic_lengths(cell)
     min_distance = _positive(min_distance, "min_distance")
@@ -146,6 +157,10 @@ def write_initial_data(atoms, path, *, type_symbols=None, overwrite=False):
     data file has Masses and image flags, no force-field bonds or velocities.
     Atomic style cannot store molecule IDs, so the sidecar maps written atom IDs
     to molecular identity. No forces/model weights are serialized.
+
+    For image_flags n and orthorhombic lengths L, whole coordinates are
+    r_whole=r_wrapped+n*L. Export uses ASE's metal-unit conversion and does
+    not recompute forces, velocities, or molecular connectivity.
     """
     path = Path(path)
     sidecar = Path(str(path)+".json")

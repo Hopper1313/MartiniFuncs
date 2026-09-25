@@ -185,6 +185,10 @@ def build_bond_graph(
 
     Local ASE indices are used internally for all coordinate-array access, then
     converted to persistent IDs when graph edges are stored.
+
+    A bond satisfies |r_j+S_ij @ cell-r_i| <= scale*(rcov_i+rcov_j).
+    Cell and positions are Angstrom, S_ij integer image shifts. skin expands
+    neighbor candidates only; it does not change the final bond criterion.
     """
     numbers = atoms.get_atomic_numbers()
     cell = atoms.cell.array
@@ -407,6 +411,9 @@ def unwrap_component(
         ``{atom_id: integer lattice shift}`` relative to the chosen root.
     unwrapped
         Cartesian coordinates in ``component`` order.
+
+    Set root shift n_root=0, propagate n_j=n_i+S_ij along graph edges,
+    and return r_whole,i=r_i+n_i @ cell. Output follows component input order.
     """
     component = [int(i) for i in component]
     if not component:
@@ -472,6 +479,9 @@ def place_component(
 
     Returns persistent IDs, Cartesian coordinates, and absolute per-atom lattice
     shifts, all in the component's input order.
+
+    Absolute shift Q_i=n_i+image_shift from unwrap_component;
+    xyz_i=r_i+Q_i @ cell in Angstrom.
     """
     component = [int(i) for i in component]
     image_shift = np.asarray(image_shift, dtype=int)
@@ -511,6 +521,10 @@ def place_component_from_anchor(
     This is useful for shell construction: a geometric contact identifies the
     periodic image of one atom, while the bond graph determines how the rest of
     that molecule must be unwrapped around it.
+
+    Given relative shifts n_i, set translation=anchor_shift-n_anchor.
+    Q_i=n_i+translation and xyz_i=r_i+Q_i @ cell, so the anchor occupies
+    the requested absolute image.
     """
     component = [int(i) for i in component]
     anchor_atom = int(anchor_atom)
@@ -550,7 +564,11 @@ def component_center_of_mass(
     *,
     strict: bool = False,
 ) -> np.ndarray:
-    """Center of mass of a component after molecular PBC unwrapping."""
+    """Center of mass of a component after molecular PBC unwrapping.
+
+    R=sum_i(m_i*r_whole,i)/sum_i m_i, using component IDs, ASE masses,
+    and unwrap_component positions; result is Angstrom.
+    """
     component = [int(i) for i in component]
     if not component:
         raise ValueError("component must contain at least one atom.")
@@ -574,7 +592,12 @@ def repair_fragmented_molecules(
     centroid_position_frac: np.ndarray | None = None,
     index_array: str | None = "global_index",
 ) -> Atoms:
-    """Return a copy with every bonded molecule made contiguous under PBC."""
+    """Return a copy with every bonded molecule made contiguous under PBC.
+
+    After graph unwrapping r'_i=r_i+n_i @ cell, optional centering uses
+    t=(centroid_position_frac-mean(r') @ inverse(cell)) @ cell.
+    All atoms receive t; this centers the geometric centroid, not the COM.
+    """
     repaired = atoms.copy()
 
     graph = build_bond_graph(
@@ -662,6 +685,9 @@ def build_shell_neighbor_index(
 
     Build this once per ``Atoms`` frame.  Pair-specific shell queries then touch
     only the neighbor-list entries of atoms in that molecular pair.
+
+    Store contacts satisfying |r_j+S_ij @ cell-r_i|<cutoff, in Angstrom.
+    Rebuild after geometry/cell changes; this index is specific to one frame.
     """
     if cutoff <= 0:
         raise ValueError("cutoff must be > 0.")
@@ -854,6 +880,10 @@ def place_shell_components(
     Each touched component is unwrapped with :func:`unwrap_component`; its
     closest shell-contact atom supplies the absolute periodic image for the
     entire molecule.
+
+    Choose each molecule's contact with minimum recorded distance.
+    For its anchor a, Q_i=n_i+(Q_a-n_a) and xyz_i=r_i+Q_i @ cell;
+    n_i are relative bond-unwrapping shifts.
     """
     shell_ids = shell_component_ids(
         contacts,
@@ -1240,8 +1270,8 @@ def complete_molecule(graph, seed):
 
 #     return graph
 
-# # def build_bond_graph(atoms: Atoms, 
-# #                      scale: float = 1.15, 
+# # def build_bond_graph(atoms: Atoms,
+# #                      scale: float = 1.15,
 # #                      skin: float = 0.0,
 # #                      periodic: bool = True
 # #                      ) -> dict[int, list[tuple[int, np.ndarray]]]:
@@ -1274,7 +1304,7 @@ def complete_molecule(graph, seed):
 
 # #     graph = defaultdict(list)
 
-    
+
 # #     for i in range(len(atoms)):
 # #         indices, offsets = nl.get_neighbors(i)
 
@@ -1299,7 +1329,7 @@ def complete_molecule(graph, seed):
 # #     return graph
 
 
-# def connected_components(graph: dict, 
+# def connected_components(graph: dict,
 #                          n_atoms: int,
 #                          ) -> list[list[int]]:
 #     """
@@ -1331,8 +1361,8 @@ def complete_molecule(graph, seed):
 #     return components
 
 
-# def unwrap_component(atoms: Atoms, 
-#                      graph: dict, 
+# def unwrap_component(atoms: Atoms,
+#                      graph: dict,
 #                      component: list[int]
 #                      ) -> tuple[dict[int, np.ndarray], np.ndarray]:
 #     """
@@ -1395,7 +1425,7 @@ def complete_molecule(graph, seed):
 #         Bond criterion scale factor on covalent radii sum.
 #     neighbor_skin : float
 #         ASE NeighborList skin.
-    
+
 #     Returns
 #     -------
 #     repaired : ase.Atoms
@@ -1404,12 +1434,12 @@ def complete_molecule(graph, seed):
 #         Extra information if return_components=True
 #     """
 #     repaired = atoms.copy()
-    
+
 #     graph = build_bond_graph(repaired, scale=bond_scale, skin=neighbor_skin)
 #     components = connected_components(graph, len(repaired))
 
 #     new_positions = repaired.positions.copy()
-    
+
 #     for comp_idx, comp in enumerate(components):
 #         if len(comp) == 1:
 #             continue

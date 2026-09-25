@@ -12,6 +12,12 @@ from MartiniFuncs import md_statistics as md
 
 
 def main():
+    """Compare historical cached molecular diffusion windows.
+
+    Within each hard-coded time window, MSD[k]=mean_{t,i}|R[t+k,i]-R[t,i]|^2;
+    fit MSD=a+6*D*lag using md_statistics. The 100 ps check recomputes the
+    same all-origin mean directly. Nested-window fit spread is not uncertainty.
+    """
     directory = Path(__file__).resolve().parents[1] / "reports/npt_statistics/diffusion"
     windows = [(500, 1000), (750, 1000)]
     fit_intervals = [(10, 50), (25, 75), (50, 100)]

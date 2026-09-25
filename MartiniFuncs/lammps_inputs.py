@@ -34,6 +34,11 @@ def render_lammps_input(*, data_file, type_symbols, ensemble, steps,
     velocities. This is a new run from data, not an exact read_restart continuation.
     NPT uses isotropic pressure coupling and fully periodic boundaries.
     Defaults are editable examples, not a validated equilibration protocol.
+
+    Run duration is steps*timestep_ps; dump spacing is dump_every*timestep_ps.
+    The emitted v_netforce variable is each atom's sqrt(fx^2+fy^2+fz^2),
+    not the frame net force |sum_i F_i|. Integration and thermostat/barostat
+    equations are executed by LAMMPS, not evaluated by this renderer.
     """
     if force_source != "external_uma":
         raise ValueError("Only force_source='external_uma' is implemented")

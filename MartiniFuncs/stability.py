@@ -10,6 +10,14 @@ def get_series_statistics(values, *, sample_interval_ps, batch_sizes=(20, 50, 10
     Only complete batches contribute to each SE; discarded samples are reported.
     ACF uses the full-series mean and lag-dependent pair counts. Its integral is
     truncated at the first nonpositive lag: a heuristic, not a convergence test.
+
+    For N samples x, mu=mean(x), s=sqrt(sum((x-mu)^2)/(N-1)).
+    The drift slope is an unweighted free-intercept fit at t_i=i*sample_interval_ps.
+    C[k]=sum_i (x_i-mu)(x_(i+k)-mu)/((N-k)*mean((x-mu)^2)).
+    With K the first k>=1 having C[k]<=0 (or N if absent),
+    g=1+2*sum_{k=1}^{K-1} C[k], N_eff=N/g, and tau=dt*g/2.
+    For batch size b, B=floor(N/b); average each consecutive b samples and
+    report SE=std(batch_means, ddof=1)/sqrt(B), dropping the final N-B*b samples.
     """
     x = np.asarray(values, dtype=float)
     if x.ndim != 1 or len(x) < 3 or not np.isfinite(x).all():
@@ -58,6 +66,13 @@ def get_molecular_com_rdf(positions, box_lengths, species, *, species_a, species
     Normalize each frame by its volume and available pair count, then average;
     the finite-population ideal-gas baseline is one. Also returns nearest-neighbor
     distances per central molecule per frame (A -> B, excluding self).
+
+    For each frame, d_ij=r_j-r_i-L*floor((r_j-r_i)/L+1/2), componentwise.
+    Bin |d_ij| using edges; shell volume V_s=4*pi/3*(edge_hi^3-edge_lo^3).
+    g_s=mean_frames(count_s*prod(L)/(P*V_s)), where P=N_A*N_B for
+    unlike species and P=N_A*(N_A-1)/2 for identical species (unique pairs).
+    Nearest distances are min_j |d_ij| for each A molecule, excluding itself;
+    they are not truncated at edges[-1].
     """
     p = np.asarray(positions, dtype=float)
     lengths = np.asarray(box_lengths, dtype=float)

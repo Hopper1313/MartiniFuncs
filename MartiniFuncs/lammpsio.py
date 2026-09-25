@@ -43,7 +43,11 @@ class LammpsFrame:
 
 
 def mass_to_symbol(target_mass):
-    """Nearest elemental mass; prefer explicit mappings for nonstandard masses."""
+    """Nearest elemental mass; prefer explicit mappings for nonstandard masses.
+
+    Choose Z minimizing |element_mass[Z]-target_mass|, with masses in amu.
+    This nearest-mass heuristic is not reliable for isotope or coarse-grain mapping.
+    """
     if not np.isfinite(target_mass) or target_mass <= 0:
         raise ValueError("Atomic mass must be positive and finite")
     return min((e for e in pt.elements if e.mass is not None),
@@ -153,6 +157,9 @@ def _parse_block(text):
 
 
 def _records(columns, id_offset):
+    """Map each ID-sorted raw row to key columns['id'][row]-id_offset.
+    Column values remain in source units; the key is not a local ASE row.
+    """
     records = {}
     for row, atom_id in enumerate(columns["id"]):
         record = {name: values[row].item() for name, values in columns.items()}
@@ -186,6 +193,12 @@ def iter_lammps_frames(path, *, units, input_datafile=None, type_symbols=None,
     unit conversion. Species priority: dump elements, explicit type mapping,
     data-file mapping, then dump masses. Conflicting element/type mappings fail.
     Reduced LJ units are unsupported. Coordinates include the box origin.
+
+    Raw columns stay in source units; ASE conversion applies
+    q_ASE=q_source*unit_factor(source, ASE) to distances, masses, velocities
+    and forces. Scaled coordinates obey r=s @ cell+origin; optional wrapping
+    acts on r-origin. global_index=lammps_id-id_offset; image flags are stored,
+    not added to positions. For wrapped r and image n, whole r is r+n @ cell.
     """
     if units not in {"metal", "real", "si", "cgs", "electron", "micro", "nano"}:
         raise ValueError(f"Unsupported physical LAMMPS units: {units!r}")
@@ -335,7 +348,11 @@ def read_lammps_input_settings(path):
 
 
 def my_readlammps(lammps_dump, id_offset=1, *, index=-1):
-    """Legacy raw tuple reader; default remains the final frame, in raw units."""
+    """Legacy raw tuple reader; default remains the final frame, in raw units.
+
+    Record keys are raw atom_id-id_offset. All numeric values retain the
+    dump's original units; no equation converts them to ASE units.
+    """
     def frames():
         for frame_index, text in enumerate(_iter_blocks(lammps_dump)):
             try:
@@ -351,6 +368,10 @@ def read_input_datafile(filename, *, units="metal", atom_style=None):
 
     Coordinates/masses use ASE units. Type metadata covers populated types.
     Prefer explicit species mappings for nonstandard masses.
+
+    ASE converts positions/masses to Angstrom/amu. For restricted triclinic
+    cell H, returned bounds have hi=origin+diag(H) and tilts xy=H[1,0],
+    xz=H[2,0], yz=H[2,1]; these are cell limits, not enclosing dump-box bounds.
     """
     atoms = read_lammps_data(filename, units=units, atom_style=atom_style,
                              sort_by_id=False, read_image_flags=False)

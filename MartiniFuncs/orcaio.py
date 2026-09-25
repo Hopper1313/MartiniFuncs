@@ -17,6 +17,10 @@ import sys
 
 
 def positivify_angle(angle):
+    """Return angle+360 if angle<0, otherwise angle (degrees).
+    This is a single-turn adjustment for conventional signed angles, not modulo
+    normalization of arbitrary multi-turn inputs.
+    """
     angle=float(angle)
     if angle < 0:
         return angle + 360
@@ -72,6 +76,11 @@ def orca_internals_from_molecule(molecule):
     return rewrite_internals_for_orca(internals)
 
 def orca_internals_to_constraints(internals_lines,constraint_bools,values=False):
+    """Convert 1-based Z-matrix reference indices to 0-based indices by i-1;
+    zero placeholders become -1. Angles use positivify_angle (degrees).
+    This legacy writer always constrains angles/dihedrals and writes bonds
+    where constraint_bools[:,0] is False; it does not evaluate geometry.
+    """
     lines = ['%geom Constraints\n']
     def _constraint(type,indices,value, values=values):
         if type == 'A' and len(indices) != 3:
@@ -118,8 +127,8 @@ def orca_constraints_from_molecule(molecule,values=False):
 
 
 # orca_header = '''!r2scan-3c OPT TIGHTOPT TIGHTSCF SlowConv
-# %pal  
-# 	nprocs 4 
+# %pal
+# 	nprocs 4
 # end
 
 # '''
@@ -313,6 +322,13 @@ def _get_specs_from_inp(file_path):
     return constraints_atomnos
 
 def _validate_constraint_in_optimization(trajxyz,inpfile,endpoints_only=True, atol=1e-8,rtol=1e-3):
+    """For each internal q from McUtils internal_coordinate_tensors(order=0),
+    compare against the first frame q0 with |q-q0|<=atol+rtol*|q0|.
+    Psience coordinates are Bohr; distance internals are Bohr and angular
+    internals radians. Compare raw values, not wrapped dihedral differences.
+    Return False if any inspected frame violates the tolerance.
+    """
+    found_discrepancy = False
     specs = _get_specs_from_inp(inpfile)
     asemols = read(trajxyz, index=':')
     mols = [ase_atoms_to_molecule(ase_atoms) for ase_atoms in asemols]
@@ -348,14 +364,16 @@ def _validate_constraint_in_optimization(trajxyz,inpfile,endpoints_only=True, at
                     if not np.isclose(val, val0, rtol=rtol,atol=atol):
                         found_discrepancy=True
                         print(f"Discrepancy found at frame {i+1}, internal {j}: {val0} vs {val}")
-        
 
-    found_discrepancy=False
-    
+
     # True if no discrepancies were found, False otherwise
     return not found_discrepancy
 
 def _validate_constraint_between_two_structures(mol1,mol2,previous_input, atol=1e-8, rtol=1e-3):
+    """For internals q1,q2 from McUtils internal_coordinate_tensors(order=0),
+    accept iff |q1-q2|<=atol+rtol*|q2| for every internal. Coordinates must be
+    Bohr (angles radians). Dihedral differences are not reduced modulo 2*pi.
+    """
     specs = _get_specs_from_inp(previous_input)
     fwd1 = nput.internal_coordinate_tensors(
         mol1.coords,
@@ -373,4 +391,4 @@ def _validate_constraint_between_two_structures(mol1,mol2,previous_input, atol=1
             found_discrepancy = True
             print(f"Discrepancy found for internal {j} [{specs[j]}]: {val1} vs {val2}")
     return not found_discrepancy
-    
+

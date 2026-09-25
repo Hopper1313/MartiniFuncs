@@ -12,6 +12,13 @@ from MartiniFuncs.stability import get_molecular_com_rdf, get_series_statistics
 
 
 def main():
+    """Build the historical fixed-window scalar and COM-structure report.
+
+    Delegate scalar means, SE=std(batch_means,ddof=1)/sqrt(n_batches),
+    and RDF g=mean_frames(count*V/(pair_count*shell_volume)) to stability.
+    Nearest-neighbor ECDF at sorted distance d_j is (j+1)/N, j=0,...,N-1.
+    Windows and 0.5 ps sampling are fixture-specific; use workflow 05 for new runs.
+    """
     root = Path(__file__).resolve().parents[1]
     source = root / "reports/npt_statistics"
     output = source / "stability"
