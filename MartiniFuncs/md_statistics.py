@@ -507,7 +507,7 @@ class PairLifetime:
     right_censored: bool
 
 
-def get_pair_lifetime(pairs_by_frame, times_ps, *, max_gap_frames=0):
+def get_pair_lifetime(pairs_by_frame, times_ps, *, max_gap_frames=0, progress=None):
     """Track encounter episodes from per-frame lists of molecule-ID pairs.
 
     Directly accepts pair lists from get_all_prereactive_pairs, or filtered lists.
@@ -527,6 +527,7 @@ def get_pair_lifetime(pairs_by_frame, times_ps, *, max_gap_frames=0):
     observed_span_ps=times_ps[last_frame]-times_ps[first_frame]. Two
     detections at indices i<j remain in one encounter when j-i-1 <=
     max_gap_frames; detected_frames counts observations, not bridged gaps.
+    Optional progress reports completed frame counts and the final sorting stage.
     """
     if not isinstance(max_gap_frames, (int, np.integer)) or max_gap_frames < 0:
         raise ValueError("max_gap_frames must be a nonnegative integer")
@@ -558,6 +559,10 @@ def get_pair_lifetime(pairs_by_frame, times_ps, *, max_gap_frames=0):
                 active[key][2] += 1
             else:
                 active[key] = [index, index, 1]
+        if progress and ((index+1) % max(1, len(times)//20) == 0 or index+1 == len(times)):
+            progress(f'Pair lifetimes: {index+1}/{len(times)} frames processed; {len(result)} closed encounters')
     for key, state in active.items():
         finish(key, state, True)
+    if progress:
+        progress(f'Pair lifetimes: sorting {len(result)} encounters')
     return sorted(result, key=lambda episode: (episode.first_frame, episode.pair))

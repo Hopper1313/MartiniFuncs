@@ -3,6 +3,7 @@
 Usage (also available as the installed martini-postprocess command)::
 
     python -m MartiniFuncs.cli run RUN_DIR --output ANALYSIS_DIR --units metal --timestep-ps 0.0005
+    python -m MartiniFuncs.cli run RUN_DIR --output PAIR_ANALYSIS --units metal --timestep-ps 0.0005 --no-lag-statistics --shell-radius 3
     python -m MartiniFuncs.cli report ANALYSIS_DIR/cache --output REPORT_DIR --startframe 1000 --endframe 2000
     python -m MartiniFuncs.cli extract ANALYSIS_DIR/cache --output PAIRS_DIR --startframe 1000 --endframe 2000 --shell-radius 3
 
@@ -61,6 +62,10 @@ report calculations and final ordered file writing remain sequential. Reusing a
 finished cache skips analysis regardless of the requested worker count.
 
 This module only parses/validates options and dispatches package functions.
+run/report support independent lag-statistic, lifetime and frame-summary choices.
+--no-lag-statistics skips MSD/correlation work entirely while retaining lifetimes.
+CLI stages log timestamps, actual progress counts and 30-second elapsed heartbeats;
+--quiet suppresses these messages. Heartbeats are not completion estimates.
 Scientific equations live in trajectory_analysis, md_statistics, and pair_selection;
 persistence/export behavior lives in postprocessing. See docs/postprocessing_cli.md
 for output schemas, cache reuse, and Slurm submission examples.
@@ -71,10 +76,10 @@ import json
 import os
 from pathlib import Path
 import sys
-from time import perf_counter
 
 from .pair_selection import PairCriteria
 from .postprocessing import cache_analysis, export_pairs, write_report
+from .progress import log, run_stage
 
 
 def _frame_options(parser):
@@ -96,6 +101,13 @@ def _report_options(parser):
     D=slope(MSD)/6. Neither option selects which source frames enter the report.
     """
     _frame_options(parser)
+    lag_options = parser.add_mutually_exclusive_group()
+    lag_options.add_argument('--lag-statistics', nargs='+', choices=['msd', 'vacf', 'force-acf'],
+                             help='calculate only these lag statistics (default: all three)')
+    lag_options.add_argument('--no-lag-statistics', dest='lag_statistics', action='store_const', const=[],
+                             help='skip MSD and velocity/force correlations; retain other requested reports')
+    parser.add_argument('--no-pair-lifetimes', action='store_true', help='omit pair lifetime report')
+    parser.add_argument('--no-frame-summary', action='store_true', help='omit report frames.csv; cache is unchanged')
     parser.add_argument("--max-lag-ps", type=float, default=100., help="longest correlation/MSD time separation in ps")
     parser.add_argument("--fit-ps", type=float, nargs=2, metavar=("START", "END"), help="explicit diffusion fit lag interval in ps")
     parser.add_argument("--max-gap-frames", type=int, default=0, help="allowed missing retained samples within pair lifetimes")
@@ -111,7 +123,9 @@ def _report_kwargs(args):
     """
     return dict(startframe=args.startframe, endframe=args.endframe,
                 max_lag_ps=args.max_lag_ps, fit_interval_ps=args.fit_ps, max_gap_frames=args.max_gap_frames,
-                stability=args.stability, rdf_bins=args.rdf_bins)
+                stability=args.stability, rdf_bins=args.rdf_bins,
+                lag_statistics=args.lag_statistics, pair_lifetimes=not args.no_pair_lifetimes,
+                frame_summary=not args.no_frame_summary)
 
 
 def _analysis_options(parser):
@@ -171,6 +185,7 @@ def build_parser():
     report = commands.add_parser("report", help="regenerate statistics from cache without reading simulation files")
     report.add_argument("cache", type=Path, help="the output/cache directory from run")
     report.add_argument("--output", type=Path, required=True, help="new report directory")
+    report.add_argument('--quiet', action='store_true', help='suppress progress and heartbeat logging')
     _report_options(report)
 
     extract = commands.add_parser("extract", help="export cached accepted pairs and optional shells from source frames")
@@ -195,7 +210,14 @@ def main(argv=None):
     """
     parser = build_parser()
     args = parser.parse_args(argv)
+    progress = None if args.quiet else log
+
+    def stage(label, function, *values, **options):
+        return run_stage(label, lambda: function(*values, progress=progress, **options), progress=progress)
     try:
+        if (getattr(args, 'fit_ps', None) is not None and args.lag_statistics is not None
+                and 'msd' not in args.lag_statistics):
+            raise ValueError('--fit-ps requires msd; remove --no-lag-statistics or include msd in --lag-statistics')
         if args.startframe < 0 or (args.endframe is not None and args.endframe <= args.startframe):
             raise ValueError("Require 0 <= startframe < endframe; omit endframe to use the cached end")
         if hasattr(args, "workers"):
@@ -216,45 +238,34 @@ def main(argv=None):
             if dof is not None and dof != "3N-3":
                 dof = float(dof)
             criteria = PairCriteria(**{f.name: getattr(args, f.name) for f in fields(PairCriteria)})
-            progress = None if args.quiet else lambda message: print(message, flush=True)
             args.output.mkdir(parents=True, exist_ok=True)
             cache = args.output / "cache"
-            started = perf_counter()
-            cache_analysis(args.directory, cache, units=args.units, timestep_ps=args.timestep_ps,
+            stage('Cache analysis/write', cache_analysis, args.directory, cache, units=args.units, timestep_ps=args.timestep_ps,
                            input_file=args.input_file, dump_file=args.dump_file, data_file=args.data_file,
                            frame_stride=args.frame_stride, max_frames=args.max_frames, bond_scale=args.bond_scale,
                            type_symbols=mapping, degrees_of_freedom=dof, compute_pairs=not args.no_pairs,
                            reaction_atom_counts=args.reaction_atom_counts,
                            pair_criteria=criteria, pair_backend=args.pair_backend, pair_workers=args.workers,
-                           pair_batch_size=args.batch_size, progress=progress)
-            if progress:
-                progress(f"Cache analysis/write: {perf_counter()-started:.2f} s")
+                           pair_batch_size=args.batch_size)
             report = None
             if args.command == "run":
-                started = perf_counter()
-                report = write_report(cache, args.output / "reports" / args.report_name, **_report_kwargs(args))
-                if progress:
-                    progress(f"Statistical report: {perf_counter()-started:.2f} s")
+                report = stage('Statistical report', write_report, cache, args.output / "reports" / args.report_name, **_report_kwargs(args))
             if not args.no_pairs and not args.no_export_pairs:
                 # Separate explicitly selected exports from the full-cache product.
                 pair_folder = "pairs" if args.startframe == 0 and args.endframe is None else f"pairs_frames_{args.startframe}_{args.endframe if args.endframe is not None else 'end'}"
-                started = perf_counter()
-                export_pairs(cache, args.output / pair_folder, shell_radius=args.shell_radius,
-                             startframe=args.startframe, endframe=args.endframe, progress=progress,
+                stage('Pair/shell export', export_pairs, cache, args.output / pair_folder, shell_radius=args.shell_radius,
+                             startframe=args.startframe, endframe=args.endframe,
                              workers=args.workers, batch_size=args.batch_size)
-                if progress:
-                    progress(f"Pair/shell export: {perf_counter()-started:.2f} s")
             print(f"Cache: {cache.resolve()}")
             if report is not None:
                 print(f"Report: {report}")
             if not args.no_pairs and not args.no_export_pairs:
                 print(f"Pair and cluster exports: {(args.output / pair_folder).resolve()}")
         elif args.command == "report":
-            print(write_report(args.cache, args.output, **_report_kwargs(args)))
+            print(stage('Statistical report', write_report, args.cache, args.output, **_report_kwargs(args)))
         else:
-            print(export_pairs(args.cache, args.output, shell_radius=args.shell_radius,
+            print(stage('Pair/shell export', export_pairs, args.cache, args.output, shell_radius=args.shell_radius,
                                startframe=args.startframe, endframe=args.endframe,
-                               progress=None if args.quiet else lambda message: print(message, flush=True),
                                workers=args.workers, batch_size=args.batch_size))
     except (ValueError, OSError, KeyError, TypeError) as exc:
         print(f"error: {exc}", file=sys.stderr)

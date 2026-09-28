@@ -18,6 +18,33 @@ from MartiniFuncs.postprocessing import cache_analysis, load_analysis_cache, wri
 
 
 class PostprocessingTests(unittest.TestCase):
+    def test_lifetimes_shells_without_lag_calculations(self):
+        args = ['run', self.run, '--output', self.output, '--units', 'metal',
+                '--timestep-ps', '.0005', '--shell-radius', '2', '--no-lag-statistics', '--quiet']
+        # All np.mean lag reductions must be skipped, not merely hidden in output.
+        with patch('MartiniFuncs.trajectory_analysis.np.mean', side_effect=AssertionError('lag reduction called')):
+            status, errors = self.call(args)
+        self.assertEqual(status, 0, errors)
+        report = self.output/'reports/default'
+        self.assertTrue((report/'pair_lifetimes.csv').exists())
+        self.assertTrue((report/'frames.csv').exists())
+        self.assertEqual(list(report.glob('species_*_lags.csv')), [])
+        self.assertTrue((self.output/'pairs/clusters.extxyz').exists())
+        messages = []
+        write_report(self.output/'cache', self.root/'rdf_only', lag_statistics=[],
+                     pair_lifetimes=False, frame_summary=False, rdf_bins=5, progress=messages.append)
+        self.assertTrue((self.root/'rdf_only/rdf_species.json').exists())
+        self.assertFalse((self.root/'rdf_only/pair_lifetimes.csv').exists())
+        self.assertFalse((self.root/'rdf_only/frames.csv').exists())
+        self.assertTrue(any('Computing COM RDF' in m for m in messages))
+        write_report(self.output/'cache', self.root/'vacf', lag_statistics=['vacf'])
+        columns = (self.root/'vacf/species_000_lags.csv').read_text().splitlines()[0]
+        self.assertIn('vacf', columns)
+        self.assertNotIn('msd_angstrom2', columns)
+        self.assertNotIn('force_acf', columns)
+        with self.assertRaisesRegex(ValueError, 'requires msd'):
+            write_report(self.output/'cache', self.root/'bad', lag_statistics=[], fit_interval_ps=(0, 1))
+
     def test_parallel_full_frames_and_shells_match_serial(self):
         """Worker count/chunk boundaries must not change any scientific output."""
         from MartiniFuncs.trajectory_analysis import analyze_run

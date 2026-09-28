@@ -181,7 +181,8 @@ def _begin_product(directory, configuration):
 
 def write_report(cache_dir, output_dir, *, startframe=0, endframe=None,
                  max_lag_ps=100., fit_interval_ps=None, max_gap_frames=0,
-                 stability=False, rdf_bins=None):
+                 stability=False, rdf_bins=None, lag_statistics=None,
+                 pair_lifetimes=True, frame_summary=True, progress=None):
     """Compute a source-frame-window report from cached molecular data.
 
     startframe is inclusive and endframe exclusive, both zero-based source dump
@@ -193,7 +194,17 @@ def write_report(cache_dir, output_dir, *, startframe=0, endframe=None,
     only with an explicit fit_interval_ps. Lifetimes are recomputed within the
     window, so boundary censoring reflects that window. RDF uses instantaneous
     wrapped COMs; optional scalar ACF/batch errors delegate to stability.
+    lag_statistics=() skips all lag calculations. Otherwise select msd, vacf,
+    force-acf (None means all). pair_lifetimes and frame_summary independently
+    control their files. These options change reports, not the underlying cache.
     """
+    requested = ['msd', 'vacf', 'force-acf'] if lag_statistics is None else sorted(set(lag_statistics))
+    if set(requested) - {'msd', 'vacf', 'force-acf'}:
+        raise ValueError('Unknown lag statistic')
+    if fit_interval_ps is not None and 'msd' not in requested:
+        raise ValueError('Diffusion fitting requires msd in lag_statistics')
+    if progress:
+        progress('Loading report cache')
     result, source = load_analysis_cache(cache_dir)
     if isinstance(max_gap_frames, bool) or not isinstance(max_gap_frames, int) or max_gap_frames < 0:
         raise ValueError("max_gap_frames must be a nonnegative integer")
@@ -202,12 +213,18 @@ def write_report(cache_dir, output_dir, *, startframe=0, endframe=None,
     config = dict(cache=str(Path(cache_dir).resolve()), source=source, startframe=startframe, endframe=endframe,
                   max_lag_ps=max_lag_ps, fit_interval_ps=fit_interval_ps,
                   max_gap_frames=max_gap_frames, stability=stability, rdf_bins=rdf_bins, software=_software())
+    config.update(lag_statistics=requested, pair_lifetimes=pair_lifetimes, frame_summary=frame_summary)
     # Check completed reports before performing potentially expensive statistics.
     output = Path(output_dir).expanduser().resolve()
     if output.exists():
-        return _begin_product(output, config)[0]
+        completed = _begin_product(output, config)[0]
+        if progress:
+            progress(f'Reusing completed report: {completed}')
+        return completed
+    if progress:
+        progress(f"Report selection: lag statistics={requested or 'none'}, pair lifetimes={pair_lifetimes}, frame summary={frame_summary}")
     window = molecular_window_statistics(result, startframe=startframe, endframe=endframe,
-                                         max_lag_ps=max_lag_ps)
+                                         max_lag_ps=max_lag_ps, lag_statistics=requested, progress=progress)
     rows = [r for r, keep in zip(result["frames"], window["frame_mask"]) if keep]
     times = [r["time_ps"] for r in rows]
     fits = []
@@ -220,7 +237,10 @@ def write_report(cache_dir, output_dir, *, startframe=0, endframe=None,
     if rdf_bins is not None and result["wrapped_com_angstrom"] is None:
         raise ValueError("RDF unavailable for this cell/reference-frame convention")
     output, _ = _begin_product(output, config)
-    _csv(output / "frames.csv", rows)
+    if frame_summary:
+        if progress:
+            progress(f'Writing frame summary: {len(rows)} frames')
+        _csv(output / "frames.csv", rows)
     species_files = {}
     for index, (name, entry) in enumerate(window["species"].items()):
         filename = f"species_{index:03d}_lags.csv"
@@ -229,15 +249,27 @@ def write_report(cache_dir, output_dir, *, startframe=0, endframe=None,
         species_files[name] = {"file": filename, "n_molecules": entry["n_molecules"]}
     if fits:
         _csv(output / "diffusion.csv", fits)
-    if result["pairs_by_frame"] is not None:
+    if pair_lifetimes and result["pairs_by_frame"] is not None:
+        if progress:
+            progress(f'Computing pair lifetimes over {len(rows)} frames')
         pairs = [p for p, keep in zip(result["pairs_by_frame"], window["frame_mask"]) if keep]
-        events = md.get_pair_lifetime(pairs, times, max_gap_frames=max_gap_frames)
+        events = md.get_pair_lifetime(pairs, times, max_gap_frames=max_gap_frames, progress=progress)
         _csv(output / "pair_lifetimes.csv", [asdict(e) for e in events],
              fields=list(md.PairLifetime.__dataclass_fields__))
+        if progress:
+            progress(f'Wrote {len(events)} pair lifetime records')
+    elif pair_lifetimes and progress:
+        progress('Pair lifetimes unavailable: cache has no pair analysis')
     if stability:
         from .stability import get_series_statistics
-        summary = {key: get_series_statistics([r[key] for r in rows], sample_interval_ps=times[1]-times[0])
-                   for key in rows[0] if key not in {"frame", "time_ps"}}
+        if len(times) < 2:
+            raise ValueError('Scalar stability requires at least two frames')
+        summary = {}
+        for key in rows[0]:
+            if key not in {'frame', 'time_ps', 'timestep'}:
+                if progress:
+                    progress(f'Computing scalar stability: {key}')
+                summary[key] = get_series_statistics([r[key] for r in rows], sample_interval_ps=times[1]-times[0])
         _json(output / "scalar_stability.json", summary)
     if rdf_bins is not None:
         from itertools import combinations_with_replacement
@@ -246,9 +278,11 @@ def write_report(cache_dir, output_dir, *, startframe=0, endframe=None,
         positions = result["wrapped_com_angstrom"][window["frame_mask"]]
         edges = np.linspace(0, .999*box.min()/2, rdf_bins+1)
         rdf_files = []
-        for a, b in combinations_with_replacement(window["species"], 2):
-            if a == b and window["species"][a]["n_molecules"] < 2:
+        for a, b in combinations_with_replacement(sorted(set(result['species'])), 2):
+            if a == b and np.count_nonzero(result['species'] == a) < 2:
                 continue
+            if progress:
+                progress(f'Computing COM RDF: {a} / {b}')
             rdf = get_molecular_com_rdf(positions, box, result["species"], species_a=a, species_b=b, edges=edges)
             filename = f"rdf_{len(rdf_files):03d}.csv"
             _csv(output / filename, [dict(r_angstrom=r, g_r=g) for r, g in zip(rdf["r_angstrom"], rdf["g_r"])])
@@ -258,6 +292,8 @@ def write_report(cache_dir, output_dir, *, startframe=0, endframe=None,
                                      "time_window_ps": window["time_window_ps"], "frame_window": window["frame_window"],
                                      "species": species_files,
                                      "notices": result["notices"]})
+    if progress:
+        progress(f'Report complete: {output}')
     return output
 
 

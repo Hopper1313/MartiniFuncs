@@ -15,6 +15,67 @@ martini-postprocess --help
 No notebook, GUI, UMA weights, or GPU is required. MD forces are read from the
 dump; they are not recomputed. This is one-node postprocessing, not MPI.
 
+## Pair lifetimes, pairs and shells without lag statistics
+
+```bash
+martini-postprocess run ./ --output ./postprocess --units metal --timestep-ps 0.0005 --shell-radius 3.0 --no-lag-statistics --workers 8 --batch-size 32
+```
+
+This processes the entire trajectory, writes frame summaries and pair lifetimes,
+and exports pairs and shells. It skips MSD, VACF and force-correlation calculations
+entirely, not just their CSV files. Add `--reaction-atom-counts 11 23` to enable
+the possible-product screen in `run`. The shell radius is your physical choice.
+
+Report choices are independent:
+
+| Option | Effect |
+|---|---|
+| `--no-lag-statistics` | Skip all three lag calculations and species lag CSVs |
+| `--lag-statistics msd` | Calculate only molecular MSD |
+| `--lag-statistics vacf force-acf` | Calculate those correlations only |
+| `--no-pair-lifetimes` | Skip the lifetime report |
+| `--no-frame-summary` | Skip report `frames.csv`; cache frame metadata remains |
+| `--fit-ps A B` | Fit diffusion over lag interval [A,B] ps; requires MSD enabled |
+| `--stability` | Add scalar stability summaries |
+| `--rdf-bins N` | Add RDFs, independently of lag statistics |
+| `--no-export-pairs` | Skip pair and shell exports (`run` only) |
+| `--shell-radius R` | Include pair+shell exports with cutoff R Angstrom |
+
+For compatibility, `run` and `report` still default to all available lag statistics,
+pair lifetimes and frame summaries. Selection flags affect reports, not cache
+construction: molecular arrays are still cached for subsequent analysis.
+
+### Reuse an already completed cache
+
+After updating the package, use these commands to avoid rebuilding existing data:
+
+```bash
+martini-postprocess report ./postprocess/cache --output ./postprocess/reports/pair_lifetimes --no-lag-statistics
+martini-postprocess extract ./postprocess/cache --output ./postprocess/pairs_restarted --shell-radius 3.0 --workers 8 --batch-size 32
+```
+
+Use fresh report/export directories if previous outputs are partial or were made
+with different settings/code. `report` and `extract` can read the existing cache
+schema; `run` intentionally rejects cache reuse after package source changes.
+Extract still requires unchanged source simulation files. Completed caches have
+`cache/manifest.json`. No frame-range options are needed for full trajectories.
+
+### Logging
+
+Every CLI stage logs its start and completion (or failure), with timestamps and
+elapsed seconds. While a stage has not returned, a background thread emits a
+heartbeat every 30 seconds. A heartbeat reports elapsed time, not a completion
+percentage or proof of CPU activity. Detailed logs additionally identify:
+
+- The selected report quantities and cache loading.
+- Species, observable and completed lag counts during correlations/MSD.
+- Completed frame counts during lifetime tracking, then encounter sorting/writing.
+- The scalar or species pair being processed for stability/RDF calculations.
+- Completed frame chunks during analysis and pair/shell exports.
+
+Output is flushed for Slurm logs. `--quiet` disables progress/heartbeat messages.
+Python APIs accept `progress=callback`; the CLI supplies the timed stage wrapper.
+
 ## Analyze a finished simulation
 
 ```console

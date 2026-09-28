@@ -326,7 +326,8 @@ def select_frame_window(result, *, startframe=0, endframe=None):
     return keep
 
 
-def molecular_window_statistics(result, *, startframe=0, endframe=None, max_lag_ps=100.):
+def molecular_window_statistics(result, *, startframe=0, endframe=None, max_lag_ps=100.,
+                                lag_statistics=None, progress=None):
     """All-molecule, all-time-origin MSD and dot-product correlations by formula.
 
     Select zero-based source frames in [startframe, endframe), before interpreting
@@ -340,26 +341,39 @@ def molecular_window_statistics(result, *, startframe=0, endframe=None, max_lag_
     COM velocities for VACF or summed molecular forces for force_acf.
     lag[k]=k*dt<=max_lag_ps and n_origins=T-k. Timestamps still supply dt in ps;
     selecting frames does not change the physical time units of the statistics.
+    lag_statistics selects msd, vacf and/or force-acf; None keeps all three.
+    An empty sequence selects metadata only and does not allocate lag arrays.
     """
+    requested = {'msd', 'vacf', 'force-acf'} if lag_statistics is None else set(lag_statistics)
+    if requested - {'msd', 'vacf', 'force-acf'}:
+        raise ValueError('Unknown lag statistic')
     times = np.array([r["time_ps"] for r in result["frames"]])
     if not np.isfinite(max_lag_ps) or max_lag_ps<=0:
         raise ValueError("Require positive finite max_lag_ps")
     keep = select_frame_window(result, startframe=startframe, endframe=endframe)
     selected_times = times[keep]
-    if len(selected_times)<3:
+    if requested and len(selected_times)<3:
         raise ValueError("Select at least three uniformly spaced frames for lag statistics")
-    md._times(selected_times, len(selected_times), uniform=True)
-    dt = selected_times[1]-selected_times[0]
-    nlag = min(len(selected_times),int(np.floor(max_lag_ps/dt))+1)
+    if requested:
+        md._times(selected_times, len(selected_times), uniform=True)
+        dt = selected_times[1]-selected_times[0]
+        nlag = min(len(selected_times),int(np.floor(max_lag_ps/dt))+1)
     statistics = {}
-    for name in sorted(set(result["species"])):
+    for name in sorted(set(result["species"])) if requested else []:
         mask = result["species"]==name
         entry = {"lag_ps":np.arange(nlag)*dt,"n_origins":len(selected_times)-np.arange(nlag),
                  "n_molecules":int(mask.sum()),"selection":name}
         for source, key in (("com_angstrom","msd_angstrom2"),
                             ("com_velocity_angstrom_ps","vacf"),("net_force_eV_angstrom","force_acf")):
-            if result[source] is None:
+            option = {'msd_angstrom2': 'msd', 'vacf': 'vacf', 'force_acf': 'force-acf'}[key]
+            if option not in requested:
                 continue
+            if result[source] is None:
+                if progress:
+                    progress(f'{name}: {option} unavailable; source data/cell convention does not support it')
+                continue
+            if progress:
+                progress(f'{name}: starting {option}, {len(selected_times)} frames, {nlag} lags')
             values = result[source][keep][:,mask]
             out = []
             for lag in range(nlag):
@@ -367,6 +381,8 @@ def molecular_window_statistics(result, *, startframe=0, endframe=None, max_lag_
                 right = values[lag:]
                 product = (right-left)**2 if key=="msd_angstrom2" else left*right
                 out.append(np.mean(np.sum(product,axis=-1)))
+                if progress and ((lag+1) % max(1, nlag//10) == 0 or lag+1 == nlag):
+                    progress(f'{name}: {option} {lag+1}/{nlag} lags complete')
             entry[key] = np.array(out)
         statistics[name] = entry
     return {"time_window_ps":[float(selected_times[0]),float(selected_times[-1])],
