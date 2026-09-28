@@ -6,7 +6,7 @@ Usage (also available as the installed martini-postprocess command)::
     python -m MartiniFuncs.cli report ANALYSIS_DIR/cache --output REPORT_DIR --startframe 1000 --endframe 2000
     python -m MartiniFuncs.cli extract ANALYSIS_DIR/cache --output PAIRS_DIR --startframe 1000 --endframe 2000 --shell-radius 3
 
-collect uses the same cached parallel pair screening as run, and writes both
+collect uses the same indexed parallel frame processing as run, and writes both
 pairs.extxyz and clusters.extxyz without generating statistical reports.
 --shell-radius is required. Default stride is 1 (all source frames); default
 reaction screening stops on an inferred 11+23 atom product before fixed-species
@@ -51,13 +51,14 @@ Units and resources
 Trajectory selection uses frames; lag and diffusion-fit intervals remain in ps.
 --timestep-ps is ps per MD integration step, not per dump frame. Temperature
 requires explicit --temperature-dof. Pair screening is CPD/dienophile-specific;
---no-pairs enables generic molecular statistics. Pair workers are local processes
+--no-pairs enables generic molecular statistics. Frame workers are local processes
 inside one Slurm task, not MPI ranks; no GPU/model inference occurs here.
 --workers N and --batch-size B pass through cache_analysis to analyze_run's
-existing pair process pool (B retained frames per task). The cached pair backend
-supports multiple workers; the reference backend requires one. Reading, temporal
-unwrapping, report calculations, and exports remain sequential. Reusing a finished
-cache skips pair computation regardless of the requested worker count.
+indexed frame process pool (B source frames per analysis task). Both pair backends
+support multiple workers. Parsing, molecular reconstruction, reaction screening,
+pair screening and shell export run in workers. Temporal COM accumulation,
+report calculations and final ordered file writing remain sequential. Reusing a
+finished cache skips analysis regardless of the requested worker count.
 
 This module only parses/validates options and dispatches package functions.
 Scientific equations live in trajectory_analysis, md_statistics, and pair_selection;
@@ -70,6 +71,7 @@ import json
 import os
 from pathlib import Path
 import sys
+from time import perf_counter
 
 from .pair_selection import PairCriteria
 from .postprocessing import cache_analysis, export_pairs, write_report
@@ -116,7 +118,7 @@ def _analysis_options(parser):
     """Shared source discovery, pair selection and process-pool options.
 
     run and collect must use identical screening and frame-stride conventions.
-    Worker options apply to cached pair screening; export is an ordered stream.
+    Worker options apply to analysis and export; final writes remain ordered.
     """
     parser.add_argument("directory", type=Path, help="simulation directory; unique input/data/dump discovered automatically")
     parser.add_argument("--output", type=Path, required=True)
@@ -131,8 +133,8 @@ def _analysis_options(parser):
     parser.add_argument("--reaction-atom-counts", type=int, nargs=2, metavar=("A", "B"),
                      help="check every source frame for an A+B atom component; stop on a possible product (CPD/MAL: 11 23)")
     parser.add_argument("--pair-backend", choices=["cached", "reference"], default="cached")
-    parser.add_argument("--workers", type=int, default=1, help="local pair worker processes, not MPI ranks (default: 1)")
-    parser.add_argument("--batch-size", type=int, default=32, help="retained frames per pair-worker task (default: 32)")
+    parser.add_argument("--workers", type=int, default=1, help="local frame-processing and export processes, not MPI ranks (default: 1)")
+    parser.add_argument("--batch-size", type=int, default=32, help="source frames per analysis chunk; retained frames per export chunk (default: 32)")
     for field in fields(PairCriteria):
         parser.add_argument("--" + field.name.replace("_", "-"), type=float,
                          help="optional pair threshold (distances Angstrom; acute angles degrees)")
@@ -177,6 +179,8 @@ def build_parser():
     _frame_options(extract)
     extract.add_argument("--shell-radius", type=float)
     extract.add_argument("--quiet", action="store_true")
+    extract.add_argument("--workers", type=int, default=1, help="local frame/export worker processes")
+    extract.add_argument("--batch-size", type=int, default=32, help="selected frames per export chunk")
     return parser
 
 
@@ -194,14 +198,17 @@ def main(argv=None):
     try:
         if args.startframe < 0 or (args.endframe is not None and args.endframe <= args.startframe):
             raise ValueError("Require 0 <= startframe < endframe; omit endframe to use the cached end")
+        if hasattr(args, "workers"):
+            if args.workers < 1 or args.batch_size < 1:
+                raise ValueError("workers and batch-size must be positive")
+            allocated = os.environ.get("SLURM_CPUS_PER_TASK")
+            if allocated is not None and args.workers > int(allocated):
+                raise ValueError("--workers exceeds SLURM_CPUS_PER_TASK; request more CPUs or reduce workers")
         if args.command in {"run", "collect"}:
             if args.command == "run" and (args.report_name in {"", ".", ".."} or any(c in args.report_name for c in "/\\:")):
                 raise ValueError("--report-name must be one folder name")
             if args.shell_radius is not None and (args.no_pairs or args.no_export_pairs):
                 raise ValueError("--shell-radius requires pair analysis and pair exports")
-            allocated = os.environ.get("SLURM_CPUS_PER_TASK")
-            if allocated is not None and args.workers > int(allocated):
-                raise ValueError("--workers exceeds SLURM_CPUS_PER_TASK; request more CPUs or reduce workers")
             mapping = None
             if args.type_symbols:
                 mapping = {int(k): v for k, v in json.loads(args.type_symbols.read_text(encoding="utf-8")).items()}
@@ -212,6 +219,7 @@ def main(argv=None):
             progress = None if args.quiet else lambda message: print(message, flush=True)
             args.output.mkdir(parents=True, exist_ok=True)
             cache = args.output / "cache"
+            started = perf_counter()
             cache_analysis(args.directory, cache, units=args.units, timestep_ps=args.timestep_ps,
                            input_file=args.input_file, dump_file=args.dump_file, data_file=args.data_file,
                            frame_stride=args.frame_stride, max_frames=args.max_frames, bond_scale=args.bond_scale,
@@ -219,14 +227,23 @@ def main(argv=None):
                            reaction_atom_counts=args.reaction_atom_counts,
                            pair_criteria=criteria, pair_backend=args.pair_backend, pair_workers=args.workers,
                            pair_batch_size=args.batch_size, progress=progress)
+            if progress:
+                progress(f"Cache analysis/write: {perf_counter()-started:.2f} s")
             report = None
             if args.command == "run":
+                started = perf_counter()
                 report = write_report(cache, args.output / "reports" / args.report_name, **_report_kwargs(args))
+                if progress:
+                    progress(f"Statistical report: {perf_counter()-started:.2f} s")
             if not args.no_pairs and not args.no_export_pairs:
                 # Separate explicitly selected exports from the full-cache product.
                 pair_folder = "pairs" if args.startframe == 0 and args.endframe is None else f"pairs_frames_{args.startframe}_{args.endframe if args.endframe is not None else 'end'}"
+                started = perf_counter()
                 export_pairs(cache, args.output / pair_folder, shell_radius=args.shell_radius,
-                             startframe=args.startframe, endframe=args.endframe, progress=progress)
+                             startframe=args.startframe, endframe=args.endframe, progress=progress,
+                             workers=args.workers, batch_size=args.batch_size)
+                if progress:
+                    progress(f"Pair/shell export: {perf_counter()-started:.2f} s")
             print(f"Cache: {cache.resolve()}")
             if report is not None:
                 print(f"Report: {report}")
@@ -237,7 +254,8 @@ def main(argv=None):
         else:
             print(export_pairs(args.cache, args.output, shell_radius=args.shell_radius,
                                startframe=args.startframe, endframe=args.endframe,
-                               progress=None if args.quiet else lambda message: print(message, flush=True)))
+                               progress=None if args.quiet else lambda message: print(message, flush=True),
+                               workers=args.workers, batch_size=args.batch_size))
     except (ValueError, OSError, KeyError, TypeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

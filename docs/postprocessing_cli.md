@@ -2,7 +2,7 @@
 
 For every-frame pair and pair+shell Extended XYZ collection without statistics
 reports, use [the collect command](collect_pairs.md). It preserves source forces,
-roles and explicit local/global atom mappings and supports the existing pair workers.
+roles and explicit local/global atom mappings and supports indexed frame workers.
 
 Install the package in the environment used on the compute node:
 
@@ -29,7 +29,8 @@ Units and timestep are mandatory; temperature DOF is explicit and optional.
 For CPD/MAL reaction screening add `--reaction-atom-counts 11 23`. This rebuilds
 connectivity on every source frame, before striding, and stops on a 34-atom
 connected component rather than continuing fixed-species statistics. It is an
-optional, sequential, distance-based possible-product screen, not proof of reaction.
+optional, distance-based possible-product screen, not proof of reaction. It runs
+inside the frame workers when parallel processing is enabled.
 Notebook 08 requires a cache with this screen (or a fresh raw-data analysis).
 See [reaction screening and diffusion](diffusion_assessment.md#possible-reactions).
 
@@ -161,8 +162,10 @@ sbatch --dependency=afterok:123456 examples/slurm/postprocess.slurm /scratch/my_
 Replace `123456` with your actual MD job ID. This uses Slurm's documented
 [`afterok` dependency](https://slurm.schedmd.com/sbatch.html), one task and several
 CPUs per task. Workers cannot exceed `SLURM_CPUS_PER_TASK`; numerical-library
-threads are limited to one per process in the template. Benchmark worker counts:
-more workers can be slower, and reading/unwrapping/exports remain sequential.
+threads are limited to one per process in the template. Workers now parse and
+prepare indexed frame chunks and construct pair/shell exports. Benchmark worker
+counts: shared-storage bandwidth, ordered writing and serial reports limit scaling.
+See [parallel processing](parallel_postprocessing.md).
 
 For many independent simulations, use
 [`postprocess_array.slurm`](../examples/slurm/postprocess_array.slurm). Create a

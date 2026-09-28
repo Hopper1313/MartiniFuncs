@@ -87,9 +87,11 @@ indices. Keep the source dump and cache for alternative exports.
 
 ## Parallelism and reuse
 
-The existing process pool performs pair screening with `--workers` and
-`--batch-size` (retained frames per task). Reading, reaction checking, unwrapping,
-shell construction and ordered file writing remain sequential. Use one Slurm
+The frame process pool uses `--workers` and `--batch-size` (source frames per
+analysis chunk; selected frames per export chunk). Workers parse indexed byte
+ranges, reconstruct molecules, check reactions and screen pairs. Export workers
+parse frames and construct pairs/shells. Temporal COM accumulation and final
+ordered file writing remain sequential. Use one Slurm
 task and allocate at least the requested workers; no GPU is used. This command
 does not generate diffusion or stability reports. It still uses the existing
 analysis cache, including molecular arrays, then makes one source pass for export.
@@ -106,3 +108,6 @@ omit them for all frames. Explicit selections create `pairs_frames_START_END/`.
 `--frame-stride` and `--max-frames` deliberately reduce available sampling; omit
 them for the requested every-frame collection. Large output scales with the
 number of encounters and shell atoms, not just the number of source frames.
+
+See [parallel processing](parallel_postprocessing.md) for scheduling, timings,
+memory limits and serial-equivalence checks.

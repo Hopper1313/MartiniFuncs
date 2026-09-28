@@ -6,9 +6,7 @@ from pathlib import Path
 import re
 
 import numpy as np
-from ase import units as ase_units
 from ase.data import covalent_radii
-from ase.geometry import find_mic
 
 from . import graph, md_statistics as md
 from .lammpsio import iter_lammps_frames, read_lammps_input_settings
@@ -101,9 +99,10 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
     identities and the whole coordinates already reconstructed above. It assumes
     unchanged connectivity; existing checks detect broken reconstruction, not
     every new bond. 'reference' rebuilds the pair graph each retained frame.
-    pair_workers=1 avoids process overhead; >1 enables spawned processes with
-    pair_batch_size retained frames per batch and at most 2*pair_workers batches
-    in flight. Only pair calculations are parallel; reading and TOR are sequential.
+    pair_workers=1 avoids process overhead; >1 uses indexed frame chunks with
+    pair_batch_size source frames per task and at most 2*pair_workers tasks in
+    flight. Parsing, reconstruction, reaction and pair screening are parallel.
+    TOR accumulation remains ordered in the parent across all source frames.
     Standalone multiprocessing scripts need an if __name__ == '__main__' guard.
     Returned pairs and pair_shifts_by_frame stay in retained-frame order.
     Cached pairs retain initial component atom order; the reference graph's
@@ -115,8 +114,6 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
     for name, value in (("pair_workers", pair_workers), ("pair_batch_size", pair_batch_size)):
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise ValueError(f"{name} must be a positive integer")
-    if compute_pairs and pair_backend == "reference" and pair_workers != 1:
-        raise ValueError("Parallel pair workers require pair_backend='cached'")
     for name, value in (("frame_stride", frame_stride), ("max_frames", max_frames)):
         if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 1):
             raise ValueError(f"{name} must be a positive integer")
@@ -159,10 +156,15 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
         raise ValueError("Timestep missing from input: supply timestep_ps from the original run/restart settings")
     mappings = list(settings["dump_elements"].values())
     mapping = type_symbols if type_symbols is not None else (mappings[0] if mappings and all(m == mappings[0] for m in mappings) else None)
-    frames = iter_lammps_frames(files["dump"], units="metal", input_datafile=files["data"], type_symbols=mapping)
+    from .frame_parallel import analysis_frames, prepare_frame
+    preparation = {}
+    reader_options = dict(units="metal", input_datafile=files["data"], type_symbols=mapping)
+    frames = (analysis_frames(files["dump"], reader_options, preparation,
+                             workers=pair_workers, batch_size=pair_batch_size,
+                             max_frames=max_frames, progress=progress)
+              if pair_workers > 1 else iter_lammps_frames(files["dump"], **reader_options))
     rows, coms, velocities, forces, pairs_by_frame = [], [], [], [], []
     pair_shifts_by_frame = []
-    pair_runner = None
     wrapped_coms, box_lengths = [], []
     notices = ["Molecular membership fixed from first-frame bond graph; species grouped by formula.",
                "No potential energy or pressure computed from atomic forces; thermo logs are not parsed."]
@@ -172,13 +174,15 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
     frames_read = 0
     previous_step = None
     with ExitStack() as stack:
+        if hasattr(frames, 'close'):
+            stack.callback(frames.close)
         for frame in islice(frames, max_frames):
             if previous_step is not None and frame.timestep <= previous_step:
                 raise ValueError("Timesteps must increase; split restarted/concatenated trajectories explicitly")
             previous_step = frame.timestep
             frames_read += 1
-            atoms = frame.atoms
-            if reaction_atom_counts is not None:
+            atoms = getattr(frame, 'atoms', None)
+            if first is None and reaction_atom_counts is not None:
                 from .reaction_detection import find_possible_products, PossibleReactionError
                 hits = find_possible_products(atoms, reactant_atom_counts=reaction_atom_counts,
                                               bond_scale=bond_scale)
@@ -212,14 +216,13 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
                 cutoffs = bond_scale*(covalent_radii[atoms.numbers[edges[:,0]]] + covalent_radii[atoms.numbers[edges[:,1]]])
                 masses = atoms.get_masses()
                 molecular_masses = np.bincount(groups, weights=masses)
+                topology = None
                 if compute_pairs:
                     if set(species) != {"C5H6", "C11H9NO2"}:
                         raise ValueError("Pair lifetime screening is currently specific to the CPD/dienophile mixture")
                     if pair_backend == "cached":
-                        from .trajectory_pairs import FixedPairTopology, PairBatchRunner
+                        from .trajectory_pairs import FixedPairTopology
                         topology = FixedPairTopology.from_frame(atoms, bonded, components)
-                        pair_runner = stack.enter_context(PairBatchRunner(
-                            topology, pair_criteria, workers=pair_workers, batch_size=pair_batch_size))
                         notices.append("Pair sites/topology cached from the first frame. The optional product-size "
                                        "screen does not track all new bonds. Use pair_backend='reference' "
                                        "to rebuild pair topology each retained frame.")
@@ -231,29 +234,21 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
                     notices.append("No velocities: temperature and molecular VACF unavailable.")
                 if not has_forces:
                     notices.append("No forces: molecular force correlation unavailable.")
-            np.testing.assert_array_equal(atoms.arrays["global_index"], ids)
-            np.testing.assert_array_equal(atoms.numbers, first.numbers)
-            np.testing.assert_allclose(atoms.get_masses(), masses)
-            if has_velocities != ("momenta" in atoms.arrays) or has_forces != ("lammps_forces" in atoms.arrays):
-                raise ValueError("Velocity/force availability changes within the dump")
-            length = atoms.cell.array.diagonal()
-            orthogonal = atoms.pbc.all() and np.allclose(atoms.cell.array,np.diag(length),atol=1e-10) and np.all(length>0)
-            whole = atoms.positions.copy()
-            for level in levels:
-                parent, child = level.T
-                delta = atoms.positions[child]-atoms.positions[parent]
-                if orthogonal:
-                    delta -= length*np.floor(delta/length+.5)
-                else:
-                    delta = find_mic(delta, atoms.cell, atoms.pbc)[0]
-                whole[child] = whole[parent]+delta
-            if len(edges) and np.any(np.linalg.norm(whole[edges[:,1]]-whole[edges[:,0]],axis=1) > 1.25*cutoffs):
-                raise ValueError(f"Frame {frame.index}: fixed molecular topology no longer reconstructs consistently")
-            com = np.column_stack([np.bincount(groups,weights=masses*whole[:,axis])/molecular_masses for axis in range(3)])
+                preparation.update(ids=ids, numbers=first.numbers, masses=masses,
+                    has_velocities=has_velocities, has_forces=has_forces,
+                    levels=levels, edges=edges, cutoffs=cutoffs, groups=groups,
+                    molecular_masses=molecular_masses, topology=topology,
+                    compute_pairs=compute_pairs, pair_criteria=pair_criteria,
+                    frame_stride=frame_stride, bond_scale=bond_scale,
+                    degrees_of_freedom=degrees_of_freedom,
+                    reaction_atom_counts=reaction_atom_counts)
+            prepared = getattr(frame, "prepared", None)
+            if prepared is None:
+                prepared = prepare_frame(frame, preparation)
+            com, orthogonal, length, pairs, shifts, center, scalars, velocity, force = prepared
             if not orthogonal:
                 diffusion_reason = "Molecular MSD disabled: TOR currently requires fully periodic orthorhombic cells."
             elif diffusion_reason is None:
-                center = np.asarray(atoms.get_celldisp()).ravel()+length/2
                 if previous_box_center is not None and not np.allclose(center,previous_box_center,rtol=0,atol=1e-7):
                     diffusion_reason = "Molecular MSD disabled: box center moves; an explicit reference-frame convention is needed."
                 wrapped = com-center
@@ -268,37 +263,21 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
             if frame.index % frame_stride:
                 continue
             row = {"frame": frame.index, "timestep": frame.timestep, "time_ps": frame.timestep*settings["timestep"],
-                   "density_g_cm3": md.get_frame_density(atoms), "volume_angstrom3": atoms.get_volume()}
+                   **scalars}
             if has_velocities:
-                if degrees_of_freedom is not None:
-                    row["temperature_K"] = md.get_frame_temperature(atoms,degrees_of_freedom=degrees_of_freedom)
-                v = atoms.get_velocities()*1000*ase_units.fs
-                velocities.append(np.column_stack([np.bincount(groups,weights=masses*v[:,axis])/molecular_masses for axis in range(3)]))
+                velocities.append(velocity)
             if has_forces:
-                f = atoms.arrays["lammps_forces"]
-                forces.append(np.column_stack([np.bincount(groups,weights=f[:,axis]) for axis in range(3)]))
+                forces.append(force)
             if compute_pairs:
-                if pair_runner is not None:
-                    pair_runner.add(frame.index, whole, atoms.cell.array, atoms.pbc)
-                else:
-                    from .geom_utils import get_all_prereactive_pairs
-                    pairs, shifts = get_all_prereactive_pairs(atoms, scale=bond_scale, criteria=pair_criteria)
-                    pairs_by_frame.append(pairs)
-                    pair_shifts_by_frame.append(shifts)
-                    row["candidate_pairs"] = len(pairs)
+                pairs_by_frame.append(pairs)
+                pair_shifts_by_frame.append(shifts)
+                row["candidate_pairs"] = len(pairs)
             rows.append(row)
             wrapped_coms.append(wrapped.copy() if diffusion_reason is None else np.full_like(com,np.nan))
             box_lengths.append(length.copy())
             coms.append(running_com.copy() if diffusion_reason is None else np.full_like(com,np.nan))
             if progress is not None and (len(rows)==1 or len(rows)%100==0):
-                progress(f"Read {frames_read} frames; retained {len(rows)}; time {row['time_ps']:g} ps")
-        if pair_runner is not None:
-            for row, (pairs, shifts) in zip(rows, pair_runner.finish()):
-                pairs_by_frame.append(pairs)
-                pair_shifts_by_frame.append(shifts)
-                row["candidate_pairs"] = len(pairs)
-            if progress is not None:
-                progress(f"Pair analysis complete for {len(rows)} retained frames")
+                progress(f"Processed {frames_read} frames; retained {len(rows)}; time {row['time_ps']:g} ps")
     if len(rows)<2:
         raise ValueError("Need at least two retained frames")
     times = np.array([row["time_ps"] for row in rows])

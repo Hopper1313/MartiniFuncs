@@ -116,8 +116,8 @@ class TrajectoryPairTests(unittest.TestCase):
             options = dict(units="metal", timestep_ps=.0005, compute_pairs=True,
                            pair_criteria=PairCriteria(max_axis_angle=60), frame_stride=2)
             reference = analyze_run(directory, pair_backend="reference", **options)
-            for workers in (1, 2):
-                result = analyze_run(directory, pair_workers=workers, pair_batch_size=2, **options)
+            for workers, backend in ((1, 'cached'), (2, 'cached'), (2, 'reference')):
+                result = analyze_run(directory, pair_workers=workers, pair_backend=backend, pair_batch_size=2, **options)
                 self.assertEqual(pair_ids(result["pairs_by_frame"]), pair_ids(reference["pairs_by_frame"]))
                 self.assertEqual(result["pair_shifts_by_frame"], reference["pair_shifts_by_frame"])
                 self.assertEqual(result["frames"], reference["frames"])
@@ -139,8 +139,7 @@ class TrajectoryPairTests(unittest.TestCase):
 
     def test_configuration_validation(self):
         for options in ({"pair_workers": 0}, {"pair_workers": True},
-                        {"pair_batch_size": 0}, {"pair_backend": "unknown"},
-                        {"compute_pairs": True, "pair_backend": "reference", "pair_workers": 2}):
+                        {"pair_batch_size": 0}, {"pair_backend": "unknown"}):
             with self.assertRaises(ValueError):
                 analyze_run("unused", **options)
 

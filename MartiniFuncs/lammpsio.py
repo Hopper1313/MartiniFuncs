@@ -54,11 +54,21 @@ def mass_to_symbol(target_mass):
                key=lambda e: abs(e.mass - target_mass)).symbol
 
 
-def _iter_blocks(path):
+def _iter_blocks(path, byte_range=None):
     """Yield one text frame at a time without losing boundary markers."""
-    with open(path, encoding="utf-8") as stream:
+    with open(path, 'rb') as stream:
+        if byte_range is not None:
+            stream.seek(byte_range[0])
+        position = 0 if byte_range is None else byte_range[0]
         block = []
-        for line_number, line in enumerate(stream, 1):
+        line_number = 0
+        while byte_range is None or position < byte_range[1]:
+            raw = stream.readline()
+            if not raw:
+                break
+            position += len(raw)
+            line = raw.decode('utf-8').replace('\r\n', '\n')
+            line_number += 1
             if line.strip() == "ITEM: TIMESTEP":
                 if block:
                     yield "".join(block)
@@ -186,7 +196,7 @@ def _select(iterator, index):
 
 
 def iter_lammps_frames(path, *, units, input_datafile=None, type_symbols=None,
-                       id_offset=1, wrap=False):
+                       id_offset=1, wrap=False, byte_range=None, frame_offset=0):
     """Stream synchronized frames with explicit LAMMPS units.
 
     Each bounded frame is parsed for raw metadata and by ASE for geometry and
@@ -199,13 +209,15 @@ def iter_lammps_frames(path, *, units, input_datafile=None, type_symbols=None,
     and forces. Scaled coordinates obey r=s @ cell+origin; optional wrapping
     acts on r-origin. global_index=lammps_id-id_offset; image flags are stored,
     not added to positions. For wrapped r and image n, whole r is r+n @ cell.
+    byte_range is an internal half-open range from a frame-offset index;
+    frame_offset preserves source frame numbering when reading that range.
     """
     if units not in {"metal", "real", "si", "cgs", "electron", "micro", "nano"}:
         raise ValueError(f"Unsupported physical LAMMPS units: {units!r}")
     if not isinstance(id_offset, (int, np.integer)):
         raise TypeError("id_offset must be an integer")
     data = read_input_datafile(input_datafile, units=units)[-1] if input_datafile is not None else None
-    for index, text in enumerate(_iter_blocks(path)):
+    for index, text in enumerate(_iter_blocks(path, byte_range), start=frame_offset):
         try:
             timestep, columns, bounds, declared = _parse_block(text)
             if declared is not None and declared != units:

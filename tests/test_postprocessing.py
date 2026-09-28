@@ -18,6 +18,28 @@ from MartiniFuncs.postprocessing import cache_analysis, load_analysis_cache, wri
 
 
 class PostprocessingTests(unittest.TestCase):
+    def test_parallel_full_frames_and_shells_match_serial(self):
+        """Worker count/chunk boundaries must not change any scientific output."""
+        from MartiniFuncs.trajectory_analysis import analyze_run
+        options = dict(units='metal', timestep_ps=.0005, compute_pairs=True,
+                       reaction_atom_counts=(11, 23), degrees_of_freedom='3N-3')
+        serial = analyze_run(self.run, **options)
+        parallel = analyze_run(self.run, pair_workers=2, pair_batch_size=3, **options)
+        self.assertEqual(serial['frames'], parallel['frames'])
+        self.assertEqual(serial['pairs_by_frame'], parallel['pairs_by_frame'])
+        self.assertEqual(serial['pair_shifts_by_frame'], parallel['pair_shifts_by_frame'])
+        for key in ('com_angstrom', 'wrapped_com_angstrom', 'com_velocity_angstrom_ps',
+                    'net_force_eV_angstrom', 'box_lengths_angstrom'):
+            np.testing.assert_array_equal(serial[key], parallel[key])
+        cache = self.output / 'cache'
+        cache_analysis(self.run, cache, **options, progress=None)
+        for workers in (1, 2):
+            export_pairs(cache, self.root / f'export{workers}', shell_radius=2,
+                         workers=workers, batch_size=3, progress=None)
+        for name in ('pairs.extxyz', 'clusters.extxyz', 'index.jsonl', 'frames.csv'):
+            self.assertEqual((self.root / 'export1' / name).read_bytes(),
+                             (self.root / 'export2' / name).read_bytes(), name)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

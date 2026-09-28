@@ -18,6 +18,10 @@ class PossibleReactionError(ValueError):
                          "Inspect exception.candidates and scan_possible_products; "
                          "atom count alone does not confirm a reaction.")
 
+    def __reduce__(self):
+        """Preserve candidate evidence when propagated from a frame worker."""
+        return type(self), (self.candidates,)
+
 
 def find_possible_products(atoms, *, reactant_atom_counts, bond_scale=1.3):
     """Find components with size sum(reactant_atom_counts) in one current frame.
