@@ -65,6 +65,39 @@ class WorkflowNotebookTests(unittest.TestCase):
         self.assertEqual(len(namespace["packed"]),36)
         self.assertTrue((self.directory/"packed/npt.in").is_file())
 
+    def test_diffusion_assessment_short_dump_is_inconclusive(self):
+        (self.directory/"run.out").write_text("Step Time Temp Press PotEng\n" + "".join(
+            f"{step} {step*.0005} {400+step/8000} 25000 -1000\n" for step in range(0, 8001, 2000)))
+        # Simulate an open kernel retaining the pre-dump_file function signature.
+        with patch("MartiniFuncs.thermo.attach_thermo", lambda frames, thermo, block=None: None):
+            result, _ = self.run_notebook("08_diffusion_and_equilibration.ipynb",
+                BOOTSTRAP_RESAMPLES=100, WRITE_FILES=True, OUTPUT_DIR=self.directory/"assessment")
+        table = result["diffusion_table"]
+        self.assertEqual(len(table), 12)
+        self.assertTrue((table["status"] == "insufficient sampling").all())
+        self.assertTrue((result["diffusion_summary"]["Finding"] == "Requested lag ranges cannot be evaluated").all())
+        self.assertTrue((result["sampling_table"]["Complete blocks"] < result["sampling_table"]["Required blocks"]).all())
+        self.assertTrue((self.directory/"assessment/diffusion_findings.csv").is_file())
+        self.assertTrue((self.directory/"assessment/settings.json").is_file())
+        self.assertEqual(result["thermo_coverage"]["matched_frames"], 5)
+        self.assertEqual(result["frames"]["temperature_K"].notna().sum(), 5)
+        self.assertIn("pressure_bar", result["scalar_summary"]["Observable"].tolist())
+
+    def test_diffusion_assessment_plots_block_intervals(self):
+        rng = np.random.default_rng(51)
+        p = rng.normal(scale=.4, size=(1000, 20, 3)).cumsum(axis=0)
+        synthetic = dict(frames=[dict(frame=i, time_ps=float(i), density_g_cm3=float(1+rng.normal(0, .001)),
+                                      volume_angstrom3=1000.) for i in range(len(p))],
+                         species=np.array(["synthetic"]*20), com_angstrom=p,
+                         wrapped_com_angstrom=(p+5) % 10-5,
+                         box_lengths_angstrom=np.ones((len(p), 3))*10,
+                         frames_read=len(p), settings={}, files={}, notices=[])
+        with patch("MartiniFuncs.trajectory_analysis.analyze_run", return_value=synthetic):
+            result, _ = self.run_notebook("08_diffusion_and_equilibration.ipynb",
+                FIT_INTERVALS_PS=[(1, 4), (2, 5), (3, 6)], BLOCK_DURATIONS_PS=[60, 120],
+                BOOTSTRAP_RESAMPLES=100, SCALAR_TOLERANCES={"density_g_cm3": .01}, SHOW_DETAILS=True)
+        self.assertTrue(np.isfinite(result["diffusion_table"]["D_m2_s"]).all())
+
     def test_pair_export_reaction_preparation_and_manual_mode(self):
         output = self.directory/"extracted"
         selected,display = self.run_notebook("03_select_pairs_and_environments.ipynb",

@@ -54,7 +54,8 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
                 frame_stride=1, max_frames=None, bond_scale=1.3,
                 degrees_of_freedom=None, compute_pairs=False, pair_criteria=None,
                 pair_backend="cached", pair_workers=1, pair_batch_size=32,
-                units=None, timestep_ps=None, units_style=None, type_symbols=None, progress=None):
+                units=None, timestep_ps=None, units_style=None, type_symbols=None, progress=None,
+                reaction_atom_counts=None):
     """Stream a text dump; retain scalar histories and all molecular COM vectors.
 
     max_frames caps source frames read, not retained frames. Molecules are the
@@ -89,6 +90,12 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
     For centered wrapped COM w_t, accumulate u_t=u_(t-1)+d_t-L_t*floor(d_t/L_t+1/2),
     d_t=w_t-w_(t-1). This TOR update uses every source frame before striding.
     Temperature is 2*K/(f*k_B) without COM subtraction; '3N-3' specifies f only.
+
+    reaction_atom_counts=(11, 23) enables an exact-size possible-product screen
+    for the current CPD/MAL system. It rebuilds connectivity on EVERY source frame,
+    before striding, and raises PossibleReactionError with atom IDs at the first
+    candidate. This costs an additional graph calculation per source frame. None
+    skips screening; fixed-connectivity analysis then assumes no new products.
 
     When compute_pairs=True, pair_backend='cached' reuses initial molecule/site
     identities and the whole coordinates already reconstructed above. It assumes
@@ -171,6 +178,13 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
             previous_step = frame.timestep
             frames_read += 1
             atoms = frame.atoms
+            if reaction_atom_counts is not None:
+                from .reaction_detection import find_possible_products, PossibleReactionError
+                hits = find_possible_products(atoms, reactant_atom_counts=reaction_atom_counts,
+                                              bond_scale=bond_scale)
+                if hits:
+                    raise PossibleReactionError([dict(frame=int(frame.index), timestep=int(frame.timestep), **hit)
+                                                 for hit in hits])
             if first is None:
                 first = atoms.copy()
                 if degrees_of_freedom == "3N-3":
@@ -206,8 +220,9 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
                         topology = FixedPairTopology.from_frame(atoms, bonded, components)
                         pair_runner = stack.enter_context(PairBatchRunner(
                             topology, pair_criteria, workers=pair_workers, batch_size=pair_batch_size))
-                        notices.append("Pair sites/topology cached from the first frame; new bonds are not detected. "
-                                       "Use pair_backend='reference' to rebuild pair topology each retained frame.")
+                        notices.append("Pair sites/topology cached from the first frame. The optional product-size "
+                                       "screen does not track all new bonds. Use pair_backend='reference' "
+                                       "to rebuild pair topology each retained frame.")
                 has_velocities = "momenta" in atoms.arrays
                 has_forces = "lammps_forces" in atoms.arrays
                 if degrees_of_freedom is None:
@@ -252,7 +267,7 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
                 previous_wrapped, previous_box_center = wrapped, center
             if frame.index % frame_stride:
                 continue
-            row = {"frame": frame.index, "time_ps": frame.timestep*settings["timestep"],
+            row = {"frame": frame.index, "timestep": frame.timestep, "time_ps": frame.timestep*settings["timestep"],
                    "density_g_cm3": md.get_frame_density(atoms), "volume_angstrom3": atoms.get_volume()}
             if has_velocities:
                 if degrees_of_freedom is not None:
@@ -292,6 +307,8 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
     if diffusion_reason:
         notices.append(diffusion_reason)
     return {"files":files,"settings":settings,"frames":rows,"frames_read":frames_read,
+            "reaction_screen": {"reactant_atom_counts": list(reaction_atom_counts),
+                                "bond_scale": bond_scale, "frames_checked": frames_read} if reaction_atom_counts is not None else None,
             "source_frame_limit":max_frames,"species":np.array(species),
             "molecule_atom_ids":components,"com_angstrom":None if diffusion_reason else np.asarray(coms),
             "wrapped_com_angstrom":None if diffusion_reason else np.asarray(wrapped_coms),

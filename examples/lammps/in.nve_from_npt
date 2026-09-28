@@ -1,0 +1,53 @@
+# UMA NVE relaxation / production from an NPT binary restart.
+# Types: 1=C 2=H 3=N 4=O; change dump_modify if your type order differs.
+# Launch with the same fairchem-lammps driver, UMA checkpoint, task, charge,
+# spin and inference settings used for the NPT trajectory.
+# Collaboration model: uma-s-1p1, task omol (model loading is external).
+# This file does not configure a potential or evaluate forces on its own.
+# See docs/nve_from_npt.md for editable settings and energy checks.
+
+# INPUT: replace with the chosen final NPT restart.
+# Restores atomic coordinates, velocities, masses, box and current step.
+read_restart    equilibrated_2p5.restart
+
+# Reissue neighbor and communication settings for this run.
+neighbor        2.0 bin
+neigh_modify    every 10 delay 0 check yes
+comm_modify     cutoff 6.0
+
+# metal units: 0.0005 ps = 0.5 fs per integration step.
+timestep        0.0005
+
+# Preserve restart velocities and timestep numbering.
+# No velocity creation/rescaling, thermostat, barostat or box deformation.
+# A fresh read_restart does not recreate the old NPT fix command;
+# no "unfix 1" is needed here. Use a distinct integration-fix ID.
+fix             integrate_nve all nve
+
+# Extensive energies (eV) and intensive temperature/pressure (K/bar).
+# thermo_modify norm no makes energies totals, not per-atom values.
+thermo_style    custom step time temp pe ke etotal press &
+                       pxx pyy pzz pxy pxz pyz vol density lx ly lz xy xz yz
+thermo_modify   norm no
+# Match thermo and dump sampling: 1000 steps = 0.5 ps.
+thermo          1000
+
+# This is each atom's force magnitude, not the whole-system net force.
+variable        netforce atom sqrt(fx*fx+fy*fy+fz*fz)
+
+# OUTPUT: change the nve_2p5 prefix consistently for each new run.
+dump            trajectory all custom 1000 nve_2p5.lammpstrj &
+                id type mass element x y z &
+                ix iy iz vx vy vz &
+                fx fy fz v_netforce
+dump_modify     trajectory element C H N O sort id
+
+# Periodic checkpoints every 100000 steps = 50 ps.
+restart         100000 nve_2p5.restart.*
+timer           full
+
+# 2000000 additional steps * 0.0005 ps = 1000 ps = 1 ns.
+# Keep both step counts below equal when changing the run duration.
+# Duration is an example, not a criterion that establishes equilibration.
+# MUST remain one physical line and the final executable command for the driver.
+run 2000000 every 2000000 "write_data nve_2p5.final.data" "write_restart nve_2p5.final.restart"

@@ -23,6 +23,13 @@ Its saved cache can also be loaded in Python for interactive analysis.
 4. Export is opt-in (`WRITE_FILES=True` or `SAVE_PLOTS=True`). Existing structure
    exports are protected. Real UMA inference is separately opt-in.
 
+Each notebook includes visible **Mathematics** Markdown cells next to its
+calculations: equations, variable definitions, units, and links between inputs
+and outputs. Notebook 08 also maps every numerical configuration setting to its
+role, including block rounding, bootstrap percentiles, relative thresholds and
+the separate scalar/diffusion block rules. These document current implementation
+behavior; a chosen tolerance is a screening assumption, not a physical constant.
+
 | Notebook | Supply | Produces / next step |
 |---|---|---|
 | [01 Read and inspect](01_read_and_inspect_trajectory.ipynb) | Text dump, units, timestep; optional data file | Frame arrays, molecule inventory, streamed scalar history |
@@ -32,10 +39,18 @@ Its saved cache can also be loaded in Python for interactive analysis.
 | [05 Stability and structure](05_stability_and_structure.ipynb) | Raw run directory, selected source-frame window | Block statistics, batch errors, species COM RDFs |
 | [06 Force reproduction](06_reproduce_uma_forces.ipynb) | Full periodic dump, local model, charge/spin, tolerance | UMA reproduction report; begin with one frame |
 | [07 Reaction preparation](07_prepare_reaction_inputs.ipynb) | Your own `cluster.extxyz` from 03 | Frozen-shell ASE structure and row-identified force archive |
+| [08 Diffusion and equilibration](08_diffusion_and_equilibration.ipynb) | Run directory or optional CLI cache; explicit source windows | Diffusive-regime checks, temporal-block uncertainty, scalar equivalence and structural comparisons |
 
 Only 07 requires a derived structure, and 03 shows exactly how to generate it.
-No notebook reads precomputed reports, cached trajectories, or bundled research
-results. No notebook runs LAMMPS or a reaction optimization automatically.
+No notebook requires precomputed reports or bundled research results. Notebook 08
+can optionally reuse your own CLI cache. No notebook runs LAMMPS or a reaction
+optimization automatically.
+
+Use 08 when assessing whether a diffusion coefficient is supportable. It compares
+lag fits, temporal blocks, block sizes and source windows, and reports insufficient
+sampling explicitly. Set scientifically meaningful absolute scalar tolerances;
+inspect structure and slow observables before claiming equilibration. The notebook
+documents missing thermo data, uncertainty assumptions, and all numerical screens.
 
 Notebook 04 now caches pair topology. Start with `PAIR_WORKERS=1`; optional
 process workers are not necessarily faster after caching. See

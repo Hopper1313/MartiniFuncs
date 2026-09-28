@@ -6,6 +6,14 @@ Usage (also available as the installed martini-postprocess command)::
     python -m MartiniFuncs.cli report ANALYSIS_DIR/cache --output REPORT_DIR --startframe 1000 --endframe 2000
     python -m MartiniFuncs.cli extract ANALYSIS_DIR/cache --output PAIRS_DIR --startframe 1000 --endframe 2000 --shell-radius 3
 
+collect uses the same cached parallel pair screening as run, and writes both
+pairs.extxyz and clusters.extxyz without generating statistical reports.
+--shell-radius is required. Default stride is 1 (all source frames); default
+reaction screening stops on an inferred 11+23 atom product before fixed-species
+collection can silently mix reactants and products. All pairs means all accepted
+CPD/MAL candidates under the existing 3.25 Angstrom screen and optional criteria,
+not every possible Cartesian combination of molecules.
+
 Frame convention
 ----------------
 startframe is inclusive and endframe is exclusive, like Python slicing. Both
@@ -104,39 +112,59 @@ def _report_kwargs(args):
                 stability=args.stability, rdf_bins=args.rdf_bins)
 
 
+def _analysis_options(parser):
+    """Shared source discovery, pair selection and process-pool options.
+
+    run and collect must use identical screening and frame-stride conventions.
+    Worker options apply to cached pair screening; export is an ordered stream.
+    """
+    parser.add_argument("directory", type=Path, help="simulation directory; unique input/data/dump discovered automatically")
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--units", required=True, choices=["metal"], help="source LAMMPS units; current statistics support metal")
+    parser.add_argument("--timestep-ps", required=True, type=float, help="ps per MD step, not per saved frame")
+    for name in ("input", "dump", "data"):
+        parser.add_argument(f"--{name}-file", help="optional relative or absolute filename override")
+    parser.add_argument("--type-symbols", type=Path, help='JSON type map, e.g. {"1":"C","2":"H"}')
+    parser.add_argument("--frame-stride", type=int, default=1, help="retain every Nth source frame, anchored at frame 0; reading/unwrapping still uses every frame")
+    parser.add_argument("--max-frames", type=int, help="preview only: cap source frames read")
+    parser.add_argument("--bond-scale", type=float, default=1.3)
+    parser.add_argument("--reaction-atom-counts", type=int, nargs=2, metavar=("A", "B"),
+                     help="check every source frame for an A+B atom component; stop on a possible product (CPD/MAL: 11 23)")
+    parser.add_argument("--pair-backend", choices=["cached", "reference"], default="cached")
+    parser.add_argument("--workers", type=int, default=1, help="local pair worker processes, not MPI ranks (default: 1)")
+    parser.add_argument("--batch-size", type=int, default=32, help="retained frames per pair-worker task (default: 32)")
+    for field in fields(PairCriteria):
+        parser.add_argument("--" + field.name.replace("_", "-"), type=float,
+                         help="optional pair threshold (distances Angstrom; acute angles degrees)")
+    parser.add_argument("--quiet", action="store_true")
+
+
 def build_parser():
     """Return the CLI parser; parsing does not read or write simulation data.
 
-    run owns expensive cache settings (physics, topology, sampling, workers).
+    run and collect share cache settings (physics, topology, sampling, workers).
     report owns reusable statistics settings. extract owns geometry export and
-    shell radius. All three share the same source-frame selection convention.
+    shell radius. collect skips reports and requires shells. All commands share
+    the same source-frame selection convention.
     """
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
     run = commands.add_parser("run", help="analyze a finished simulation, cache results, report, and export pairs")
-    run.add_argument("directory", type=Path, help="simulation directory; unique input/data/dump discovered automatically")
-    run.add_argument("--output", type=Path, required=True)
-    run.add_argument("--units", required=True, choices=["metal"], help="source LAMMPS units; current statistics support metal")
-    run.add_argument("--timestep-ps", required=True, type=float, help="ps per MD step, not per saved frame")
-    for name in ("input", "dump", "data"):
-        run.add_argument(f"--{name}-file", help="optional relative or absolute filename override")
-    run.add_argument("--type-symbols", type=Path, help='JSON type map, e.g. {"1":"C","2":"H"}')
-    run.add_argument("--frame-stride", type=int, default=1, help="retain every Nth source frame, anchored at frame 0; reading/unwrapping still uses every frame")
-    run.add_argument("--max-frames", type=int, help="preview only: cap source frames read")
-    run.add_argument("--bond-scale", type=float, default=1.3)
+    _analysis_options(run)
     run.add_argument("--temperature-dof", help="positive number or 3N-3; omitted means no temperature")
     run.add_argument("--no-pairs", action="store_true", help="generic molecular statistics without chemistry-specific pair screening")
     run.add_argument("--no-export-pairs", action="store_true", help="cache pair identities/lifetimes without a second structure-export pass")
-    run.add_argument("--pair-backend", choices=["cached", "reference"], default="cached")
-    run.add_argument("--workers", type=int, default=1, help="local pair worker processes, not MPI ranks (default: 1)")
-    run.add_argument("--batch-size", type=int, default=32, help="retained frames per pair-worker task (default: 32)")
-    for field in fields(PairCriteria):
-        run.add_argument("--" + field.name.replace("_", "-"), type=float,
-                         help="optional pair threshold (distances Angstrom; acute angles degrees)")
     run.add_argument("--shell-radius", type=float, help="also export whole-molecule solvent shells, radius in Angstrom")
     run.add_argument("--report-name", default="default", help="single folder name below output/reports")
-    run.add_argument("--quiet", action="store_true")
     _report_options(run)
+
+    collect = commands.add_parser("collect", help="collect every selected frame's pairs and pairs+shells as Extended XYZ")
+    _analysis_options(collect)
+    _frame_options(collect)
+    collect.add_argument("--shell-radius", type=float, required=True,
+                         help="atom-to-pair shell cutoff in Angstrom; retain whole neighboring molecules")
+    collect.set_defaults(no_pairs=False, no_export_pairs=False, temperature_dof=None,
+                         report_name=None, reaction_atom_counts=[11, 23])
 
     report = commands.add_parser("report", help="regenerate statistics from cache without reading simulation files")
     report.add_argument("cache", type=Path, help="the output/cache directory from run")
@@ -166,8 +194,8 @@ def main(argv=None):
     try:
         if args.startframe < 0 or (args.endframe is not None and args.endframe <= args.startframe):
             raise ValueError("Require 0 <= startframe < endframe; omit endframe to use the cached end")
-        if args.command == "run":
-            if args.report_name in {"", ".", ".."} or any(c in args.report_name for c in "/\\:"):
+        if args.command in {"run", "collect"}:
+            if args.command == "run" and (args.report_name in {"", ".", ".."} or any(c in args.report_name for c in "/\\:")):
                 raise ValueError("--report-name must be one folder name")
             if args.shell_radius is not None and (args.no_pairs or args.no_export_pairs):
                 raise ValueError("--shell-radius requires pair analysis and pair exports")
@@ -188,15 +216,22 @@ def main(argv=None):
                            input_file=args.input_file, dump_file=args.dump_file, data_file=args.data_file,
                            frame_stride=args.frame_stride, max_frames=args.max_frames, bond_scale=args.bond_scale,
                            type_symbols=mapping, degrees_of_freedom=dof, compute_pairs=not args.no_pairs,
+                           reaction_atom_counts=args.reaction_atom_counts,
                            pair_criteria=criteria, pair_backend=args.pair_backend, pair_workers=args.workers,
                            pair_batch_size=args.batch_size, progress=progress)
-            report = write_report(cache, args.output / "reports" / args.report_name, **_report_kwargs(args))
+            report = None
+            if args.command == "run":
+                report = write_report(cache, args.output / "reports" / args.report_name, **_report_kwargs(args))
             if not args.no_pairs and not args.no_export_pairs:
                 # Separate explicitly selected exports from the full-cache product.
                 pair_folder = "pairs" if args.startframe == 0 and args.endframe is None else f"pairs_frames_{args.startframe}_{args.endframe if args.endframe is not None else 'end'}"
                 export_pairs(cache, args.output / pair_folder, shell_radius=args.shell_radius,
                              startframe=args.startframe, endframe=args.endframe, progress=progress)
-            print(f"Cache: {cache.resolve()}\nReport: {report}")
+            print(f"Cache: {cache.resolve()}")
+            if report is not None:
+                print(f"Report: {report}")
+            if not args.no_pairs and not args.no_export_pairs:
+                print(f"Pair and cluster exports: {(args.output / pair_folder).resolve()}")
         elif args.command == "report":
             print(write_report(args.cache, args.output, **_report_kwargs(args)))
         else:

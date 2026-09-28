@@ -1,0 +1,51 @@
+# UMA NVT equilibration / production from an NPT binary restart, without shear.
+# Types: 1=C 2=H 3=N 4=O; edit the element mapping if needed.
+# Use the same external fairchem-lammps driver, UMA checkpoint, task,
+# charge, spin and inference settings as the NPT simulation.
+# Collaboration configuration: uma-s-1p1 / omol; model loading is external.
+# See docs/nvt_from_npt.md for editable settings and validation.
+
+# INPUT: chosen NPT restart; preserves positions, velocities and step number.
+# The restart must use metal units. Its box dimensions/tilts remain fixed.
+read_restart    equilibrated_2p5.restart
+
+neighbor        2.0 bin
+neigh_modify    every 10 delay 0 check yes
+comm_modify     cutoff 6.0
+
+# Integration timestep in ps: 0.0005 ps = 0.5 fs.
+timestep        0.0005
+
+# Target temperature at start/end (K), then damping time (ps).
+# 0.05 ps = 100 integration steps here; validate for your system.
+# NVT performs BOTH integration and Nose-Hoover thermostatting.
+# Do not add a second integrator or thermostat to these atoms.
+# A fresh read_restart does not recreate the old NPT fix command.
+fix             integrate_nvt all nvt temp 400.0 400.0 0.05
+
+# No velocity creation, barostat or box deformation.
+# Physical etotal is allowed to fluctuate through heat exchange.
+thermo_style    custom step time temp pe ke etotal press &
+                       pxx pyy pzz pxy pxz pyz vol density lx ly lz xy xz yz
+thermo_modify   norm no
+# Match thermo and dump output: every 0.5 ps.
+thermo          1000
+
+# Per-atom force magnitude.
+variable        netforce atom sqrt(fx*fx+fy*fy+fz*fz)
+
+# OUTPUT: replace the nvt_2p5 prefix consistently for a new run.
+dump            trajectory all custom 1000 nvt_2p5.lammpstrj &
+                id type mass element x y z &
+                ix iy iz vx vy vz &
+                fx fy fz v_netforce
+dump_modify     trajectory element C H N O sort id
+
+# Checkpoints every 50 ps.
+restart         100000 nvt_2p5.restart.*
+timer           full
+
+# Example duration: 2000000 * 0.0005 ps = 1000 ps = 1 ns.
+# Edit BOTH step counts together; duration alone does not prove equilibration.
+# Keep this one physical line and the final executable command for the driver.
+run 2000000 every 2000000 "write_data nvt_2p5.final.data" "write_restart nvt_2p5.final.restart"

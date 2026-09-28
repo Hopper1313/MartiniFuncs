@@ -711,12 +711,15 @@ def pair_data_to_extxyz(data, filename):
     ``local_index``
         Zero-based row/index of the atom in this extracted cluster.
 
+    ``frame_local_index`` / ``lammps_id`` (when provided by the record)
+        Zero-based row in the source ASE frame / original LAMMPS atom ID.
+
     ``pair_role``
         ``"CPD"`` for the CPD reactant, ``"MAL"`` for the dienophile, and
         ``"shell"`` for atoms belonging only to the surrounding shell.
 
-    ``forces`` / ``velocities``
-        The vectors already present in the pair/cluster data record.
+    ``lammps_forces`` / ``velocities``
+        Three-component vectors from the record's forces/velocities fields.
 
     Notes
     -----
@@ -728,7 +731,8 @@ def pair_data_to_extxyz(data, filename):
     record has eV/Angstrom forces and ASE internal velocities; legacy tuples
     retain raw source units. The stored velocities array is not ASE momenta.
     """
-    from ase.io import write
+    from contextlib import nullcontext
+    from ase.io.extxyz import output_column_format
 
     images = []
     nclusters = len(data)
@@ -782,6 +786,12 @@ def pair_data_to_extxyz(data, filename):
 
         cluster.new_array("global_index", global_ids.copy())
         cluster.new_array("local_index", local_ids.copy())
+        for name in ("frame_local_index", "lammps_id"):
+            if name in record:
+                values = np.asarray(record[name], dtype=int)
+                if values.shape != (natoms,):
+                    raise ValueError(f"{name} must contain one index per exported atom")
+                cluster.new_array(name, values.copy())
 
         # ------------------------------------------------------------------
         # Original reactive-pair membership
@@ -843,16 +853,30 @@ def pair_data_to_extxyz(data, filename):
         cluster.info["n_shell"] = int(natoms - len(cpd_local) - len(mal_local))
 
         for key in ("force_units", "velocity_units", "lammps_units", "timestep",
-                    "frame_index", "source", "id_offset", "source_cell", "source_pbc"):
+                    "frame_index", "source", "id_offset", "source_cell", "source_pbc",
+                    "structure_index", "candidate_index", "time_ps"):
             if key in record:
                 cluster.info[key] = record[key]
         images.append(cluster)
 
-    write(
-        filename,
-        images,
-        format="extxyz",
-    )
+    # ASE's default %16.8f truncates small MD force components. Retain its
+    # Extended XYZ header/schema but serialize floating values with 17 digits.
+    context = nullcontext(filename) if hasattr(filename, "write") else open(filename, "w", encoding="utf-8")
+    with context as stream:
+        for cluster in images:
+            arrays = {"symbols": np.asarray(cluster.get_chemical_symbols()),
+                      "positions": cluster.positions,
+                      **{k: v for k, v in cluster.arrays.items() if k not in {"numbers", "positions"}}}
+            columns = list(arrays)
+            comment, _, _, _ = output_column_format(cluster, columns, arrays)
+            stream.write(f"{len(cluster)}\n{comment}\n")
+            for row in range(len(cluster)):
+                values = []
+                for name in columns:
+                    array = arrays[name]
+                    for value in np.asarray(array[row]).reshape(-1):
+                        values.append(format(float(value), ".17g") if array.dtype.kind in "fd" else str(value))
+                stream.write(" ".join(values) + "\n")
 
 
 

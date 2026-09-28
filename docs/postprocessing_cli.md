@@ -1,5 +1,9 @@
 # Post-simulation CLI
 
+For every-frame pair and pair+shell Extended XYZ collection without statistics
+reports, use [the collect command](collect_pairs.md). It preserves source forces,
+roles and explicit local/global atom mappings and supports the existing pair workers.
+
 Install the package in the environment used on the compute node:
 
 ```console
@@ -21,6 +25,13 @@ The run directory supplies the input, dump, and data file through shared discove
 Use `--input-file`, `--dump-file`, or `--data-file` when several files match.
 Units and timestep are mandatory; temperature DOF is explicit and optional.
 `--type-symbols types.json` supplies mappings when required by the dump format.
+
+For CPD/MAL reaction screening add `--reaction-atom-counts 11 23`. This rebuilds
+connectivity on every source frame, before striding, and stops on a 34-atom
+connected component rather than continuing fixed-species statistics. It is an
+optional, sequential, distance-based possible-product screen, not proof of reaction.
+Notebook 08 requires a cache with this screen (or a fresh raw-data analysis).
+See [reaction screening and diffusion](diffusion_assessment.md#possible-reactions).
 
 By default, this command:
 

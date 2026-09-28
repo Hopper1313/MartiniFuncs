@@ -260,6 +260,23 @@ def write_report(cache_dir, output_dir, *, startframe=0, endframe=None,
     return output
 
 
+def _export_identity(records, frame, first_structure, time_ps):
+    """Attach original LAMMPS IDs, source rows and globally numbered structures.
+
+    Frame-local indices are zero-based rows in the ID-sorted source ASE frame;
+    local_index remains the exported structure's row. Neither replaces persistent
+    global_index. Pair and cluster records receive the same structure_index.
+    """
+    ids = frame.atoms.arrays["global_index"]
+    lookup = {int(atom_id): row for row, atom_id in enumerate(ids)}
+    for candidate, record in records.items():
+        rows = np.array([lookup[int(i)] for i in record["atom_ids"]], dtype=int)
+        record.update(frame_local_index=rows,
+                      lammps_id=frame.atoms.arrays["lammps_id"][rows],
+                      structure_index=first_structure+candidate, candidate_index=candidate,
+                      time_ps=time_ps)
+
+
 def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endframe=None, progress=print):
     """Stream selected cached encounters into pair/shell Extended XYZ and an index.
 
@@ -270,6 +287,10 @@ def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endf
     unchanged. Forces remain eV/Angstrom, positions Angstrom, stored velocities
     ASE units. Shell selection uses atom-to-pair distance then completes molecules.
     Source fingerprints must match the cache; no UMA model is evaluated.
+    Entries store forces in lammps_forces[:,0:3] (fx,fy,fz), local_index,
+    global_index, lammps_id, frame_local_index and pair_role. structure_index
+    links pairs.extxyz, clusters.extxyz and index.jsonl in identical order.
+    frames.csv includes selected frames with zero accepted pairs.
     """
     from . import graph
     from .geom_utils import (get_pair_positions_and_forces, get_pair_shell_clusters,
@@ -300,6 +321,7 @@ def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endf
     scale = options.get("bond_scale", 1.3)
     last_frame = max(selected) if selected else -1
     count = 0
+    frame_counts = []
     with (output / "pairs.extxyz").open("w", encoding="utf-8") as pair_stream, \
          (output / "index.jsonl").open("w", encoding="utf-8") as index_stream:
         from contextlib import ExitStack
@@ -313,6 +335,8 @@ def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endf
                     if frame.index not in selected:
                         continue
                     row, pairs, shifts = selected[frame.index]
+                    frame_counts.append(dict(frame=frame.index, timestep=frame.timestep,
+                        time_ps=row["time_ps"], pair_count=len(pairs), first_structure_index=count))
                     if not pairs:
                         continue
                     if "lammps_forces" not in frame.atoms.arrays:
@@ -323,6 +347,7 @@ def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endf
                     if any(frozenset(c) not in memberships for pair in pairs for c in pair):
                         raise ValueError(f"Frame {frame.index}: cached pair membership differs from current graph; use reference analysis")
                     records = get_pair_positions_and_forces(frame.atoms, frame, pairs, shifts, bond_scale=scale, graph=bonded)
+                    _export_identity(records, frame, count, row["time_ps"])
                     buffer = StringIO()
                     pair_data_to_extxyz(records, buffer)
                     pair_stream.write(buffer.getvalue())
@@ -331,7 +356,9 @@ def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endf
                         clusters = get_pair_shell_clusters(frame.atoms, pairs, shifts, shell_radius=shell_radius,
                                                            scale=scale, graph=bonded, components=components)
                         buffer = StringIO()
-                        pair_data_to_extxyz(get_cluster_positions_and_forces(frame.atoms, frame, clusters), buffer)
+                        cluster_records = get_cluster_positions_and_forces(frame.atoms, frame, clusters)
+                        _export_identity(cluster_records, frame, count, row["time_ps"])
+                        pair_data_to_extxyz(cluster_records, buffer)
                         cluster_stream.write(buffer.getvalue())
                     for candidate, (pair, shift, assessment) in enumerate(zip(pairs, shifts, assessments)):
                         record = dict(structure_index=count, frame=frame.index, timestep=frame.timestep,
@@ -344,8 +371,15 @@ def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endf
                         progress(f"Exported {count} pair structures through frame {frame.index}")
     if _fingerprints(result["files"]) != source["sources"]:
         raise ValueError("Source files changed during export; output is incomplete")
+    if len(frame_counts) != len(selected):
+        raise ValueError("Source dump ended before every selected frame was exported")
+    _csv(output / "frames.csv", frame_counts,
+         fields=["frame", "timestep", "time_ps", "pair_count", "first_structure_index"])
     _json(output / "manifest.json", {"schema_version": SCHEMA_VERSION, "configuration": config,
                                      "structures": count, "pair_file": "pairs.extxyz",
                                      "cluster_file": "clusters.extxyz" if shell_radius is not None else None,
-                                     "index": "index.jsonl"})
+                                     "index": "index.jsonl", "frames": "frames.csv",
+                                     "frames_processed": len(frame_counts),
+                                     "force_array": "lammps_forces", "force_components": ["fx", "fy", "fz"],
+                                     "force_units": "eV/Angstrom"})
     return output

@@ -139,6 +139,51 @@ class PostprocessingTests(unittest.TestCase):
         self.assertEqual(status, 2)
         self.assertIn("startframe < endframe", message)
 
+    def test_collect_all_frames_parallel_identity_and_shell_forces(self):
+        args = ["collect", self.run, "--output", self.output, "--units", "metal",
+                "--timestep-ps", ".0005", "--shell-radius", "2", "--workers", "2",
+                "--batch-size", "2", "--quiet"]
+        status, errors = self.call(args)
+        self.assertEqual(status, 0, errors)
+        self.assertFalse((self.output/"reports").exists())
+        result, _ = load_analysis_cache(self.output/"cache")
+        self.assertEqual(result["reaction_screen"]["frames_checked"], 9)
+        self.assertEqual(result["pair_analysis"]["workers"], 2)
+        pairs = read(self.output/"pairs/pairs.extxyz", index=":")
+        clusters = read(self.output/"pairs/clusters.extxyz", index=":")
+        self.assertEqual(len(pairs), sum(len(p) for p in result["pairs_by_frame"]))
+        self.assertEqual(len(pairs), len(clusters))
+        source_frames = {i: read_lammps_frame(self.dump, index=i, units="metal").atoms for i in range(9)}
+        for ordinal, (pair, cluster) in enumerate(zip(pairs, clusters)):
+            for image in (pair, cluster):
+                self.assertEqual(image.info["structure_index"], ordinal)
+                source = source_frames[image.info["frame_index"]]
+                rows = image.arrays["frame_local_index"]
+                np.testing.assert_array_equal(image.arrays["local_index"], np.arange(len(image)))
+                np.testing.assert_array_equal(image.arrays["global_index"], source.arrays["global_index"][rows])
+                np.testing.assert_array_equal(image.arrays["lammps_id"], source.arrays["lammps_id"][rows])
+                np.testing.assert_array_equal(image.arrays["lammps_forces"], source.arrays["lammps_forces"][rows])
+            self.assertEqual(sum(pair.arrays["pair_role"] == "CPD"), 11)
+            self.assertEqual(sum(pair.arrays["pair_role"] == "MAL"), 23)
+            assert_allclose(cluster.positions[:len(pair)], pair.positions)
+        import pandas as pd
+        coverage = pd.read_csv(self.output/"pairs/frames.csv")
+        self.assertEqual(coverage.frame.tolist(), list(range(9)))
+        self.assertEqual(coverage.pair_count.sum(), len(pairs))
+        with patch("MartiniFuncs.postprocessing.analyze_run", side_effect=AssertionError("must reuse")):
+            self.assertEqual(self.call(args)[0], 0)
+
+    def test_collect_zero_pairs_still_records_every_frame(self):
+        status, errors = self.call(["collect", self.run, "--output", self.output, "--units", "metal",
+            "--timestep-ps", ".0005", "--shell-radius", "2", "--max-forming-distance", "0", "--quiet"])
+        self.assertEqual(status, 0, errors)
+        import pandas as pd
+        coverage = pd.read_csv(self.output/"pairs/frames.csv")
+        self.assertEqual(coverage.frame.tolist(), list(range(9)))
+        self.assertTrue((coverage.pair_count == 0).all())
+        self.assertEqual((self.output/"pairs/pairs.extxyz").stat().st_size, 0)
+        self.assertEqual((self.output/"pairs/clusters.extxyz").stat().st_size, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
