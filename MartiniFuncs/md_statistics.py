@@ -323,6 +323,41 @@ def _series(values, times_ps):
     return values, np.arange(len(values)) * (times[1] - times[0])
 
 
+def get_molecular_reference_msd(com_positions, times_ps, *, unwrapped, selection):
+    """Squared COM displacements and species MSD relative to the first input frame.
+
+    For R of shape (T,N,3) in Angstrom, return squared_displacement_angstrom2[t,m]
+    = sum_a (R[t,m,a]-R[0,m,a])**2 and msd_angstrom2[t] = mean_m SD[t,m].
+    elapsed_time_ps[t] = times_ps[t]-times_ps[0]. Timestamps must increase but
+    need not be uniform. Molecular ordering must remain fixed. Positions must
+    already be temporally unwrapped; no drift subtraction/alignment is applied.
+
+    This is a single time origin, not a sum of stepwise squared displacements
+    or a traveled path length. Values can decrease when molecules return.
+    Temporary displacement arrays are bounded to 10000 frames; the returned
+    per-molecule squared-displacement array still occupies 8*T*N bytes.
+    """
+    if unwrapped is not True:
+        raise ValueError('Reference MSD requires explicitly temporally unwrapped positions')
+    if not isinstance(selection, str) or not selection.strip():
+        raise ValueError('Provide a species/group selection label')
+    positions = np.asarray(com_positions)
+    if positions.ndim != 3 or positions.shape[2] != 3 or positions.shape[1] == 0:
+        raise ValueError('Expected finite (frames, molecules, 3) array')
+    times = _times(times_ps, len(positions))
+    squared = np.empty(positions.shape[:2], dtype=float)
+    reference = np.asarray(positions[0], dtype=float)
+    for start in range(0, len(positions), 10000):
+        block = np.asarray(positions[start:start+10000], dtype=float)
+        if not np.isfinite(block).all():
+            raise ValueError('Expected finite molecular COM positions')
+        delta = block-reference
+        squared[start:start+len(block)] = np.einsum('tma,tma->tm', delta, delta)
+    return dict(time_ps=times, elapsed_time_ps=times-times[0], reference_time_ps=float(times[0]),
+                squared_displacement_angstrom2=squared, msd_angstrom2=squared.mean(axis=1),
+                selection=selection, n_objects=positions.shape[1], n_origins=1)
+
+
 def get_molecular_msd(com_positions, times_ps, *, unwrapped, selection):
     """Time-origin/ensemble averaged MSD of selected molecular COMs, Angstrom².
 

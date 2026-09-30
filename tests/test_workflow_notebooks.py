@@ -47,6 +47,11 @@ class WorkflowNotebookTests(unittest.TestCase):
         result,_ = self.run_notebook("04_molecular_statistics.ipynb",COMPUTE_PAIRS=True,
                                    DIFFUSION_FIT_PS=(.5,1.5))
         self.assertEqual(len(result["frames"]),9)
+        self.assertEqual(set(result['reference_msd']), {'C5H6', 'C11H9NO2'})
+        for name, measured in result['reference_msd'].items():
+            self.assertEqual(measured['squared_displacement_angstrom2'].shape, (9, 40))
+            np.testing.assert_array_equal(measured['squared_displacement_angstrom2'][0], np.zeros(40))
+            self.assertEqual(len(result['reference_molecule_ids'][name]), 40)
         stable,_ = self.run_notebook("05_stability_and_structure.ipynb",N_BLOCKS=2,
                                    BATCH_DURATIONS_PS=[1.,1.5])
         self.assertEqual(stable["positions"].shape,(9,80,3))
@@ -89,6 +94,7 @@ class WorkflowNotebookTests(unittest.TestCase):
         synthetic = dict(frames=[dict(frame=i, time_ps=float(i), density_g_cm3=float(1+rng.normal(0, .001)),
                                       volume_angstrom3=1000.) for i in range(len(p))],
                          species=np.array(["synthetic"]*20), com_angstrom=p,
+                         molecule_atom_ids=[[i] for i in range(20)],
                          wrapped_com_angstrom=(p+5) % 10-5,
                          box_lengths_angstrom=np.ones((len(p), 3))*10,
                          frames_read=len(p), settings={}, files={}, notices=[])
@@ -97,6 +103,8 @@ class WorkflowNotebookTests(unittest.TestCase):
                 FIT_INTERVALS_PS=[(1, 4), (2, 5), (3, 6)], BLOCK_DURATIONS_PS=[60, 120],
                 BOOTSTRAP_RESAMPLES=100, SCALAR_TOLERANCES={"density_g_cm3": .01}, SHOW_DETAILS=True)
         self.assertTrue(np.isfinite(result["diffusion_table"]["D_m2_s"]).all())
+        np.testing.assert_allclose(result['reference_msd']['synthetic']['msd_angstrom2'],
+                                   np.mean(np.sum((p-p[0])**2, axis=2), axis=1))
 
     def test_pair_export_reaction_preparation_and_manual_mode(self):
         output = self.directory/"extracted"

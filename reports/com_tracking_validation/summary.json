@@ -1,0 +1,53 @@
+{
+  "source": "C:\\Users\\nicho\\Documents\\Martini collab\\uma_data\\smaller_system\\continued_run\\equilibrate_2p5_cont.lammpstrj",
+  "frames": 2001,
+  "atoms": 1360,
+  "species_counts": {
+    "C5H6": 40,
+    "C11H9NO2": 40
+  },
+  "graph_checked_frames": [
+    0,
+    500,
+    1000,
+    1500,
+    2000
+  ],
+  "timestep_range": [
+    2000000,
+    4000000
+  ],
+  "time_range_ps": [
+    1000.0,
+    2000.0
+  ],
+  "saved_step_spacings": [
+    1000
+  ],
+  "saved_time_spacings_ps": [
+    0.5
+  ],
+  "thermo_samples_checked": 1001,
+  "thermo_max_time_error_ps": 0.0,
+  "max_image_vs_anchor_geometry_error_angstrom": 3.552713678800501e-15,
+  "max_anchor_component_fraction_of_box": 0.3181794148084627,
+  "max_wrapped_com_error_angstrom": 2.3092638912203256e-14,
+  "max_tor_com_error_angstrom": 6.394884621840902e-14,
+  "max_image_tor_error_angstrom": 8.348877145181177e-14,
+  "max_image_branch_residual_angstrom": 1.7763568394002505e-14,
+  "com_boundary_crossings": 4946,
+  "max_saved_com_increment_angstrom": 1.9919446595443775,
+  "max_saved_com_increment_box_fraction": 0.08412220631062955,
+  "independent_75_100_ps_fits": {
+    "C11H9NO2": {
+      "diffusion_cm2_per_s": 3.1956177260182476e-10,
+      "intercept_angstrom2": 0.18063190566033135,
+      "residual_rms_angstrom2": 0.00047832748255109095
+    },
+    "C5H6": {
+      "diffusion_cm2_per_s": 2.2051583882835169e-10,
+      "intercept_angstrom2": 0.35949380977766215,
+      "residual_rms_angstrom2": 0.0010052971754955062
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "frames": 300001,
+  "duration_ps": 1500.0,
+  "frame_spacing_ps": 0.005000000000109139,
+  "max_box_change_angstrom": 0.0,
+  "max_tor_increment_consistency_error_angstrom": 0.0,
+  "max_saved_molecular_com_step_angstrom": 0.062866828946973,
+  "max_system_com_displacement_angstrom": 0.01337228682863014,
+  "pressure_minus_kinetic_max_abs_bar": 0.0007332739742196281,
+  "temperature_mean_K": 400.20649121292894,
+  "temperature_range_K": [
+    367.75327,
+    429.43627
+  ],
+  "event_peak_elapsed_ps": 907.9850000000001,
+  "C11H9NO2_peak_top5_fraction": 0.39740237287140323,
+  "C5H6_peak_top5_fraction": 0.4280312369433578
+}

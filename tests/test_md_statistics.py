@@ -9,6 +9,22 @@ from MartiniFuncs import md_statistics as md
 
 
 class MDStatisticsTests(unittest.TestCase):
+    def test_reference_msd_return_to_origin_and_irregular_times(self):
+        positions = np.zeros((4, 2, 3))
+        positions[:, :, 0] = [[10, 20], [11, 22], [13, 24], [10, 20]]
+        result = md.get_molecular_reference_msd(positions, [100, 101, 104, 110],
+                                                unwrapped=True, selection='test')
+        assert_allclose(result['squared_displacement_angstrom2'], [[0, 0], [1, 4], [9, 16], [0, 0]])
+        assert_allclose(result['msd_angstrom2'], [0, 2.5, 12.5, 0])
+        assert_allclose(result['elapsed_time_ps'], [0, 1, 4, 10])
+        self.assertEqual(result['reference_time_ps'], 100)
+        self.assertEqual(result['n_origins'], 1)
+        with self.assertRaisesRegex(ValueError, 'unwrapped'):
+            md.get_molecular_reference_msd(positions, [0, 1, 2, 3], unwrapped=False, selection='test')
+        positions[2, 0, 0] = np.nan
+        with self.assertRaisesRegex(ValueError, 'finite'):
+            md.get_molecular_reference_msd(positions, [0, 1, 2, 3], unwrapped=True, selection='test')
+
     def setUp(self):
         self.atoms = Atoms("HHe", positions=[[0, 0, 0], [2, 0, 0]],
                            masses=[1, 3], cell=[10, 10, 10])
