@@ -14,4 +14,4 @@ dist/
 *.ckpt
 *.safetensors
 2_337_shear_only.lammpstrj
-*.lammpstrj
+#*.lammpstrj
