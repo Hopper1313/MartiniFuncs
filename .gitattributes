@@ -1,0 +1,17 @@
+# Text is stored with LF in the repository; Git converts to the platform's
+# line ending on checkout (CRLF on Windows with core.autocrlf=true).
+* text=auto
+
+# Simulation data fixtures are kept byte-exact (frame offsets and test data).
+*.lammpstrj -text
+*.data -text
+
+# Binary outputs.
+*.npy binary
+*.npz binary
+*.pdf binary
+*.png binary
+*.pt binary
+*.pth binary
+*.ckpt binary
+*.safetensors binary
