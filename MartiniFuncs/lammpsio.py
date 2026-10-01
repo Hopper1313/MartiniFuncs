@@ -42,6 +42,39 @@ class LammpsFrame:
         return self.timestep, len(self.atoms), self.box_bounds, _records(self.columns, self.id_offset)
 
 
+def normalize_type_symbols(type_symbols):
+    """Return {LAMMPS type: element symbol}, the one type_symbols convention.
+
+    Accepts a mapping such as {1: "C", 2: "H"} (keys may be strings, e.g. from
+    JSON) or a sequence in type order, ["C", "H"], where element k is type k+1
+    (the order written by write_initial_data and render_lammps_input).
+    """
+    if type_symbols is None:
+        return None
+    if isinstance(type_symbols, str):
+        raise TypeError("type_symbols must be a mapping or a sequence of symbols, not a string")
+    if hasattr(type_symbols, "items"):
+        mapping = {int(k): str(v) for k, v in type_symbols.items()}
+    else:
+        mapping = {i: str(v) for i, v in enumerate(type_symbols, 1)}
+    if not mapping or any(k <= 0 for k in mapping) or any(not v for v in mapping.values()):
+        raise ValueError("type_symbols needs positive LAMMPS types and nonempty symbols")
+    return mapping
+
+
+def type_symbol_list(type_symbols):
+    """Symbols in LAMMPS type order 1..n, from a sequence or a {type: symbol} mapping.
+
+    A mapping must cover exactly types 1..n (data files number types contiguously).
+    """
+    mapping = normalize_type_symbols(type_symbols)
+    if mapping is None:
+        return None
+    if sorted(mapping) != list(range(1, len(mapping) + 1)):
+        raise ValueError("type_symbols must define types 1..n exactly once")
+    return [mapping[i] for i in range(1, len(mapping) + 1)]
+
+
 def mass_to_symbol(target_mass):
     """Nearest elemental mass; prefer explicit mappings for nonstandard masses.
 
@@ -340,6 +373,7 @@ def iter_lammps_frames(path, *, units, input_datafile=None, type_symbols=None,
     unit conversion. Species priority: dump elements, explicit type mapping,
     data-file mapping, then dump masses. Conflicting element/type mappings fail.
     Reduced LJ units are unsupported. Coordinates include the box origin.
+    type_symbols is {type: symbol} or a type-order list (see normalize_type_symbols).
 
     Raw columns stay in source units; ASE conversion applies
     q_ASE=q_source*unit_factor(source, ASE) to distances, masses, velocities
@@ -353,6 +387,7 @@ def iter_lammps_frames(path, *, units, input_datafile=None, type_symbols=None,
         raise ValueError(f"Unsupported physical LAMMPS units: {units!r}")
     if not isinstance(id_offset, (int, np.integer)):
         raise TypeError("id_offset must be an integer")
+    type_symbols = normalize_type_symbols(type_symbols)
     data = read_input_datafile(input_datafile, units=units)[-1] if input_datafile is not None else None
     for index, text in enumerate(_iter_blocks(path, byte_range), start=frame_offset):
         try:

@@ -49,8 +49,17 @@ Their `REFERENCE_PLOT_POINTS` setting limits rendering only; results
 retain every selected frame. Original atom-ID lists are in
 `reference_molecule_ids[species]`, in squared-displacement column order.
 No trajectory rereading or cache regeneration is required if `com_angstrom`
-already exists. Sheared/triclinic caches remain unsupported by the current TOR
-implementation; `unwrapped=True` does not perform or validate unwrapping itself.
+already exists. Sheared/triclinic runs are supported (lab-frame displacements,
+no shear-flow subtraction); caches written before 2026-10-01 have no
+`com_angstrom` for such runs and must be regenerated. `unwrapped=True` does not
+perform or validate unwrapping itself.
+
+Single-reference squared displacements do not subtract when the reference moves:
+|R(t)-R(1)|^2 = |R(t)-R(0)|^2 - |R(1)-R(0)|^2 - 2 (R(1)-R(0)).(R(t)-R(1)).
+For caged molecules the cross term is large (successive steps anticorrelate),
+so a curve restarted at a later reference has the same shape, not differences
+of the earlier values. Motion faster than the frame spacing (ballistic/cage
+rattling) appears as an apparent jump at the first saved lag.
 
 `examples/02_plot_md_statistics.ipynb` now also has an independent cache-based
 reference-MSD section at the top: set `CACHE_DIR`, then run its load and plot cells.

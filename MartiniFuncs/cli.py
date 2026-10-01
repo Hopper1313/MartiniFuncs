@@ -111,7 +111,7 @@ def _report_options(parser):
     parser.add_argument("--max-lag-ps", type=float, default=100., help="longest correlation/MSD time separation in ps")
     parser.add_argument("--fit-ps", type=float, nargs=2, metavar=("START", "END"), help="explicit diffusion fit lag interval in ps")
     parser.add_argument("--max-gap-frames", type=int, default=0, help="allowed missing retained samples within pair lifetimes")
-    parser.add_argument("--stability", action="store_true", help="include scalar ACF/batch errors; quadratic time for long series")
+    parser.add_argument("--stability", action="store_true", help="include scalar ACF (FFT) and batch-error summaries")
     parser.add_argument("--rdf-bins", type=int, help="include molecular COM RDFs with this many radial bins")
 
 
@@ -144,8 +144,12 @@ def _analysis_options(parser):
     parser.add_argument("--frame-stride", type=int, default=1, help="retain every Nth source frame, anchored at frame 0; reading/unwrapping still uses every frame")
     parser.add_argument("--max-frames", type=int, help="preview only: cap source frames read")
     parser.add_argument("--bond-scale", type=float, default=1.3)
-    parser.add_argument("--reaction-atom-counts", type=int, nargs=2, metavar=("A", "B"),
-                     help="check every source frame for an A+B atom component; stop on a possible product (CPD/MAL: 11 23)")
+    screen = parser.add_mutually_exclusive_group()
+    screen.add_argument("--reaction-atom-counts", type=int, nargs=2, metavar=("A", "B"),
+                        help="check every source frame for an A+B atom component; stop on a possible product "
+                             "(CPD/MAL: 11 23; collect's default)")
+    screen.add_argument("--no-reaction-screen", dest="reaction_atom_counts", action="store_const", const=None,
+                        help="skip the possible-product screen (collect enables it by default)")
     parser.add_argument("--pair-backend", choices=["cached", "reference"], default="cached")
     parser.add_argument("--workers", type=int, default=1, help="local frame-processing and export processes, not MPI ranks (default: 1)")
     parser.add_argument("--batch-size", type=int, default=32, help="source frames per analysis chunk; retained frames per export chunk (default: 32)")

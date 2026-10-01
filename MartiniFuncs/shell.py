@@ -1,3 +1,17 @@
+"""Deprecated legacy shell tools (local row indices); kept only for old scripts.
+
+Use MartiniFuncs.graph (persistent-ID bond graph, components, unwrapping) and
+geom_utils.get_pair_shell_clusters / get_cluster_positions_and_forces, which are
+minimum-image correct and do not assume LAMMPS ID - 1 == row. Known problems
+here: process_lammps_frame fails on orthogonal boxes and on dumps lacking any of
+id/mol/mass/type/q/x..fz; shell repair re-centers per atom and is not
+minimum-image correct. This module is frozen and will be removed.
+"""
+import warnings
+
+warnings.warn("MartiniFuncs.shell is deprecated; use MartiniFuncs.graph and "
+              "geom_utils.get_pair_shell_clusters", DeprecationWarning, stacklevel=2)
+
 
 from collections import deque, defaultdict
 from typing import Literal, Optional

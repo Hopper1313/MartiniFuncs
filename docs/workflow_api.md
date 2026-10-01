@@ -32,7 +32,7 @@ modules; `export_pairs` streams source frames through the extraction modules.
 | `geometry.align_geometry` | Finite mobile/reference structures → aligned copy, RMSD, transform | ID correspondence; rotates force/velocity vectors, never translates them |
 | `visualization.to_display_molecule`, `plot_cluster`, `plot_pair_geometry` | ASE structures → Psience object/figure | Explicit Å→Bohr conversion; plot overlays in Å; chemistry-specific plane helper |
 | `trajectory_analysis.analyze_run` | Run directory + units/timestep + frame controls → arrays/histories | Streams atoms; retains molecular COM, velocity/net-force arrays; no precomputed reports |
-| `trajectory_pairs.FixedPairTopology`, `PairBatchRunner` | Initial graph + whole per-frame coordinates → ordered pair results | Internal fixed-topology cache; optional bounded process batches; shared screening/geometry equations |
+| `trajectory_pairs.FixedPairTopology` | Initial graph + whole per-frame coordinates → ordered pair results | Internal fixed-topology cache; parallelism via `frame_parallel` indexed chunks; shared screening/geometry equations |
 | `molecular_window_statistics` | Analysis result + source-frame window + maximum lag → per-species MSD/correlations | All molecules and time origins; no drift subtraction; not a diffusion-convergence test |
 | `md_statistics.get_molecular_diffusion_coefficient` | MSD result + explicit lag interval → slope/6 and diagnostics | 3D free-intercept fit; units Å²/ps and cm²/s; no confidence interval implied |
 | `md_statistics.get_pair_lifetime` | Persistent pair IDs at sampled times → lifetime records | Continuous detection spans, first/last boundary censoring; one-frame span is unresolved |
@@ -60,10 +60,10 @@ Cartesian vectors consistently.
 - `wrapped_com_angstrom`: actual centered-box COM for spatial structure/RDFs.
 - `com_velocity_angstrom_ps`: mass-weighted molecular velocity.
 - `net_force_eV_angstrom`: molecular sum of atomic source forces.
-- `box_lengths_angstrom`: `(retained_frames, 3)` instantaneous lengths.
+- `box_lengths_angstrom`: `(retained_frames, 3)` cell diagonal (box lengths for orthorhombic cells).
+- `cell_angstrom`: `(retained_frames, 3, 3)` row-vector cells.
 
-COM arrays are unavailable when the supported orthorhombic/fixed-center
-convention fails. Do not wrap a TOR trajectory back into a changing box to
+COM arrays are unavailable only for cells that are not fully periodic. Do not wrap a TOR trajectory back into a changing box to
 recover physical RDF coordinates. Use the separately retained wrapped array.
 Velocities and net forces may be absent if their dump columns are missing.
 
@@ -76,7 +76,7 @@ optional and can dominate runtime.
 ## Scope boundaries
 
 Current package support does not imply general automatic reactive-site detection,
-reaction-aware molecular identities, triclinic diffusion, pressure/log parsing,
+reaction-aware molecular identities, shear-flow-subtracted (non-affine) diffusion,
 dense packing, a validated external-force adapter or transition-state generation.
 Gaussian/ORCA and legacy evaluator helpers remain in the repository, but the
 documented active path uses UMA/fairchem throughout. No alternative potential is

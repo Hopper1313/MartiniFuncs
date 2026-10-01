@@ -57,10 +57,11 @@ Temperature DOF must
 match the simulation (the notebook explicitly selects `3N-3` for unconstrained
 atoms). Missing velocities/forces are reported. Molecular membership is fixed
 from the initial bond graph and species are grouped by formula, so reactions
-and isomer distinctions need additional handling. Orthorhombic NPT COM unwrapping
-does not support sheared cells or moving box centers; other metrics remain
-available when MSD is disabled. Pressure/potential-energy thermo-log parsing is
-not yet implemented.
+and isomer distinctions need additional handling. COM unwrapping (TOR) supports
+any fully periodic cell: orthorhombic NPT, triclinic and sheared (`fix deform`)
+cells, with a fixed or moving box center. Displacements are lab-frame, so an
+imposed shear flow is not subtracted. LAMMPS thermo logs are parsed by
+`MartiniFuncs.thermo` (see docs/thermo_output.md).
 
 ## Installation and tests
 
@@ -433,8 +434,9 @@ automatically environment-only forces.
 Run `python -m examples.analyze_npt_diffusion` to calculate whole-molecule COM
 trajectories and species-resolved MSD fits for the 1 ns NPT fixture. The workflow
 supports orthorhombic boxes with a fixed box center and fixed initial molecular
-topology. It reconstructs whole molecules before wrapping their COMs into a
-centered cell and applying `md_statistics.unwrap_orthorhombic_com`. This uses the
+topology (`analyze_run` itself supports any fully periodic cell). It reconstructs
+whole molecules before wrapping their COMs into a centered cell and applying
+`md_statistics.unwrap_orthorhombic_com`. This uses the
 TOR algorithm (Bullerjahn et al., DOI: 10.1021/acs.jctc.3c00308), not atomwise
 image-flag trajectories. Sufficient temporal sampling remains an assumption.
 All initial bonds are checked for excessive stretching during reconstruction.
@@ -465,7 +467,7 @@ through, but excluding, 1000 ps (250 frames each).
 `MartiniFuncs.stability.get_series_statistics` provides scalar summaries,
 first-zero-truncated autocorrelation diagnostics, and batch-mean standard errors
 at multiple averaging durations. `get_molecular_com_rdf` computes species COM
-RDFs and nearest-neighbor distances in fully periodic orthorhombic cells. RDFs
+RDFs and nearest-neighbor distances in fully periodic (orthorhombic or triclinic) cells. RDFs
 use each frame's volume and exclude self pairs; same-species normalization uses
 the finite population of available pairs. Distances and box lengths are in
 angstrom. These diagnostics do not return an equilibrium pass/fail verdict.

@@ -44,17 +44,20 @@ counts before allocating a full node; there is no promised linear speedup.
 
 ## Boundary correctness
 
-For wrapped molecular COMs w and instantaneous orthorhombic lengths L, the
-existing TOR convention remains
+For molecular COMs W wrapped into the current cell about its center, the TOR
+convention is a destination-cell minimum image, which for orthorhombic lengths L is
 
 \[
-\Delta R_t = w_t-w_{t-1}-L_t\left\lfloor\frac{w_t-w_{t-1}}{L_t}+\frac12\right\rfloor,
-\qquad R_t=R_{t-1}+\Delta R_t.
+\Delta R_t = W_t-W_{t-1}-L_t\left\lfloor\frac{W_t-W_{t-1}}{L_t}+\frac12\right\rfloor,
+\qquad R_t=R_{t-1}+\Delta R_t,
 \]
+
+and for a general cell H_t uses the fractional components of W_t-W_{t-1}
+(`md_statistics.minimum_image`).
 
 The ordered parent applies this update across every source frame, including
 chunk boundaries and frames omitted by existing stride settings. Parallelization
-does not extend TOR to sheared/triclinic cells. Pair lifetimes and correlations
+does not change TOR, which supports sheared/triclinic cells. Pair lifetimes and correlations
 are computed over the assembled trajectory, not averaged from separate chunks.
 Possible-product exceptions retain their atom IDs and are delivered in frame
 order. Work may already be in flight beyond a detected product, but no completed

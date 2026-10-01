@@ -40,7 +40,8 @@ not a measured formation event.
 The general `analyze_run` API leaves this chemistry-specific screen off unless
 `reaction_atom_counts` is supplied. For a compatible CLI cache, use
 `--reaction-atom-counts 11 23`; old unchecked caches are rejected by notebook 08.
-Screening adds a graph rebuild per source frame and is currently sequential.
+Screening rebuilds connectivity on every source frame (about 3 ms per 1360-atom
+frame) and runs in the frame workers when `--workers` > 1.
 `MAX_FRAMES` limits the checked range too. This rule cannot catch larger
 aggregates, fragmentation, or all other reaction mechanisms.
 

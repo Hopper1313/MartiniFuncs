@@ -122,10 +122,13 @@ force columns. Missing velocities/forces otherwise disable only their statistics
 my_run_analysis/
   cache/
     manifest.json             # settings, source fingerprints, code/version, units
-    analysis.json             # frame records, pair identities/shifts, notices
-    frames.csv                # scalar history across all retained frames
+    analysis.json             # metadata and notices (schema 2: no per-frame data)
+    frames.npz                # per-frame records, one array per column
+    frames.csv                # the same scalar history, human-readable
     molecules.json            # formula and persistent atom IDs for each molecule
-    *.npy                     # molecular COM, velocity, force and box arrays
+    pair_*.npy                # pairs as molecule indices + periodic shifts
+    frame_offsets.npy         # dump byte offsets, written by the first export
+    *.npy                     # molecular COM, velocity, force, box and cell arrays
   reports/default/
     manifest.json             # selected frame range, actual times, and species/file mapping
     frames.csv
@@ -178,8 +181,8 @@ Lifetimes are recomputed within the selected window, including boundary censorin
 `--fit-ps` writes `diffusion.csv`; no fit interval is guessed.
 
 `--stability` adds scalar ACF/batch summaries; `--rdf-bins 60` adds species COM
-RDF tables. They are opt-in because scalar ACF currently costs quadratic time in
-frame count and RDF costs quadratic time in molecule count per frame. They do
+RDF tables. They are opt-in; scalar ACFs use an FFT (O(N log N) in frame count)
+and RDF costs quadratic time in molecule count per frame. They do
 not determine that a simulation is equilibrated. Output tables can be plotted
 locally with Pandas/Matplotlib; the CLI does not require plotting dependencies.
 

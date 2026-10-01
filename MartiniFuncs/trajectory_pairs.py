@@ -1,12 +1,10 @@
-"""Cached fixed-topology pair analysis and bounded process batches.
+"""Cached fixed-topology pair analysis.
 
 Used by trajectory_analysis; standalone, changing-topology frame extraction stays
 in geom_utils. This module never unwraps time series or loads a force calculator.
+Parallel evaluation runs through frame_parallel (indexed frame chunks).
 """
-from collections import deque
-from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
-import multiprocessing
 
 import numpy as np
 
@@ -105,73 +103,3 @@ class FixedPairTopology:
             assessments.append(PairAssessment(index, geometry, reasons))
         keep = [a.pair_index for a in assessments if a.accepted]
         return [pairs[i] for i in keep], [shifts[i] for i in keep], assessments
-
-
-def _initialize_worker(topology, criteria):
-    """Install static, picklable metadata once per spawned worker process."""
-    global _worker_topology, _worker_criteria
-    _worker_topology, _worker_criteria = topology, criteria
-
-
-def _evaluate_batch(batch):
-    """Evaluate ordered (frame index, whole positions, cell, PBC) payloads."""
-    result = []
-    for index, whole, cell, pbc in batch:
-        try:
-            pairs, shifts, _ = _worker_topology.evaluate(whole, cell, pbc, criteria=_worker_criteria)
-        except Exception as exc:
-            raise ValueError(f"Pair analysis failed at source frame {index}: {exc}") from exc
-        result.append((pairs, shifts))
-    return result
-
-
-class PairBatchRunner:
-    """Ordered pair results with at most 2*workers submitted batches in memory.
-
-    workers=1 runs synchronously without serialization. Multiple workers use
-    spawn (also on Windows); worker functions live in this importable module.
-    Results contain only pairs/shifts, not frame geometry. Exceptions propagate;
-    context exit shuts down workers even if reading or evaluation fails.
-    """
-
-    def __init__(self, topology, criteria, *, workers, batch_size):
-        self.topology, self.criteria = topology, criteria
-        self.workers, self.batch_size = workers, batch_size
-        self.batch, self.pending, self.results = [], deque(), []
-        self.pool = None
-
-    def __enter__(self):
-        if self.workers > 1:
-            self.pool = ProcessPoolExecutor(
-                max_workers=self.workers, mp_context=multiprocessing.get_context("spawn"),
-                initializer=_initialize_worker, initargs=(self.topology, self.criteria))
-        return self
-
-    def add(self, index, whole, cell, pbc):
-        """Submit one retained frame; block when the bounded queue fills."""
-        if self.pool is None:
-            pairs, shifts, _ = self.topology.evaluate(whole, cell, pbc, criteria=self.criteria)
-            self.results.append((pairs, shifts))
-        else:
-            self.batch.append((index, whole.copy(), cell.copy(), pbc.copy()))
-            if len(self.batch) >= self.batch_size:
-                self._submit()
-
-    def _submit(self):
-        if self.batch:
-            self.pending.append(self.pool.submit(_evaluate_batch, self.batch))
-            self.batch = []
-        if len(self.pending) >= 2*self.workers:
-            self.results.extend(self.pending.popleft().result())
-
-    def finish(self):
-        """Drain results in submission order, preserving temporal pair identity."""
-        if self.pool is not None:
-            self._submit()
-            while self.pending:
-                self.results.extend(self.pending.popleft().result())
-        return self.results
-
-    def __exit__(self, exc_type, exc, traceback):
-        if self.pool is not None:
-            self.pool.shutdown(wait=True, cancel_futures=True)

@@ -12,7 +12,7 @@ from MartiniFuncs.geom_utils import get_all_prereactive_pairs
 from MartiniFuncs.lammpsio import iter_lammps_frames, read_lammps_frame
 from MartiniFuncs.pair_selection import PairCriteria, assess_prereactive_pairs
 from MartiniFuncs.trajectory_analysis import analyze_run
-from MartiniFuncs.trajectory_pairs import FixedPairTopology, PairBatchRunner
+from MartiniFuncs.trajectory_pairs import FixedPairTopology
 
 
 FIXTURES = Path(__file__).parent / "lammpsio_tests"
@@ -126,16 +126,15 @@ class TrajectoryPairTests(unittest.TestCase):
                 self.assertEqual(md.get_pair_lifetime(result["pairs_by_frame"], times),
                                  md.get_pair_lifetime(reference["pairs_by_frame"], times))
 
-    def test_worker_failure_propagates_and_closes_pool(self):
-        atoms = read_lammps_frame(FIXTURES / "frame_0.lammpstrj", units="metal").atoms
-        bonded = graph.build_bond_graph(atoms, scale=1.3)
-        components = graph.connected_components(bonded, atom_ids=graph.atom_ids(atoms))
-        topology = FixedPairTopology.from_frame(atoms, bonded, components)
-        with self.assertRaisesRegex(ValueError, "source frame 17"):
-            with PairBatchRunner(topology, None, workers=2, batch_size=1) as runner:
-                runner.add(17, np.full((len(atoms), 3), np.nan), atoms.cell.array, atoms.pbc)
-                runner.finish()
-        self.assertTrue(runner.pool._shutdown_thread)
+    def test_worker_failure_propagates_in_order(self):
+        """The production pool (frame_parallel.ordered_tasks) yields results in task
+        order and re-raises a worker's exception at that task's position."""
+        from MartiniFuncs.frame_parallel import ordered_tasks
+        results = ordered_tasks(int, ["1", "2", "not a number", "4"], workers=2)
+        self.assertEqual([next(results), next(results)], [1, 2])
+        with self.assertRaisesRegex(ValueError, "not a number"):
+            next(results)
+        self.assertEqual(list(ordered_tasks(int, ["5", "6"], workers=1)), [5, 6])
 
     def test_configuration_validation(self):
         for options in ({"pair_workers": 0}, {"pair_workers": True},

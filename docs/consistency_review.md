@@ -56,10 +56,10 @@ No pair thresholds, bond display behavior, or scientific models were changed.
 5. **Trajectory statistics assume fixed molecular membership.**
    Molecules are inferred from the initial bond graph, and species are grouped
    by formula (isomers merge). Existing-bond checks do not detect every new bond.
-   TOR MSD requires supported cells and sufficiently frequent sampling; RDF
-   requires actual wrapped geometry. Currently a moving box center also disables
-   the returned wrapped-COM array, even though instantaneous RDF could in principle
-   still be computed. Separating those eligibility checks is a future improvement.
+   TOR MSD requires fully periodic cells and sufficiently frequent sampling; RDF
+   requires actual wrapped geometry. Since the 2026-10-01 refactor a moving box
+   center or a triclinic/sheared cell no longer disables either array (see
+   docs/refactor_changelog.md, step 1).
 
 6. **Raw legacy vectors and normalized frame vectors are different APIs.**
    `my_readlammps` retains source units; `LammpsFrame` stores eV/Angstrom forces
