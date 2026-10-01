@@ -15,3 +15,5 @@ dist/
 *.safetensors
 2_337_shear_only.lammpstrj
 #*.lammpstrj
+# Large local simulation data (43 GB dump + cache); not distributed.
+tests/NVT_shear/
