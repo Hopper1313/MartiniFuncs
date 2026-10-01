@@ -42,6 +42,7 @@ class FrameSummary(NamedTuple):
     force: np.ndarray | None
     axes: np.ndarray | None = None
     topology: tuple = ()
+    candidates: dict | None = None
 
 
 def principal_axes(whole, com, groups, masses, count):
@@ -205,13 +206,23 @@ def prepare_frame(frame, context):
     com = np.column_stack([np.bincount(context['groups'], weights=context['masses'] * whole[:, axis]) /
                            context['molecular_masses'] for axis in range(3)])
     pairs = shifts = None
+    candidates = None
     if context['compute_pairs'] and frame.index % context['frame_stride'] == 0:
+        from .pair_candidates import frame_candidates, metric_row
+        radius = context.get('reactive_radius', 3.25)
         if context['topology'] is not None:
-            pairs, shifts, _ = context['topology'].evaluate(whole, atoms.cell.array, atoms.pbc,
-                                                         criteria=context['pair_criteria'])
+            pairs, shifts, _, rows = context['topology'].evaluate(
+                whole, atoms.cell.array, atoms.pbc, criteria=context['pair_criteria'],
+                reactive_radius=radius, candidates=True)
         else:
             from .geom_utils import get_all_prereactive_pairs
-            pairs, shifts = get_all_prereactive_pairs(atoms, scale=context['bond_scale'], criteria=context['pair_criteria'])
+            pairs, shifts, found = get_all_prereactive_pairs(
+                atoms, scale=context['bond_scale'], criteria=context['pair_criteria'],
+                reactive_radius=radius, return_candidates=True)
+            index = context['molecule_index']
+            rows = [(index.get(frozenset(map(int, cpd)), -1), index.get(frozenset(map(int, mal)), -1), shift,
+                     metric_row(distance, geometry)) for (cpd, mal), shift, distance, geometry in found]
+        candidates = frame_candidates(rows)
     scalars = dict(density_g_cm3=md.get_frame_density(atoms), volume_angstrom3=atoms.get_volume())
     velocity = force = None
     if context['has_velocities']:
@@ -226,7 +237,7 @@ def prepare_frame(frame, context):
     axes = (principal_axes(whole, com, context['groups'], context['masses'], len(context['molecular_masses']))
             if context.get('orientations') else None)
     return FrameSummary(com, atoms.cell.array.copy(), atoms.pbc.copy(), np.asarray(atoms.get_celldisp()).ravel().copy(),
-                        pairs, shifts, scalars, velocity, force, axes, topology)
+                        pairs, shifts, scalars, velocity, force, axes, topology, candidates)
 
 
 def _initialize_analysis(path, options, context):

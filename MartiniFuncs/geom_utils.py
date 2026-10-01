@@ -233,6 +233,7 @@ def get_all_prereactive_pairs(
     printing: bool = False,
     *,
     criteria=None,
+    return_candidates=False,
 ):
     """Find all CPD / dienophile molecular pairs inside ``reactive_radius``.
 
@@ -287,35 +288,44 @@ def get_all_prereactive_pairs(
         print(len(cpd_centers), "CPD molecules found")
 
     if len(cpd_centers) == 0 or len(mal_centers) == 0:
-        return [], []
+        return ([], [], []) if return_candidates else ([], [])
 
-    pairs, cpd_shift = _pairs_from_centers(
+    pairs, cpd_shift, distances = _pairs_from_centers(
         cpd_centers, mal_centers, cpd_components, mal_components,
-        atoms.cell.array, atoms.pbc, reactive_radius)
+        atoms.cell.array, atoms.pbc, reactive_radius, return_distances=True)
 
-    if criteria is not None:
-        from .pair_selection import assess_prereactive_pairs
-        assessments = assess_prereactive_pairs(atoms, pairs, cpd_shift,
-                                               criteria=criteria, scale=scale)
-        keep = [a.pair_index for a in assessments if a.accepted]
-        pairs, cpd_shift = [pairs[i] for i in keep], [cpd_shift[i] for i in keep]
+    candidates = None
+    if criteria is not None or return_candidates:
+        from .pair_selection import PairCriteria, assess_prereactive_pairs
+        assessments = assess_prereactive_pairs(atoms, pairs, cpd_shift, graph=graph,
+                                               criteria=criteria if criteria is not None else PairCriteria(),
+                                               scale=scale)
+        # Every screened candidate with its distance and measured geometry (or None).
+        candidates = [(pair, shift, distance, a.geometry)
+                      for pair, shift, distance, a in zip(pairs, cpd_shift, distances, assessments)]
+        if criteria is not None:
+            keep = [a.pair_index for a in assessments if a.accepted]
+            pairs, cpd_shift = [pairs[i] for i in keep], [cpd_shift[i] for i in keep]
 
     if printing:
         print(len(pairs), "pre-reactive pairs found")
+    if return_candidates:
+        return pairs, cpd_shift, candidates
 
     return pairs, cpd_shift
 
 
 def _pairs_from_centers(cpd_centers, mal_centers, cpd_components, mal_components,
-                        cell, pbc, reactive_radius):
+                        cell, pbc, reactive_radius, *, return_distances=False):
     """Shared center-distance screen, preserving image choice and candidate order.
 
     Select |C_CPD + shift @ cell - C_CC| < reactive_radius (Angstrom).
     Wrapped neighbor shift S becomes shift=S+mal_image-cpd_image for whole
-    molecules. Sort by distance, then MAL and CPD component indices.
+    molecules. Sort by distance, then MAL and CPD component indices. return_distances=True
+    also returns each pair's screen distance (Angstrom).
     """
     if not len(cpd_centers) or not len(mal_centers):
-        return [], []
+        return ([], [], []) if return_distances else ([], [])
     # Put both point sets into one primary periodic representation while
     # remembering which image was removed from each unwrapped centroid.
     mal_wrapped, mal_image = _wrap_points(mal_centers, cell, pbc)
@@ -349,7 +359,7 @@ def _pairs_from_centers(cpd_centers, mal_centers, cpd_components, mal_components
     relative_shifts = S[mask]
 
     if len(mal_i) == 0:
-        return [], []
+        return ([], [], []) if return_distances else ([], [])
 
     # Multiple periodic images of the same molecular pair can in principle be
     # inside a large cutoff. Retain only the closest image for each pair.
@@ -377,7 +387,8 @@ def _pairs_from_centers(cpd_centers, mal_centers, cpd_components, mal_components
         for (m, c), _ in ordered
     ]
     cpd_shift = [value[1].tolist() for _, value in ordered]
-
+    if return_distances:
+        return pairs, cpd_shift, [value[0] for _, value in ordered]
     return pairs, cpd_shift
 
 

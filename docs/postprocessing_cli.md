@@ -87,6 +87,55 @@ Use `--input-file`, `--dump-file`, or `--data-file` when several files match.
 Units and timestep are mandatory; temperature DOF is explicit and optional.
 `--type-symbols types.json` supplies mappings when required by the dump format.
 
+### Choosing pairs after the analysis: reactive radius and PairCriteria
+
+The analysis caches every CPD/dienophile candidate inside `--reactive-radius`.
+The screen distance is CPD COM to dienophile C=C COM, minimum image (default
+3.25 Angstrom). Each candidate is stored with its measured geometry: max forming
+distance, distance imbalance, axis/plane/approach angles, and whether the
+geometry could be measured. `report` and `extract` can then select pairs without
+rereading the dump:
+
+```sh
+# cache once with a generous radius
+python -m MartiniFuncs.cli run RUN_DIR --output ANALYSIS --units metal --timestep-ps 0.0005     --reactive-radius 4.0 --no-export-pairs
+# recompute counts, distributions and lifetimes for any radius / thresholds
+python -m MartiniFuncs.cli report ANALYSIS/cache --output R3p0 --reactive-radius 3.0
+python -m MartiniFuncs.cli report ANALYSIS/cache --output R3p5_axis30 --reactive-radius 3.5 --max-axis-angle 30
+# export structures for one selection
+python -m MartiniFuncs.cli extract ANALYSIS/cache --output PAIRS_R3p0 --reactive-radius 3.0 --shell-radius 3
+```
+
+**Selection rules:**
+- A radius is at most the cached radius; a larger one is refused.
+- Any `--max-*` threshold (or `--geometry-required`) requires measurable geometry
+  and rejects values strictly above the threshold, exactly as in the analysis.
+- With no selection options, the analysis's own pairs are used.
+
+**What a selected report contains:**
+- pair lifetimes for the selection;
+- a `selected_pairs` column in `frames.csv`;
+- `pair_metric_histograms.csv`, with distributions of the screen distance and
+  each geometry metric.
+
+**From Python:**
+- `pair_candidates.select_pairs(result, reactive_radius=..., criteria=...)` returns
+  the per-frame pairs in the usual format.
+- `pair_candidates.candidate_table(result)` returns every candidate as a pandas
+  DataFrame.
+
+A selected radius gives exactly the pairs a fresh analysis at that radius would
+find (tested).
+
+**Cost of a wider cache.** A larger cached radius measures more candidates. On the
+2.5 GPa system:
+
+| radius (Angstrom) | 3.25 | 4.0 | 5.0 |
+|---|---|---|---|
+| candidates per frame | 2.8 | 21 | 75 |
+
+At 5 Angstrom, 300k frames hold about 22M candidates (about 1.7 GB).
+
 ### Reaction events (default: recorded, never fatal)
 
 `run` and `collect` check every source frame, before striding and inside the frame

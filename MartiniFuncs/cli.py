@@ -115,6 +115,25 @@ def _report_options(parser):
     parser.add_argument("--rdf-bins", type=int, help="include molecular COM RDFs with this many radial bins")
 
 
+def _selection_options(parser):
+    """Pair selection from cached candidates (report/extract): radius and PairCriteria."""
+    parser.add_argument("--reactive-radius", type=float,
+                        help="select pairs with CPD COM to C=C COM below this radius (Angstrom, at most the "
+                             "cached radius); default: the analysis's own pairs")
+    for field in fields(PairCriteria):
+        parser.add_argument("--" + field.name.replace("_", "-"), type=float,
+                            help="select pairs at or below this threshold (distances Angstrom; acute angles degrees)")
+    parser.add_argument("--geometry-required", action="store_true",
+                        help="select only pairs whose geometry could be measured (implied by any threshold)")
+
+
+def _selection_kwargs(args):
+    thresholds = {f.name: getattr(args, f.name) for f in fields(PairCriteria)}
+    use_criteria = args.geometry_required or any(v is not None for v in thresholds.values())
+    return dict(reactive_radius=args.reactive_radius,
+                pair_criteria=PairCriteria(**thresholds) if use_criteria else None)
+
+
 def _report_kwargs(args):
     """Pass frame bounds and lag settings unchanged to postprocessing.write_report.
 
@@ -157,6 +176,9 @@ def _analysis_options(parser):
     screen.add_argument("--no-reaction-screen", dest="reaction_atom_counts", action="store_const", const=None,
                         help="disable the legacy A+B abort screen")
     parser.add_argument("--pair-backend", choices=["cached", "reference"], default="cached")
+    parser.add_argument("--reactive-radius", type=float, default=3.25,
+                        help="pair screen radius cached by the analysis, CPD COM to C=C COM in Angstrom "
+                             "(default 3.25); report/extract can later select any radius up to it")
     parser.add_argument("--orientations", action="store_true",
                         help="also cache each molecule's long axis and plane normal per frame (rotational dynamics)")
     parser.add_argument("--workers", type=int, default=1, help="local frame-processing and export processes, not MPI ranks (default: 1)")
@@ -199,6 +221,7 @@ def build_parser():
     report.add_argument("--output", type=Path, required=True, help="new report directory")
     report.add_argument('--quiet', action='store_true', help='suppress progress and heartbeat logging')
     _report_options(report)
+    _selection_options(report)
 
     extract = commands.add_parser("extract", help="export cached accepted pairs and optional shells from source frames")
     extract.add_argument("cache", type=Path)
@@ -208,6 +231,7 @@ def build_parser():
     extract.add_argument("--quiet", action="store_true")
     extract.add_argument("--workers", type=int, default=1, help="local frame/export worker processes")
     extract.add_argument("--batch-size", type=int, default=32, help="selected frames per export chunk")
+    _selection_options(extract)
     return parser
 
 
@@ -264,6 +288,7 @@ def main(argv=None):
                               {"on_topology_change": {"record": "record", "stop": "truncate"}[args.reaction_events],
                                "topology_persistence": args.reaction_persistence}),
                            pair_criteria=criteria, pair_backend=args.pair_backend, pair_workers=args.workers,
+                           **({} if args.reactive_radius == 3.25 else {"reactive_radius": args.reactive_radius}),
                            **({"orientations": True} if args.orientations else {}),
                            pair_batch_size=args.batch_size)
             report = None
@@ -282,11 +307,12 @@ def main(argv=None):
             if not args.no_pairs and not args.no_export_pairs:
                 print(f"Pair and cluster exports: {(args.output / pair_folder).resolve()}")
         elif args.command == "report":
-            print(stage('Statistical report', write_report, args.cache, args.output, **_report_kwargs(args)))
+            print(stage('Statistical report', write_report, args.cache, args.output, **_report_kwargs(args),
+                        **_selection_kwargs(args)))
         else:
             print(stage('Pair/shell export', export_pairs, args.cache, args.output, shell_radius=args.shell_radius,
                                startframe=args.startframe, endframe=args.endframe,
-                               workers=args.workers, batch_size=args.batch_size))
+                               workers=args.workers, batch_size=args.batch_size, **_selection_kwargs(args)))
     except (ValueError, OSError, KeyError, TypeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

@@ -9,6 +9,7 @@ import numpy as np
 from ase.data import covalent_radii
 
 from . import graph, md_statistics as md
+from . import pair_candidates as _candidates
 from .lammpsio import iter_lammps_frames, read_lammps_input_settings
 
 
@@ -54,7 +55,8 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
                 pair_backend="cached", pair_workers=1, pair_batch_size=32,
                 units=None, timestep_ps=None, units_style=None, type_symbols=None, progress=None,
                 reaction_atom_counts=None, orientations=False, source_range=None,
-                on_topology_change=None, topology_persistence=1, frame_offsets=None):
+                on_topology_change=None, topology_persistence=1, frame_offsets=None,
+                reactive_radius=3.25):
     """Stream a text dump; retain scalar histories and all molecular COM vectors.
 
     max_frames caps source frames read, not retained frames. Molecules are the
@@ -105,6 +107,12 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
     candidate. This costs an additional graph calculation per source frame. None
     skips screening; fixed-connectivity analysis then assumes no new products.
 
+    reactive_radius (Angstrom, default 3.25) is the pair screen: CPD COM to
+    dienophile C=C COM, minimum image. With compute_pairs, pair_candidates holds
+    every candidate inside it with its measured geometry, so pair_candidates.
+    select_pairs can later apply any smaller radius or other PairCriteria
+    without rereading the dump; cache with a generous radius to explore.
+
     When compute_pairs=True, pair_backend='cached' reuses initial molecule/site
     identities and the whole coordinates already reconstructed above. It assumes
     unchanged connectivity; existing checks detect broken reconstruction, not
@@ -146,6 +154,8 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
     """
     if pair_backend not in {"cached", "reference"}:
         raise ValueError("pair_backend must be 'cached' or 'reference'")
+    if not np.isfinite(reactive_radius) or reactive_radius <= 0:
+        raise ValueError("reactive_radius must be positive and finite")
     if on_topology_change not in {None, "record", "truncate"}:
         raise ValueError("on_topology_change must be None, 'record' or 'truncate'")
     if isinstance(topology_persistence, bool) or not isinstance(topology_persistence, int) or topology_persistence < 1:
@@ -220,7 +230,7 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
     rows, coms, velocities, forces, pairs_by_frame = [], [], [], [], []
     pair_shifts_by_frame = []
     wrapped_coms, box_lengths, cells = [], [], []
-    origins, nonaffine_coms, axes_by_frame = [], [], []
+    origins, nonaffine_coms, axes_by_frame, candidates_by_frame = [], [], [], []
     max_step_fraction = 0.
     notices = ["Molecular membership fixed from first-frame bond graph; species grouped by formula.",
                "No potential energy or pressure computed from atomic forces; read thermo logs with "
@@ -304,6 +314,8 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
                     degrees_of_freedom=degrees_of_freedom,
                     reaction_atom_counts=reaction_atom_counts,
                     molecule_sizes=np.bincount(groups), check_topology=on_topology_change is not None,
+                    reactive_radius=float(reactive_radius),
+                    molecule_index={frozenset(map(int, c)): k for k, c in enumerate(components)},
                     orientations=bool(orientations))
             prepared = getattr(frame, "prepared", None)
             if prepared is None:
@@ -369,6 +381,7 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
             if compute_pairs:
                 pairs_by_frame.append(pairs)
                 pair_shifts_by_frame.append(shifts)
+                candidates_by_frame.append(prepared.candidates)
                 row["candidate_pairs"] = len(pairs)
             rows.append(row)
             wrapped_coms.append(wrapped.copy() if diffusion_reason is None else np.full_like(com,np.nan))
@@ -384,7 +397,7 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
     if topology_event is not None:
         keep = sum(1 for row in rows if row["frame"] < topology_event["frame"])
         for values in (rows, velocities, forces, pairs_by_frame, pair_shifts_by_frame, wrapped_coms,
-                       box_lengths, cells, coms, origins, nonaffine_coms, axes_by_frame):
+                       box_lengths, cells, coms, origins, nonaffine_coms, axes_by_frame, candidates_by_frame):
             del values[keep:]
         notices.append(f"Topology changed at source frame {topology_event['frame']} "
                        f"(persisting {topology_persistence} frames); analysis truncated before it.")
@@ -422,6 +435,8 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
             "com_velocity_angstrom_ps":np.asarray(velocities) if has_velocities else None,
             "net_force_eV_angstrom":np.asarray(forces) if has_forces else None,
             "pairs_by_frame":pairs_by_frame if compute_pairs else None,
+            "pair_candidates":(_candidates.concatenate(candidates_by_frame, reactive_radius)
+                               if compute_pairs else None),
             "pair_shifts_by_frame":pair_shifts_by_frame if compute_pairs else None,
             "pair_analysis": {"backend": pair_backend, "workers": pair_workers,
                               "batch_size": pair_batch_size} if compute_pairs else None,

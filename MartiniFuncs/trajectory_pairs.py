@@ -34,6 +34,8 @@ class FixedPairTopology:
     screen_rows: list
     cpd_sites: list
     mal_sites: list
+    cpd_molecules: list = None   # indices of cpd/mal in the components list (molecule_atom_ids)
+    mal_molecules: list = None
 
     @classmethod
     def from_frame(cls, atoms, graph, components):
@@ -62,9 +64,11 @@ class FixedPairTopology:
                    [np.array([rows[i] for i in c]) for c in cpd],
                    [np.array([rows[i] for i in c]) for c in mal], screen_rows,
                    [sites(_cpd_sites, c) for c in cpd],
-                   [sites(_dienophile_sites, c) for c in mal])
+                   [sites(_dienophile_sites, c) for c in mal],
+                   [k for k, c in enumerate(components) if len(c) == 11],
+                   [k for k, c in enumerate(components) if len(c) == 23])
 
-    def evaluate(self, whole, cell, pbc, *, criteria=None, reactive_radius=3.25):
+    def evaluate(self, whole, cell, pbc, *, criteria=None, reactive_radius=3.25, candidates=False):
         """Return selected pairs, shifts and candidate assessments for one frame.
 
         COMs are sum(m_i*r_i)/sum(m_i) from whole (Angstrom). Screen whole-CPD
@@ -72,6 +76,9 @@ class FixedPairTopology:
         With criteria, use _measure_placed_pair: distance=|r_i-r_j| and acute
         angle=degrees(arccos(|a dot b|/(|a||b|))). Assessments precede filtering;
         criteria=None skips geometry checks and returns an empty assessment list.
+        candidates=True also measures every screened pair and returns a fourth
+        value: rows (cpd_molecule, mal_molecule, shift, metrics) for
+        pair_candidates.frame_candidates, independent of criteria.
         """
         if not np.isfinite(reactive_radius) or reactive_radius <= 0:
             raise ValueError("reactive_radius must be positive and finite")
@@ -80,14 +87,17 @@ class FixedPairTopology:
             raise ValueError("whole must be finite coordinates in initial atom-row order")
         cpd_centers = [np.average(whole[r], axis=0, weights=self.masses[r]) for r in self.cpd_rows]
         mal_centers = [np.average(whole[r], axis=0, weights=self.masses[r]) for r in self.screen_rows]
-        pairs, shifts = _pairs_from_centers(
+        pairs, shifts, distances = _pairs_from_centers(
             np.asarray(cpd_centers), np.asarray(mal_centers), self.cpd, self.mal,
-            np.asarray(cell), pbc, reactive_radius)
-        if criteria is None:
+            np.asarray(cell), pbc, reactive_radius, return_distances=True)
+        if criteria is None and not candidates:
             return pairs, shifts, []
+        from .pair_candidates import metric_row
+        from .pair_selection import PairCriteria
+        measure = criteria if criteria is not None else PairCriteria()
         cpd_index = {tuple(c): i for i, c in enumerate(self.cpd)}
         mal_index = {tuple(c): i for i, c in enumerate(self.mal)}
-        assessments = []
+        assessments, rows = [], []
         for index, ((cpd, mal), shift) in enumerate(zip(pairs, shifts)):
             c, m = cpd_index[tuple(cpd)], mal_index[tuple(mal)]
             try:
@@ -97,9 +107,16 @@ class FixedPairTopology:
                 geometry = _measure_placed_pair(
                     cpd, whole[self.cpd_rows[c]] + np.asarray(shift) @ cell,
                     mal, whole[self.mal_rows[m]], (*cs, *ms), self.rows)
-                reasons = _rejection_reasons(geometry, criteria)
+                reasons = _rejection_reasons(geometry, measure)
             except ValueError as exc:
                 geometry, reasons = None, (str(exc),)
             assessments.append(PairAssessment(index, geometry, reasons))
-        keep = [a.pair_index for a in assessments if a.accepted]
-        return [pairs[i] for i in keep], [shifts[i] for i in keep], assessments
+            rows.append((self.cpd_molecules[c], self.mal_molecules[m], shift, metric_row(distances[index], geometry)))
+        if criteria is None:
+            kept_pairs, kept_shifts = pairs, shifts
+        else:
+            keep = [a.pair_index for a in assessments if a.accepted]
+            kept_pairs, kept_shifts = [pairs[i] for i in keep], [shifts[i] for i in keep]
+        if candidates:
+            return kept_pairs, kept_shifts, assessments, rows
+        return kept_pairs, kept_shifts, assessments

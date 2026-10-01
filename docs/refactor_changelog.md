@@ -644,3 +644,34 @@ to a dienophile from frame 4, with a one-frame contact at frame 2):
 | legacy screen | still aborts (exit 2) |
 
 All 168 tests pass.
+
+## Pair selection by reactive radius and PairCriteria after the analysis (2026-10-01)
+
+**Why:** the 3.25 Angstrom screen was hard-coded, and pair criteria were applied during the expensive
+analysis. Exploring other radii or thresholds required re-running the whole 300k-frame job.
+
+**Changed:**
+- **`analyze_run(reactive_radius=...)`** (CLI `run`/`collect --reactive-radius`, default 3.25) stores
+  `pair_candidates`: every candidate inside the radius with its screen distance, its geometry metrics,
+  and whether the geometry could be measured. Both pair backends are supported.
+- **New `MartiniFuncs/pair_candidates.py`:**
+  - `select_pairs` applies any radius up to the cached one and any `PairCriteria`;
+  - `candidate_table` returns every candidate as a DataFrame;
+  - `metric_histograms` gives distributions of the selected candidates.
+- **`write_report` and `export_pairs`** (CLI `report`/`extract`) accept `--reactive-radius`, the five
+  `--max-*` thresholds and `--geometry-required`. A report selection writes the lifetimes, a
+  `selected_pairs` column in `frames.csv`, and `pair_metric_histograms.csv`.
+- **Cache:** `candidate_{offsets,molecules,shifts,metrics}.npy`. Older caches load, but cannot be
+  re-selected.
+
+**Verified:** `tests/test_pair_reselection.py` checks:
+- selecting radii 2.5, 3.25 and 4.0 from a 5 Angstrom analysis equals fresh analyses at those radii,
+  with and without a geometry requirement, including pair order and image shifts;
+- selecting with criteria equals fresh analyses with those criteria;
+- reference-backend and cached-backend candidates agree to 1e-9;
+- a radius above the cached one is refused;
+- CLI `report` lifetimes and per-frame counts, and `extract` pairs, equal a fresh analysis at
+  3 Angstrom with max axis angle 45.
+
+On the 400-frame dense fixture, selecting 3.25 Angstrom from a 5 Angstrom cache reproduced the fresh
+analysis exactly. Default outputs are unchanged apart from the added files and fields.

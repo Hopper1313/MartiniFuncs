@@ -67,7 +67,8 @@ class CacheFormatTests(unittest.TestCase):
                     ("pairs_by_frame", "pair_shifts_by_frame")}
         metadata["pairs_by_frame"] = list(loaded["pairs_by_frame"])
         metadata["pair_shifts_by_frame"] = list(loaded["pair_shifts_by_frame"])
-        metadata = {k: v for k, v in metadata.items() if k not in ("species",)}
+        # schema-1 caches had neither species metadata here nor pair candidates
+        metadata = {k: v for k, v in metadata.items() if k not in ("species", "pair_candidates")}
         (old / "analysis.json").write_text(json.dumps(metadata))
         (old / "manifest.json").write_text(json.dumps(dict(manifest, schema_version=1)))
         legacy, _ = load_analysis_cache(old)

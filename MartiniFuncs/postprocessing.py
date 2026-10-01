@@ -19,6 +19,7 @@ import platform
 import numpy as np
 
 from . import md_statistics as md
+from .pair_selection import PairCriteria
 from .trajectory_analysis import analyze_run, molecular_window_statistics, resolve_run_files, select_frame_window
 
 
@@ -154,9 +155,15 @@ def cache_analysis(directory, cache_dir, *, units, timestep_ps, pair_criteria=No
             arrays.append(key)
     np.savez(cache_dir / "frames.npz", **_frame_columns(result["frames"]))
     pair_storage = _save_pairs(cache_dir, result)
+    candidates = result.get("pair_candidates")
+    if candidates is not None:
+        for key in ("offsets", "molecules", "shifts", "metrics"):
+            np.save(cache_dir / f"candidate_{key}.npy", candidates[key], allow_pickle=False)
     metadata = {k: v for k, v in result.items()
-                if k not in ARRAY_KEYS and k not in {"frames", "pairs_by_frame", "pair_shifts_by_frame"}}
+                if k not in ARRAY_KEYS and k not in {"frames", "pairs_by_frame", "pair_shifts_by_frame",
+                                                     "pair_candidates"}}
     metadata["pair_storage"] = pair_storage
+    metadata["pair_candidates_radius"] = None if candidates is None else candidates["reactive_radius"]
     _json(cache_dir / "analysis.json", metadata)
     _csv(cache_dir / "frames.csv", result["frames"])
     _json(cache_dir / "molecules.json", [
@@ -268,6 +275,12 @@ def load_analysis_cache(cache_dir):
             names = list(columns.files)
             values = [columns[name].tolist() for name in names]
         result["frames"] = [dict(zip(names, row)) for row in zip(*values)]
+        radius = result.pop("pair_candidates_radius", None)
+        result["pair_candidates"] = None
+        if radius is not None:
+            result["pair_candidates"] = {key: np.load(cache_dir / f"candidate_{key}.npy", allow_pickle=False)
+                                         for key in ("offsets", "molecules", "shifts", "metrics")}
+            result["pair_candidates"]["reactive_radius"] = float(radius)
         storage = result.pop("pair_storage", None)
         if storage == "molecule_index":
             offsets = np.load(cache_dir / "pair_frame_offsets.npy", allow_pickle=False)
@@ -317,8 +330,14 @@ def _begin_product(directory, configuration):
 def write_report(cache_dir, output_dir, *, startframe=0, endframe=None,
                  max_lag_ps=100., fit_interval_ps=None, max_gap_frames=0,
                  stability=False, rdf_bins=None, lag_statistics=None,
-                 pair_lifetimes=True, frame_summary=True, progress=None, preloaded=None):
+                 pair_lifetimes=True, frame_summary=True, progress=None, preloaded=None,
+                 reactive_radius=None, pair_criteria=None):
     """Compute a source-frame-window report from cached molecular data.
+
+    reactive_radius (Angstrom, at most the cached radius) and pair_criteria
+    (PairCriteria) select pairs from the cached candidates for the lifetimes,
+    the per-frame selected_pairs column and pair_metric_histograms.csv; see
+    pair_candidates.select_pairs. Neither means the analysis's own pairs.
 
     startframe is inclusive and endframe exclusive, both zero-based source dump
     indices (not retained-row indices or timesteps). Defaults select the full
@@ -350,7 +369,13 @@ def write_report(cache_dir, output_dir, *, startframe=0, endframe=None,
     config = dict(cache=str(Path(cache_dir).resolve()), source=source, startframe=startframe, endframe=endframe,
                   max_lag_ps=max_lag_ps, fit_interval_ps=fit_interval_ps,
                   max_gap_frames=max_gap_frames, stability=stability, rdf_bins=rdf_bins, software=_software())
-    config.update(lag_statistics=requested, pair_lifetimes=pair_lifetimes, frame_summary=frame_summary)
+    config.update(lag_statistics=requested, pair_lifetimes=pair_lifetimes, frame_summary=frame_summary,
+                  reactive_radius=reactive_radius,
+                  pair_criteria=asdict(pair_criteria) if pair_criteria is not None else None)
+    from .pair_candidates import candidate_mask, metric_histograms, select_pairs
+    selection = reactive_radius is not None or pair_criteria is not None
+    selected_pairs = (select_pairs(result, reactive_radius=reactive_radius, criteria=pair_criteria)[0]
+                      if result["pairs_by_frame"] is not None else None)
     # Check completed reports before performing potentially expensive statistics.
     output = Path(output_dir).expanduser().resolve()
     if output.exists():
@@ -363,6 +388,9 @@ def write_report(cache_dir, output_dir, *, startframe=0, endframe=None,
     window = molecular_window_statistics(result, startframe=startframe, endframe=endframe,
                                          max_lag_ps=max_lag_ps, lag_statistics=requested, progress=progress)
     rows = [r for r, keep in zip(result["frames"], window["frame_mask"]) if keep]
+    if selection and selected_pairs is not None:
+        rows = [dict(r, selected_pairs=len(p)) for r, p, keep in
+                zip(result["frames"], selected_pairs, window["frame_mask"]) if keep]
     times = [r["time_ps"] for r in rows]
     fits = []
     if fit_interval_ps is not None:
@@ -396,10 +424,21 @@ def write_report(cache_dir, output_dir, *, startframe=0, endframe=None,
              fields=["frame", "timestep", "time_ps", "persistence_frames", "formulas", "changed_components"])
         if progress:
             progress(f"Wrote {len(events)} topology (reaction) events")
+    candidates = result.get("pair_candidates")
+    if candidates is not None:
+        # Distributions of the selected candidates inside this frame window.
+        in_window = np.repeat(window["frame_mask"], np.diff(candidates["offsets"]))
+        mask = in_window & candidate_mask(candidates, reactive_radius=reactive_radius, criteria=pair_criteria)
+        if not selection and result["pairs_by_frame"] is not None:
+            # No report selection: describe the analysis's own accepted pairs.
+            mask = in_window & candidate_mask(candidates, criteria=source["configuration"].get("pair_criteria")
+                                              and PairCriteria(**source["configuration"]["pair_criteria"]))
+        _csv(output / "pair_metric_histograms.csv", metric_histograms(candidates, mask),
+             fields=["metric", "bin_low", "bin_high", "count"])
     if pair_lifetimes and result["pairs_by_frame"] is not None:
         if progress:
             progress(f'Computing pair lifetimes over {len(rows)} frames')
-        pairs = [p for p, keep in zip(result["pairs_by_frame"], window["frame_mask"]) if keep]
+        pairs = [p for p, keep in zip(selected_pairs, window["frame_mask"]) if keep]
         events = md.get_pair_lifetime(pairs, times, max_gap_frames=max_gap_frames, progress=progress)
         # first_frame/last_frame count retained rows inside this window; the
         # source columns use the dump-frame numbering of every other output.
@@ -469,7 +508,7 @@ def _export_identity(records, frame, first_structure, time_ps):
 
 
 def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endframe=None, progress=print,
-                 workers=1, batch_size=32, preloaded=None):
+                 workers=1, batch_size=32, preloaded=None, reactive_radius=None, pair_criteria=None):
     """Stream selected cached encounters into pair/shell Extended XYZ and an index.
 
     Select source frames in [startframe, endframe), defaulting to the entire
@@ -489,6 +528,8 @@ def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endf
     Pairs whose molecules are no longer separate components in a frame (e.g.
     after a reaction) are exported with membership_changed=true in index.jsonl
     and counted in the manifest; they never abort the export.
+    reactive_radius / pair_criteria export only the pairs selected from the
+    cached candidates (pair_candidates.select_pairs); default: cached pairs.
     Only selected frames are parsed (each from its own byte range), using
     frame offsets saved in the cache after the first export.
     preloaded=(result, manifest) skips reading the cache again.
@@ -506,12 +547,16 @@ def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endf
     keep = select_frame_window(result, startframe=startframe, endframe=endframe)
     config = dict(cache=str(Path(cache_dir).resolve()), source=source, shell_radius=shell_radius,
                   startframe=startframe, endframe=endframe, software=_software())
+    if reactive_radius is not None or pair_criteria is not None:
+        config.update(reactive_radius=reactive_radius,
+                      pair_criteria=asdict(pair_criteria) if pair_criteria is not None else None)
+    from .pair_candidates import select_pairs
+    chosen_pairs, chosen_shifts = select_pairs(result, reactive_radius=reactive_radius, criteria=pair_criteria)
     output, create = _begin_product(output_dir, config)
     if not create:
         return output
     selected = {r["frame"]: (r, p, s)
-                for r, p, s, retained in zip(result["frames"], result["pairs_by_frame"],
-                                            result["pair_shifts_by_frame"], keep) if retained}
+                for r, p, s, retained in zip(result["frames"], chosen_pairs, chosen_shifts, keep) if retained}
     options = source["configuration"]
     mapping = options.get("type_symbols")
     if mapping is not None:
