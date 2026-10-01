@@ -50,6 +50,11 @@ class MDStatisticsTests(unittest.TestCase):
         self.assertAlmostEqual(md.get_frame_kinetic_energy(self.atoms), 6.5)
         self.assertAlmostEqual(md.get_frame_temperature(self.atoms, degrees_of_freedom=6),
                                13 / (6 * units.kB))
+        # "3N-3" (as in analyze_run and notebook 01) is f = 3*2 - 3 = 3 for this 2-atom frame.
+        self.assertAlmostEqual(md.get_frame_temperature(self.atoms, degrees_of_freedom="3N-3"),
+                               13 / (3 * units.kB))
+        with self.assertRaisesRegex(ValueError, "positive number or '3N-3'"):
+            md.get_frame_temperature(self.atoms, degrees_of_freedom="3N")
         self.assertAlmostEqual(md.get_frame_density(self.atoms), 4 * 1.66053906660 / 1000, places=8)
         stats = md.get_frame_force_statistics(self.atoms)
         assert_allclose(stats["net_force"], [0, 3, 0])

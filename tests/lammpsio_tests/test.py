@@ -30,7 +30,7 @@ def main():
     frame = read_lammps_frame(args.dump, index=args.index, units=settings["units"])
     pairs, shifts = get_all_prereactive_pairs(frame.atoms, scale=args.scale)
     criteria = CpdN4tCriteria(max_axis_angle=args.max_axis_angle,
-                            max_forming_distance=args.max_forming_distance)
+                              max_forming_distance=args.max_forming_distance)
     assessments = assess_prereactive_pairs(frame.atoms, pairs, shifts,
                                            criteria=criteria, scale=args.scale)
     keep = [r.pair_index for r in assessments if r.accepted]

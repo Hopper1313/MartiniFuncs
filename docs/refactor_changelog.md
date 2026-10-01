@@ -767,3 +767,27 @@ Other pair chemistry, or more criteria, would have meant editing generic code.
 - CLI serial vs 4 workers: 116 files identical.
 - Notebooks 02 and 04 run.
 - A cache from before this change loads, re-selects and reports as cpd_n4t.
+
+## End-to-end run of every notebook and script (2026-10-01)
+
+**Found and fixed:** `statistics.md.get_frame_temperature` rejected `degrees_of_freedom="3N-3"`. Notebook
+01 documents that setting, and `analyze_run` accepts it, so the notebook crashed with the documented
+value. The function now accepts `"3N-3"` (f = 3N - 3 for the frame's atoms). A regression test was added.
+
+**Verified:**
+- **Notebooks:** every code cell ran on the 400-frame fixtures. Covered: 01, 03, workflows 01-08
+  (01/03/05 on both the orthorhombic and the sheared fixture; 08 from the dump and from a CLI cache).
+- **Notebook 06 force validation:** ran for real on CPU against the NVT_noshear frame 0. It used the local
+  uma-s-1p2 checkpoint with `compile=False`, because Windows has no C++ compiler for torch.compile. The
+  pipeline works; forces differ from the uma-s-1p1 trajectory by RMSE 0.06 eV/Angstrom, as expected for
+  a different model version.
+- **Scripts:**
+  - `examples/analyze_npt_stability`, `check_diffusion_windows`, `build_initial_configuration` and
+    `benchmark_pair_analysis` (both backends, 1-2 workers) run.
+  - `tests/lammpsio_tests/test.py` runs, including the cluster output.
+  - `tools/diagnose_cached_motion` runs on the NVT_noshear cache.
+  - `tools/verify_molecular_tracking` and `tests/validate_npt_statistics` run on 2,000 NVT_noshear
+    frames. The TOR COM matches the image-flag COM, and the thermo clock matches.
+- **Not runnable here:** `examples/analyze_npt_diffusion` needs the original 1000 ps
+  `equilibrate_2p5.lammpstrj`, which is not in the repository. Its fits are hard-coded at 20-400 ps.
+  Reading, unwrapping and the MSD ran on the substitute dump.

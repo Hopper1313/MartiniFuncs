@@ -106,7 +106,13 @@ def get_frame_temperature(atoms, *, degrees_of_freedom, remove_com=False):
 
     T = 2 K / (f k_B), where K is get_frame_kinetic_energy(atoms,
     remove_com=remove_com), f=degrees_of_freedom, and k_B is in eV/K.
+    degrees_of_freedom="3N-3" means f=3N-3 for the N atoms in the frame
+    (the denominator only; it does not remove COM motion).
     """
+    if isinstance(degrees_of_freedom, str):
+        if degrees_of_freedom != "3N-3":
+            raise ValueError("degrees_of_freedom must be a positive number or '3N-3'")
+        degrees_of_freedom = 3 * len(atoms) - 3
     if not np.isfinite(degrees_of_freedom) or degrees_of_freedom <= 0:
         raise ValueError("degrees_of_freedom must be positive and finite")
     return 2 * get_frame_kinetic_energy(atoms, remove_com=remove_com) / (
