@@ -300,16 +300,162 @@ def get_pair_geometry_timeseries(atoms_by_frame, pairs_by_frame, shifts_by_frame
     return result
 
 
-def _times(times_ps, length, *, uniform=False):
+def validate_times(times_ps, length=None, *, minimum=2, uniform=False):
+    """Shared timestamp check for every statistic in the package; returns times in ps.
+
+    Requires one finite, strictly increasing timestamp per sample and at least
+    ``minimum`` samples. uniform=True also requires equal spacing within
+    rtol=1e-7, atol=1e-12 ps, which is what lag-indexed statistics assume.
+    """
     times = np.asarray(times_ps, dtype=float)
-    if times.shape != (length,) or length < 2 or not np.isfinite(times).all():
-        raise ValueError("Supply at least two finite timestamps, one per frame")
+    length = len(times) if length is None else length
+    if times.shape != (length,) or length < minimum or not np.isfinite(times).all():
+        raise ValueError(f"Supply at least {minimum} finite timestamps, one per frame")
     steps = np.diff(times)
     if np.any(steps <= 0):
         raise ValueError("Timestamps must be strictly increasing")
     if uniform and not np.allclose(steps, steps[0], rtol=1e-7, atol=1e-12):
         raise ValueError("Lag statistics require uniformly spaced timestamps")
     return times
+
+
+def _times(times_ps, length, *, uniform=False):
+    return validate_times(times_ps, length, uniform=uniform)
+
+
+def lag_count(max_lag_ps, dt_ps, samples):
+    """Number of lags k=0..K with k*dt <= max_lag_ps, capped at the sample count.
+
+    A relative tolerance of 1e-9 keeps an exactly representable endpoint, e.g.
+    max_lag_ps=0.3 with dt=0.1 retains k=3 despite 0.3/0.1 = 2.9999999999999996.
+    """
+    return min(int(samples), int(np.floor(max_lag_ps / dt_ps * (1 + 1e-9))) + 1)
+
+
+def _fft_size(samples):
+    return 1 << (2 * samples - 1).bit_length()
+
+
+def _series_chunks(values, budget=1 << 23):
+    """Yield (start, stop) object ranges so one FFT block stays near budget floats."""
+    samples, objects = values.shape[:2]
+    width = max(1, budget // (_fft_size(samples) * values.shape[2]))
+    for start in range(0, objects, width):
+        yield start, min(objects, start + width)
+
+
+def _origin_sums(series, nlag):
+    """sum_{t=0}^{T-k-1} x[t]*x[t+k] for k < nlag, per column of x[T, M], by FFT."""
+    size = _fft_size(len(series))
+    spectrum = np.fft.rfft(series, n=size, axis=0)
+    return np.fft.irfft(spectrum * spectrum.conj(), n=size, axis=0)[:nlag]
+
+
+def lag_msd(positions, nlag=None):
+    """All-origin MSD[k] = mean_{t,i} |R[t+k,i]-R[t,i]|^2 for k < nlag (Angstrom^2).
+
+    FFT evaluation of the same estimator as an explicit lag loop:
+    sum_t |R[t+k]-R[t]|^2 = sum_{t<T-k} |R[t]|^2 + sum_{t>=k} |R[t]|^2
+    - 2 sum_t R[t].R[t+k]. Each object is first shifted by its temporal mean
+    (MSD is unchanged) to limit cancellation; cost is O(T log T) rather than
+    O(T * nlag). Objects are processed in blocks to bound memory.
+    """
+    p = np.asarray(positions, dtype=float)
+    samples, objects = p.shape[:2]
+    nlag = samples if nlag is None else int(nlag)
+    if not 1 <= nlag <= samples:
+        raise ValueError("nlag must be between 1 and the number of samples")
+    k = np.arange(nlag)
+    total = np.zeros(nlag)
+    for start, stop in _series_chunks(p):
+        block = p[:, start:stop] - p[:, start:stop].mean(axis=0)
+        squared = np.einsum("tna,tna->tn", block, block)
+        prefix = np.cumsum(squared, axis=0)
+        head = prefix[samples - 1 - k]
+        tail = prefix[-1] - np.where(k[:, None] > 0, prefix[np.maximum(k - 1, 0)], 0.)
+        cross = _origin_sums(block.reshape(samples, -1), nlag).reshape(nlag, stop - start, 3).sum(axis=-1)
+        total += (head + tail - 2 * cross).sum(axis=1)
+    msd = total / ((samples - k) * objects)
+    msd[0] = 0.
+    return np.maximum(msd, 0.)
+
+
+def lag_correlation(values, nlag=None, *, subtract_mean=False):
+    """C[k] = mean_{t,i} x[t,i] . x[t+k,i] over T-k origins, k < nlag, by FFT."""
+    v = np.asarray(values, dtype=float)
+    samples, objects = v.shape[:2]
+    nlag = samples if nlag is None else int(nlag)
+    if not 1 <= nlag <= samples:
+        raise ValueError("nlag must be between 1 and the number of samples")
+    if subtract_mean:
+        v = v - v.mean(axis=0, keepdims=True)
+    total = np.zeros(nlag)
+    for start, stop in _series_chunks(v):
+        total += _origin_sums(v[:, start:stop].reshape(samples, -1), nlag).sum(axis=1)
+    return total / ((samples - np.arange(nlag)) * objects)
+
+
+def _is_diagonal(cell):
+    return np.array_equal(cell, np.diag(np.diagonal(cell)))
+
+
+def minimum_image(vectors, cell):
+    """Shift Cartesian vectors (..., 3) by lattice vectors to fractional components in [-1/2, 1/2).
+
+    d' = d - floor(d H^-1 + 1/2) H, with H the row-vector cell. For a diagonal
+    cell this is the componentwise d - L floor(d/L + 1/2) used by TOR. It is
+    the nearest image whenever |d| is below half the smallest plane spacing,
+    which holds for per-frame molecular steps.
+    """
+    cell = np.asarray(cell, dtype=float)
+    d = np.asarray(vectors, dtype=float)
+    if _is_diagonal(cell):
+        lengths = np.diagonal(cell)
+        return d - lengths * np.floor(d / lengths + .5)
+    fractional = np.linalg.solve(cell.T, d.reshape(-1, 3).T).T.reshape(d.shape)
+    return (fractional - np.floor(fractional + .5)) @ cell
+
+
+def cell_plane_spacings(cell):
+    """Distances between opposite cell faces, V/|a_j x a_k|, in Angstrom."""
+    cell = np.asarray(cell, dtype=float)
+    volume = abs(np.linalg.det(cell))
+    return np.array([volume / np.linalg.norm(np.cross(cell[(i+1) % 3], cell[(i+2) % 3])) for i in range(3)])
+
+
+def wrap_about_center(points, cell, center):
+    """The image of each point inside the cell centered at center: c + mic(r - c)."""
+    center = np.asarray(center, dtype=float)
+    return center + minimum_image(np.asarray(points, dtype=float) - center, cell)
+
+
+def unwrap_com_trajectory(com, cells, centers=None):
+    """TOR temporal unwrapping of whole-molecule COMs for any periodic cell.
+
+    Each frame's COMs are first wrapped into that frame's cell about its center
+    c_t, W_t = c_t + mic(R_t - c_t, H_t) (centers=None uses c_t = 0, i.e. input
+    already wrapped about the origin). Then u_0 = W_0 - c_0 and
+    u_t = u_(t-1) + mic(W_t - W_(t-1), H_t), with mic the minimum image in the
+    destination cell (Bullerjahn et al., JCTC 19 (2023) 3406, Eq. 2, for
+    row-vector cells). For orthorhombic cells with a fixed center this is
+    exactly the componentwise TOR update on centered wrapped COMs. The
+    canonical centered wrap matters under barostat dilation: the image chosen
+    for a COM changes its affine displacement by (image) x dL. A moving center
+    (e.g. a growing shear tilt) contributes its true lab-frame motion.
+    Displacements are lab-frame: an imposed shear flow or barostat dilation is
+    not subtracted. Requires inter-sample steps below half the smallest plane
+    spacing; that cannot be verified from wrapped data.
+    """
+    com = np.asarray(com, dtype=float)
+    cells = np.asarray(cells, dtype=float)
+    centers = np.zeros((len(com), 3)) if centers is None else np.asarray(centers, dtype=float)
+    if (com.ndim != 3 or com.shape[-1] != 3 or len(com) < 1 or cells.shape != (len(com), 3, 3)
+            or centers.shape != (len(com), 3) or not np.isfinite(com).all() or not np.isfinite(cells).all()):
+        raise ValueError("Expected finite COMs (T, N, 3), cells (T, 3, 3) and centers (T, 3)")
+    wrapped = np.stack([wrap_about_center(r, h, c) for r, h, c in zip(com, cells, centers)])
+    steps = [minimum_image(wrapped[t] - wrapped[t-1], cells[t]) for t in range(1, len(com))]
+    start = wrapped[:1] - centers[0]
+    return np.concatenate((start, start + np.cumsum(steps, axis=0)), axis=0) if steps else start
 
 
 def _series(values, times_ps):
@@ -375,9 +521,7 @@ def get_molecular_msd(com_positions, times_ps, *, unwrapped, selection):
     if not isinstance(selection, str) or not selection.strip():
         raise ValueError("Provide a species/group selection label")
     positions, lag = _series(com_positions, times_ps)
-    msd = np.zeros(len(lag))
-    for k in range(1, len(lag)):
-        msd[k] = np.mean(np.sum((positions[k:] - positions[:-k]) ** 2, axis=-1))
+    msd = lag_msd(positions)
     return {"lag_ps": lag, "msd_angstrom2": msd, "selection": selection,
             "n_objects": positions.shape[1], "n_origins": len(lag) - np.arange(len(lag))}
 
@@ -406,7 +550,8 @@ def unwrap_orthorhombic_com(wrapped_com, box_lengths):
     Componentwise, d_t=w_t-w_(t-1), delta_t=d_t-L_t*floor(d_t/L_t+1/2),
     u_0=w_0 and u_t=u_(t-1)+delta_t. w=wrapped_com and L=box_lengths;
     L_t is the destination frame's box, not the initial box. No drift or
-    affine box-motion subtraction is added.
+    affine box-motion subtraction is added. This is unwrap_com_trajectory with
+    diagonal cells; use that function directly for triclinic/sheared cells.
     """
     wrapped = np.asarray(wrapped_com, dtype=float)
     lengths = np.asarray(box_lengths, dtype=float)
@@ -416,10 +561,7 @@ def unwrap_orthorhombic_com(wrapped_com, box_lengths):
         raise ValueError("Expected finite COMs (T, N, 3) and positive lengths (T, 3)")
     if np.any(abs(wrapped) > lengths[:, None, :] / 2 + 1e-8):
         raise ValueError("COMs must be wrapped into origin-centered boxes")
-    delta = np.diff(wrapped, axis=0)
-    box = lengths[1:, None, :]
-    delta -= box * np.floor(delta / box + .5)
-    return np.concatenate((wrapped[:1], wrapped[:1] + np.cumsum(delta, axis=0)), axis=0)
+    return unwrap_com_trajectory(wrapped, np.stack([np.diag(L) for L in lengths]), np.zeros((len(wrapped), 3)))
 
 
 def get_molecular_diffusion_coefficient(msd_result, *, fit_start_ps, fit_end_ps):
@@ -461,10 +603,7 @@ def _vector_correlation(values, times_ps, *, selection, subtract_mean=False, nor
     if not isinstance(selection, str) or not selection.strip():
         raise ValueError("Provide a species/group selection label")
     vectors, lag = _series(values, times_ps)
-    if subtract_mean:
-        vectors = vectors - vectors.mean(axis=0, keepdims=True)
-    corr = np.array([np.mean(np.sum(vectors[:len(vectors)-k] * vectors[k:], axis=-1))
-                     for k in range(len(vectors))])
+    corr = lag_correlation(vectors, subtract_mean=subtract_mean)
     if normalize:
         if corr[0] <= 0:
             raise ValueError("Cannot normalize a zero-variance correlation")
@@ -553,8 +692,11 @@ def get_pair_lifetime(pairs_by_frame, times_ps, *, max_gap_frames=0, progress=No
     missing samples (intermittent definition). Span = last detection minus first
     detection: a single-sample event has span zero, not a known zero lifetime.
     Entry/exit occur between samples and are not interpolated. Boundary episodes
-    are censored; a bridged episode still awaiting termination at the final frame
-    is right-censored. Do not average these spans as unbiased physical lifetimes.
+    are censored with the same gap allowance at both ends: an episode is
+    left-censored when its first detection is within max_gap_frames of the first
+    supplied frame (it could be bridged to earlier, unseen detections) and
+    right-censored when still open at the final frame. Do not average these
+    spans as unbiased physical lifetimes.
     The iterable of pair lists is consumed once; trajectory coordinates are not
     retained. Timestamps may be irregular. Returned frame indices are local to
     the supplied trajectory/window. Missing frames are not absent detections.
@@ -564,7 +706,8 @@ def get_pair_lifetime(pairs_by_frame, times_ps, *, max_gap_frames=0, progress=No
     max_gap_frames; detected_frames counts observations, not bridged gaps.
     Optional progress reports completed frame counts and the final sorting stage.
     """
-    if not isinstance(max_gap_frames, (int, np.integer)) or max_gap_frames < 0:
+    if (isinstance(max_gap_frames, (bool, np.bool_)) or not isinstance(max_gap_frames, (int, np.integer))
+            or max_gap_frames < 0):
         raise ValueError("max_gap_frames must be a nonnegative integer")
     times = np.asarray(times_ps, dtype=float)
     if times.ndim != 1:
@@ -575,7 +718,7 @@ def get_pair_lifetime(pairs_by_frame, times_ps, *, max_gap_frames=0, progress=No
     def finish(key, state, censored):
         start, end, count = state
         result.append(PairLifetime(key, start, end, float(times[start]), float(times[end]),
-                                   float(times[end] - times[start]), count, start == 0, censored))
+                                   float(times[end] - times[start]), count, start <= max_gap_frames, censored))
 
     sentinel = object()
     for index, (pairs, time) in enumerate(zip_longest(pairs_by_frame, times, fillvalue=sentinel)):

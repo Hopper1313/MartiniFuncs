@@ -72,21 +72,30 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
     Missing velocities
     or forces disable only those metrics. Temperature requires explicit DOF.
     COMs are reconstructed at every source frame before optional downsampling.
-    TOR diffusion requires periodic orthorhombic boxes with fixed box centers;
-    other cells still support scalar/velocity/force/pair analyses.
+    TOR diffusion requires fully periodic cells: orthorhombic, triclinic and
+    sheared (fix deform) cells are supported, and the box center may move.
+    Displacements are lab-frame: imposed shear flow or barostat dilation is not
+    subtracted. Non-periodic directions disable COM tracking; scalar/velocity/
+    force/pair analyses remain available.
 
     Returns both com_angstrom (TOR, for MSD) and wrapped_com_angstrom (actual
-    instantaneous centered-box geometry, for RDFs), with box_lengths_angstrom.
-    The COM arrays are None when the supported cell convention fails. Vector
-    arrays share retained-frame and fixed molecular order; they do not share
-    the atomic row axis of the source Atoms.
+    instantaneous geometry wrapped about the cell center, for RDFs), with
+    cell_angstrom (frames, 3, 3) row-vector cells and box_lengths_angstrom (the
+    cell diagonal, equal to the box lengths for orthorhombic cells). The COM
+    arrays are None when COM tracking is unsupported. max_com_step_cell_fraction
+    is the largest per-source-frame COM step as a fraction of the cell (in
+    fractional coordinates); TOR is ambiguous at 0.5 and a notice is added above
+    0.25. Vector arrays share retained-frame and fixed molecular order; they do
+    not share the atomic row axis of the source Atoms.
 
     Time is dump_step*timestep_ps. For fixed molecular groups,
     R_m=sum_i(m_i*r_whole,i)/sum_i m_i, V_m=sum_i(m_i*v_i)/sum_i m_i,
     and F_m=sum_i F_i. V_m is converted to Angstrom/ps. Whole positions follow
     minimum-image bond vectors along the initial graph's spanning tree.
-    For centered wrapped COM w_t, accumulate u_t=u_(t-1)+d_t-L_t*floor(d_t/L_t+1/2),
-    d_t=w_t-w_(t-1). This TOR update uses every source frame before striding.
+    With R_t the whole-molecule COM and H_t the cell, accumulate
+    u_t=u_(t-1)+mic(R_t-R_(t-1), H_t), u_0 the COM wrapped about the first cell
+    center; mic is md_statistics.minimum_image, which for orthorhombic cells is
+    d-L*floor(d/L+1/2). This TOR update uses every source frame before striding.
     Temperature is 2*K/(f*k_B) without COM subtraction; '3N-3' specifies f only.
 
     reaction_atom_counts=(11, 23) enables an exact-size possible-product screen
@@ -165,12 +174,13 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
               if pair_workers > 1 else iter_lammps_frames(files["dump"], **reader_options))
     rows, coms, velocities, forces, pairs_by_frame = [], [], [], [], []
     pair_shifts_by_frame = []
-    wrapped_coms, box_lengths = [], []
+    wrapped_coms, box_lengths, cells = [], [], []
+    max_step_fraction = 0.
     notices = ["Molecular membership fixed from first-frame bond graph; species grouped by formula.",
                "No potential energy or pressure computed from atomic forces; thermo logs are not parsed."]
     diffusion_reason = None
     first = None
-    previous_wrapped = previous_box_center = running_com = None
+    previous_com = running_com = None
     frames_read = 0
     previous_step = None
     with ExitStack() as stack:
@@ -189,6 +199,7 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
                 if hits:
                     raise PossibleReactionError([dict(frame=int(frame.index), timestep=int(frame.timestep), **hit)
                                                  for hit in hits])
+                preparation["prescreened_frame"] = frame.index
             if first is None:
                 first = atoms.copy()
                 if degrees_of_freedom == "3N-3":
@@ -245,21 +256,25 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
             prepared = getattr(frame, "prepared", None)
             if prepared is None:
                 prepared = prepare_frame(frame, preparation)
-            com, orthogonal, length, pairs, shifts, center, scalars, velocity, force = prepared
-            if not orthogonal:
-                diffusion_reason = "Molecular MSD disabled: TOR currently requires fully periodic orthorhombic cells."
+            com, cell, pbc = prepared.com, prepared.cell, prepared.pbc
+            pairs, shifts, scalars = prepared.pairs, prepared.shifts, prepared.scalars
+            velocity, force = prepared.velocity, prepared.force
+            if not pbc.all():
+                diffusion_reason = "Molecular MSD disabled: COM tracking requires a fully periodic cell."
             elif diffusion_reason is None:
-                if previous_box_center is not None and not np.allclose(center,previous_box_center,rtol=0,atol=1e-7):
-                    diffusion_reason = "Molecular MSD disabled: box center moves; an explicit reference-frame convention is needed."
-                wrapped = com-center
-                wrapped -= length*np.floor(wrapped/length+.5)
-                if previous_wrapped is None:
+                center = prepared.origin + cell.sum(axis=0)/2
+                # Canonical image inside the current cell (TOR convention), then
+                # destination-cell minimum-image steps; see md.unwrap_com_trajectory.
+                in_cell = md.wrap_about_center(com, cell, center)
+                wrapped = in_cell - center
+                if previous_com is None:
                     running_com = wrapped.copy()
                 else:
-                    delta = wrapped-previous_wrapped
-                    delta -= length*np.floor(delta/length+.5)
-                    running_com += delta
-                previous_wrapped, previous_box_center = wrapped, center
+                    step = md.minimum_image(in_cell-previous_com, cell)
+                    running_com += step
+                    fraction = np.abs(np.linalg.solve(cell.T, step.reshape(-1, 3).T)).max()
+                    max_step_fraction = max(max_step_fraction, float(fraction))
+                previous_com = in_cell
             if frame.index % frame_stride:
                 continue
             row = {"frame": frame.index, "timestep": frame.timestep, "time_ps": frame.timestep*settings["timestep"],
@@ -274,7 +289,8 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
                 row["candidate_pairs"] = len(pairs)
             rows.append(row)
             wrapped_coms.append(wrapped.copy() if diffusion_reason is None else np.full_like(com,np.nan))
-            box_lengths.append(length.copy())
+            box_lengths.append(cell.diagonal().copy())
+            cells.append(cell.copy())
             coms.append(running_com.copy() if diffusion_reason is None else np.full_like(com,np.nan))
             if progress is not None and (len(rows)==1 or len(rows)%100==0):
                 progress(f"Processed {frames_read} frames; retained {len(rows)}; time {row['time_ps']:g} ps")
@@ -285,6 +301,11 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
         raise ValueError("Timesteps must increase; split restarted/concatenated trajectories explicitly")
     if diffusion_reason:
         notices.append(diffusion_reason)
+    elif max_step_fraction > .25:
+        notices.append(f"Largest per-frame COM step is {max_step_fraction:.2f} of the cell; TOR unwrapping "
+                       "is ambiguous at 0.5. Save frames more often.")
+    if not diffusion_reason and len(cells) and not all(md._is_diagonal(c) for c in cells):
+        notices.append("Non-orthorhombic cell: COM displacements are lab-frame and include any imposed shear flow.")
     return {"files":files,"settings":settings,"frames":rows,"frames_read":frames_read,
             "reaction_screen": {"reactant_atom_counts": list(reaction_atom_counts),
                                 "bond_scale": bond_scale, "frames_checked": frames_read} if reaction_atom_counts is not None else None,
@@ -292,6 +313,8 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
             "molecule_atom_ids":components,"com_angstrom":None if diffusion_reason else np.asarray(coms),
             "wrapped_com_angstrom":None if diffusion_reason else np.asarray(wrapped_coms),
             "box_lengths_angstrom":np.asarray(box_lengths),
+            "cell_angstrom":np.asarray(cells),
+            "max_com_step_cell_fraction":None if diffusion_reason else max_step_fraction,
             "com_velocity_angstrom_ps":np.asarray(velocities) if has_velocities else None,
             "net_force_eV_angstrom":np.asarray(forces) if has_forces else None,
             "pairs_by_frame":pairs_by_frame if compute_pairs else None,
@@ -357,7 +380,7 @@ def molecular_window_statistics(result, *, startframe=0, endframe=None, max_lag_
     if requested:
         md._times(selected_times, len(selected_times), uniform=True)
         dt = selected_times[1]-selected_times[0]
-        nlag = min(len(selected_times),int(np.floor(max_lag_ps/dt))+1)
+        nlag = md.lag_count(max_lag_ps, dt, len(selected_times))
     statistics = {}
     for name in sorted(set(result["species"])) if requested else []:
         mask = result["species"]==name
@@ -374,16 +397,11 @@ def molecular_window_statistics(result, *, startframe=0, endframe=None, max_lag_
                 continue
             if progress:
                 progress(f'{name}: starting {option}, {len(selected_times)} frames, {nlag} lags')
-            values = result[source][keep][:,mask]
-            out = []
-            for lag in range(nlag):
-                left = values[:len(values)-lag]
-                right = values[lag:]
-                product = (right-left)**2 if key=="msd_angstrom2" else left*right
-                out.append(np.mean(np.sum(product,axis=-1)))
-                if progress and ((lag+1) % max(1, nlag//10) == 0 or lag+1 == nlag):
-                    progress(f'{name}: {option} {lag+1}/{nlag} lags complete')
-            entry[key] = np.array(out)
+            values = np.asarray(result[source][keep][:,mask], dtype=float)
+            # FFT evaluation of the same all-origin estimator; O(T log T) for any lag range.
+            entry[key] = md.lag_msd(values, nlag) if key == "msd_angstrom2" else md.lag_correlation(values, nlag)
+            if progress:
+                progress(f'{name}: {option} complete ({nlag} lags)')
         statistics[name] = entry
     return {"time_window_ps":[float(selected_times[0]),float(selected_times[-1])],
             "frame_window":[int(startframe), int(endframe if endframe is not None else result.get("frames_read", result["frames"][-1]["frame"]+1))],

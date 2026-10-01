@@ -102,7 +102,7 @@ class WorkflowNotebookTests(unittest.TestCase):
             result, _ = self.run_notebook("08_diffusion_and_equilibration.ipynb",
                 FIT_INTERVALS_PS=[(1, 4), (2, 5), (3, 6)], BLOCK_DURATIONS_PS=[60, 120],
                 BOOTSTRAP_RESAMPLES=100, SCALAR_TOLERANCES={"density_g_cm3": .01}, SHOW_DETAILS=True)
-        self.assertTrue(np.isfinite(result["diffusion_table"]["D_m2_s"]).all())
+        self.assertTrue(np.isfinite(result["diffusion_table"]["D_cm2_s"]).all())
         np.testing.assert_allclose(result['reference_msd']['synthetic']['msd_angstrom2'],
                                    np.mean(np.sum((p-p[0])**2, axis=2), axis=1))
 

@@ -14,9 +14,10 @@ class DiffusionDiagnosticsTests(unittest.TestCase):
         self.assertEqual(result["blocks"], 20)
         for fit in result["fits"]:
             self.assertEqual(fit["status"], "candidate", fit["reasons"])
-            self.assertAlmostEqual(fit["D_m2_s"]/1e-8, diffusion, delta=.015)
-            self.assertLess(fit["ci95_m2_s"][0], fit["D_m2_s"])
-            self.assertGreater(fit["ci95_m2_s"][1], fit["D_m2_s"])
+            self.assertAlmostEqual(fit["D_cm2_s"]/1e-4, diffusion, delta=.015)
+            self.assertLess(fit["ci95_cm2_s"][0], fit["D_cm2_s"])
+            self.assertGreater(fit["ci95_cm2_s"][1], fit["D_cm2_s"])
+            self.assertAlmostEqual(fit["alpha"], 1, delta=.05)
 
     def test_confined_motion_is_not_diffusive(self):
         p = np.random.default_rng(5).normal(size=(1600, 30, 3))

@@ -11,10 +11,31 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 import multiprocessing
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 
 from .lammpsio import iter_lammps_frames
+
+
+class FrameSummary(NamedTuple):
+    """Per-frame molecular summary returned by prepare_frame (fixed molecular order).
+
+    com: whole-molecule COMs, Angstrom (any periodic image). cell: row-vector
+    cell (3, 3); pbc: periodic flags; origin: cell origin (LAMMPS lo corner).
+    pairs/shifts: retained-frame pair candidates or None. scalars: density,
+    volume and optional temperature. velocity: COM velocity Angstrom/ps or None.
+    force: net molecular force eV/Angstrom or None.
+    """
+    com: np.ndarray
+    cell: np.ndarray
+    pbc: np.ndarray
+    origin: np.ndarray
+    pairs: list | None
+    shifts: list | None
+    scalars: dict
+    velocity: np.ndarray | None
+    force: np.ndarray | None
 
 
 @dataclass
@@ -22,8 +43,17 @@ class PreparedFrame:
     """Small process payload: source identity and computed molecular summaries."""
     index: int
     timestep: int
-    prepared: tuple
+    prepared: FrameSummary
     atoms: None = None
+
+
+def _require_equal(actual, expected, label, frame, *, approximate=False):
+    """Raise ValueError (not AssertionError) when a fixed-identity check fails."""
+    same = (np.allclose(actual, expected, rtol=1e-7, atol=0) if approximate
+            else np.array_equal(actual, expected))
+    if np.shape(actual) != np.shape(expected) or not same:
+        raise ValueError(f"Frame {frame}: atom {label} differ from the first frame; "
+                         "split the trajectory or rerun with matching files")
 
 
 def frame_offsets(path):
@@ -96,14 +126,15 @@ def prepare_frame(frame, context):
     from . import md_statistics as md
     from .reaction_detection import find_possible_products, PossibleReactionError
     atoms = frame.atoms
-    if context['reaction_atom_counts'] is not None:
+    # analyze_run screens the first frame before building its topology.
+    if context['reaction_atom_counts'] is not None and frame.index != context.get('prescreened_frame'):
         hits = find_possible_products(atoms, reactant_atom_counts=context['reaction_atom_counts'],
                                       bond_scale=context['bond_scale'])
         if hits:
             raise PossibleReactionError([dict(frame=frame.index, timestep=frame.timestep, **h) for h in hits])
-    np.testing.assert_array_equal(atoms.arrays['global_index'], context['ids'])
-    np.testing.assert_array_equal(atoms.numbers, context['numbers'])
-    np.testing.assert_allclose(atoms.get_masses(), context['masses'])
+    _require_equal(atoms.arrays['global_index'], context['ids'], 'IDs', frame.index)
+    _require_equal(atoms.numbers, context['numbers'], 'elements', frame.index)
+    _require_equal(atoms.get_masses(), context['masses'], 'masses', frame.index, approximate=True)
     if context['has_velocities'] != ('momenta' in atoms.arrays) or context['has_forces'] != ('lammps_forces' in atoms.arrays):
         raise ValueError('Velocity/force availability changes within the dump')
     length = atoms.cell.array.diagonal()
@@ -141,8 +172,8 @@ def prepare_frame(frame, context):
     if context['has_forces']:
         f = atoms.arrays['lammps_forces']
         force = np.column_stack([np.bincount(context['groups'], weights=f[:, axis]) for axis in range(3)])
-    center = np.asarray(atoms.get_celldisp()).ravel()+length/2
-    return com, orthogonal, length, pairs, shifts, center, scalars, velocity, force
+    return FrameSummary(com, atoms.cell.array.copy(), atoms.pbc.copy(), np.asarray(atoms.get_celldisp()).ravel().copy(),
+                        pairs, shifts, scalars, velocity, force)
 
 
 def _initialize_analysis(path, options, context):

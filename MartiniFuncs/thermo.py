@@ -158,7 +158,7 @@ def _source_steps(dump_file, frame_ids):
     return _integer_ids([steps[int(i)] for i in ids], "dump timestep")
 
 
-def attach_thermo(frames, thermo, *, block=None, dump_file=None):
+def attach_thermo(frames, thermo, *, block=None, dump_file=None, on_conflict="prefix"):
     """Left-join thermo aliases to frame records by exact integer timestep.
 
     Repeated thermo steps are ambiguous (e.g. restarts/run boundaries): select a
@@ -169,6 +169,12 @@ def attach_thermo(frames, thermo, *, block=None, dump_file=None):
     If an older result lacks timestep, supply dump_file to recover exact integers
     from its source-frame indices and dump headers. No time/dt inference occurs.
     Integral float/string IDs are accepted after lossless validation.
+
+    A thermo alias that already names a frame column (e.g. temperature_K, which
+    analyze_run computes when degrees_of_freedom is set) is joined as
+    thermo_<alias> with on_conflict="prefix" (default), so neither value is
+    overwritten; on_conflict="error" raises instead. coverage["renamed"] maps
+    each renamed alias to its joined column.
     """
     frames = pd.DataFrame(frames).copy()
     selected = (thermo if block is None else thermo.loc[thermo["thermo_block"] == block]).copy()
@@ -185,11 +191,17 @@ def attach_thermo(frames, thermo, *, block=None, dump_file=None):
         table["timestep"] = _integer_ids(table["timestep"], f"{name} timestep")
         if table["timestep"].duplicated().any():
             raise ValueError("Repeated timesteps are ambiguous; select one thermo block / trajectory segment")
+    if on_conflict not in {"prefix", "error"}:
+        raise ValueError("on_conflict must be 'prefix' or 'error'")
     columns = [c for c in ALIASES.values() if c in selected]
-    overlap = (set(columns)-{"timestep"}) & set(frames.columns)
-    if overlap:
-        raise ValueError(f"Thermo columns would overwrite frame data: {sorted(overlap)}")
-    joined = frames.merge(selected[columns], on="timestep", how="left", sort=False, validate="one_to_one", indicator=True)
+    overlap = sorted((set(columns)-{"timestep"}) & set(frames.columns))
+    if overlap and on_conflict == "error":
+        raise ValueError(f"Thermo columns would overwrite frame data: {overlap}")
+    renamed = {c: "thermo_" + c for c in overlap}
+    if set(renamed.values()) & set(frames.columns):
+        raise ValueError(f"Thermo columns would overwrite frame data: {sorted(set(renamed.values()) & set(frames.columns))}")
+    joined = frames.merge(selected[columns].rename(columns=renamed), on="timestep", how="left", sort=False,
+                          validate="one_to_one", indicator=True)
     matches = joined.pop("_merge") == "both"
     if not matches.any():
         raise ValueError("No dump timesteps match thermo records; check files and selected block")
@@ -198,4 +210,5 @@ def attach_thermo(frames, thermo, *, block=None, dump_file=None):
         if not np.allclose(joined.loc[timed, "time_ps"], joined.loc[timed, "thermo_time_ps"], rtol=1e-6, atol=1e-8):
             raise ValueError("Thermo Time disagrees with dump time_ps; check timestep/reset conventions")
     return joined, {"matched_frames": int(matches.sum()), "unmatched_frames": int((~matches).sum()),
-                    "thermo_rows": len(selected), "block": block, "timesteps_recovered_from_dump": recovered}
+                    "thermo_rows": len(selected), "block": block, "timesteps_recovered_from_dump": recovered,
+                    "renamed": renamed}

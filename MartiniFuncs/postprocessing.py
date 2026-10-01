@@ -21,7 +21,7 @@ from . import md_statistics as md
 from .trajectory_analysis import analyze_run, molecular_window_statistics, resolve_run_files, select_frame_window
 
 
-ARRAY_KEYS = ("species", "com_angstrom", "wrapped_com_angstrom", "box_lengths_angstrom",
+ARRAY_KEYS = ("species", "com_angstrom", "wrapped_com_angstrom", "box_lengths_angstrom", "cell_angstrom",
               "com_velocity_angstrom_ps", "net_force_eV_angstrom")
 SCHEMA_VERSION = 1
 
@@ -254,16 +254,21 @@ def write_report(cache_dir, output_dir, *, startframe=0, endframe=None,
             progress(f'Computing pair lifetimes over {len(rows)} frames')
         pairs = [p for p, keep in zip(result["pairs_by_frame"], window["frame_mask"]) if keep]
         events = md.get_pair_lifetime(pairs, times, max_gap_frames=max_gap_frames, progress=progress)
-        _csv(output / "pair_lifetimes.csv", [asdict(e) for e in events],
-             fields=list(md.PairLifetime.__dataclass_fields__))
+        # first_frame/last_frame count retained rows inside this window; the
+        # source columns use the dump-frame numbering of every other output.
+        source_frames = [r["frame"] for r in rows]
+        _csv(output / "pair_lifetimes.csv",
+             [dict(asdict(e), first_source_frame=source_frames[e.first_frame],
+                   last_source_frame=source_frames[e.last_frame]) for e in events],
+             fields=list(md.PairLifetime.__dataclass_fields__) + ["first_source_frame", "last_source_frame"])
         if progress:
             progress(f'Wrote {len(events)} pair lifetime records')
     elif pair_lifetimes and progress:
         progress('Pair lifetimes unavailable: cache has no pair analysis')
     if stability:
         from .stability import get_series_statistics
-        if len(times) < 2:
-            raise ValueError('Scalar stability requires at least two frames')
+        if len(times) < 3:
+            raise ValueError('Scalar stability requires at least three frames')
         summary = {}
         for key in rows[0]:
             if key not in {'frame', 'time_ps', 'timestep'}:
@@ -274,9 +279,11 @@ def write_report(cache_dir, output_dir, *, startframe=0, endframe=None,
     if rdf_bins is not None:
         from itertools import combinations_with_replacement
         from .stability import get_molecular_com_rdf
-        box = result["box_lengths_angstrom"][window["frame_mask"]]
+        cells = result.get("cell_angstrom")
+        box = np.asarray(cells if cells is not None else result["box_lengths_angstrom"])[window["frame_mask"]]
         positions = result["wrapped_com_angstrom"][window["frame_mask"]]
-        edges = np.linspace(0, .999*box.min()/2, rdf_bins+1)
+        spacing = (min(md.cell_plane_spacings(c).min() for c in box) if box.ndim == 3 else box.min())
+        edges = np.linspace(0, .999*spacing/2, rdf_bins+1)
         rdf_files = []
         for a, b in combinations_with_replacement(sorted(set(result['species'])), 2):
             if a == b and np.count_nonzero(result['species'] == a) < 2:

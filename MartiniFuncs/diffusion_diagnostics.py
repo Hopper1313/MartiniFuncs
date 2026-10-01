@@ -7,16 +7,14 @@ No uncertainty is inferred by treating overlapping MSD lags as independent data.
 """
 import numpy as np
 
+from .md_statistics import lag_msd, validate_times
+from .stability import scalar_autocorrelation, statistical_inefficiency
+
 
 def _times(times, count):
-    """Validate uniformly spaced times in ps and return their spacing."""
-    times = np.asarray(times, dtype=float)
-    if times.shape != (count,) or count < 3 or not np.isfinite(times).all():
-        raise ValueError("Require at least three finite timestamps matching the samples")
-    dt = np.diff(times)
-    if np.any(dt <= 0) or not np.allclose(dt, dt[0], rtol=1e-6, atol=1e-10):
-        raise ValueError("Require increasing uniformly spaced timestamps")
-    return float(dt[0])
+    """Validate uniformly spaced times in ps (shared validator) and return their spacing."""
+    times = validate_times(times, count, minimum=3, uniform=True)
+    return float(times[1] - times[0])
 
 
 def _integer(value, name, minimum):
@@ -31,9 +29,9 @@ def _mean_interval(values, rng, resamples):
 
 
 def _msd(positions, steps):
-    """MSD[k]=mean_(t,m) sum_xyz (R[t+k,m]-R[t,m])**2, in Angstrom squared."""
-    return np.array([0. if k == 0 else np.mean(np.sum((positions[k:]-positions[:-k])**2, axis=-1))
-                     for k in steps])
+    """MSD[k]=mean_(t,m) sum_xyz (R[t+k,m]-R[t,m])**2 at the requested lags, Angstrom^2."""
+    steps = np.asarray(steps, dtype=int)
+    return lag_msd(positions, int(steps.max()) + 1)[steps]
 
 
 def diffusion_diagnostics(positions, times_ps, *, fit_intervals_ps, block_frames,
@@ -44,14 +42,20 @@ def diffusion_diagnostics(positions, times_ps, *, fit_intervals_ps, block_frames
 
     positions is (T, molecules, 3), in Angstrom; times_ps is uniform. For each
     explicit lag interval, fit MSD=a+6*D*t with a free intercept. Also fit
-    log(MSD)=c+alpha*log(t); alpha near one screens for diffusive scaling. A
-    sizeable intercept can make this conservative even for linear late MSD.
-    At most lag_points evenly distributed integer lags bound the work.
+    log(MSD)=c+alpha*log(t); alpha near one screens for diffusive (Fickian)
+    scaling. A sizeable intercept (cage rattling faster than the frame spacing)
+    keeps alpha below one until 6*D*t dominates it; that is intended, because
+    such a curve is not yet in the diffusive regime. For information only,
+    alpha_plateau_corrected fits log(MSD-max(a,0)) and residual_rms_angstrom2
+    is the linear-fit residual; neither enters the screens (a flat, noisy
+    confined MSD can give alpha_plateau_corrected near one). At most
+    lag_points evenly distributed integer lags bound the work.
 
     Split samples into consecutive, nonoverlapping block_frames blocks, discarding
     the incomplete tail for block statistics only. Each block supplies its own D.
     Report their mean and percentile bootstrap 95% interval (resample whole blocks,
-    including all molecules together). Convert Angstrom^2/ps to m^2/s by 1e-8.
+    including all molecules together). D is reported in Angstrom^2/ps and in
+    cm^2/s (x1e-4), the same units as md_statistics.get_molecular_diffusion_coefficient.
     No displacement crosses a block boundary. Block span must be >=5*maximum lag.
 
     Screens require min_blocks, positive CI, CI half-width/mean<=max_relative_ci,
@@ -72,7 +76,8 @@ def diffusion_diagnostics(positions, times_ps, *, fit_intervals_ps, block_frames
     bounds = np.asarray(alpha_bounds, dtype=float)
     if bounds.shape != (2,) or not np.isfinite(bounds).all() or not 0 < bounds[0] < bounds[1]:
         raise ValueError("alpha_bounds must be positive increasing bounds")
-    if not np.isfinite([relative_tolerance, max_relative_ci]).all() or min(relative_tolerance, max_relative_ci) <= 0:
+    screens = [relative_tolerance, max_relative_ci]
+    if not np.isfinite(screens).all() or min(screens) <= 0:
         raise ValueError("Screen tolerances must be positive and finite")
     intervals = np.asarray(fit_intervals_ps, dtype=float)
     if (intervals.ndim != 2 or intervals.shape[1] != 2 or not len(intervals)
@@ -99,8 +104,13 @@ def diffusion_diagnostics(positions, times_ps, *, fit_intervals_ps, block_frames
             rows.append(row)
             continue
         slope, intercept = np.polyfit(lag[mask], msd[mask], 1)
-        alpha = float(np.polyfit(np.log(lag[mask]), np.log(msd[mask]), 1)[0]) if np.all(msd[mask] > 0) else None
-        row.update(D_pooled_angstrom2_ps=float(slope/6), intercept_angstrom2=float(intercept), alpha=alpha)
+        values = msd[mask]
+        alpha = float(np.polyfit(np.log(lag[mask]), np.log(values), 1)[0]) if np.all(values > 0) else None
+        corrected = values - max(intercept, 0.)
+        corrected_alpha = float(np.polyfit(np.log(lag[mask]), np.log(corrected), 1)[0]) if np.all(corrected > 0) else None
+        row.update(D_pooled_angstrom2_ps=float(slope/6), D_pooled_cm2_s=float(slope/6*1e-4),
+                   intercept_angstrom2=float(intercept), alpha=alpha, alpha_plateau_corrected=corrected_alpha,
+                   residual_rms_angstrom2=float(np.sqrt(np.mean((values - (intercept + slope*lag[mask]))**2))))
         if alpha is None or not bounds[0] <= alpha <= bounds[1]:
             reasons.append("MSD scaling is not close to linear in lag")
         if count < min_blocks or len(block_msd) < min_blocks:
@@ -113,8 +123,8 @@ def diffusion_diagnostics(positions, times_ps, *, fit_intervals_ps, block_frames
             ci = _mean_interval(ds, rng, resamples)
             split = len(ds)//2
             shift = abs(ds[:split].mean()-ds[split:].mean())/max(abs(mean), 1e-30)
-            row.update(D_block_angstrom2_ps=mean, D_m2_s=mean*1e-8,
-                       ci95_m2_s=(ci*1e-8).tolist(), block_D_angstrom2_ps=ds.tolist(),
+            row.update(D_block_angstrom2_ps=mean, D_cm2_s=mean*1e-4,
+                       ci95_cm2_s=(ci*1e-4).tolist(), block_D_angstrom2_ps=ds.tolist(),
                        temporal_relative_shift=float(shift))
             if mean <= 0 or ci[0] <= 0:
                 reasons.append("Positive diffusion is not resolved by the block interval")
@@ -170,20 +180,14 @@ def scalar_stationarity(values, times_ps, *, block_frames, tolerance=None,
     reasons = []
     result = {"mean": float(x.mean()), "blocks": count, "block_means": means.tolist(),
               "discarded_samples": len(x) % block_frames, "tolerance": tolerance, "reasons": reasons}
-    centered = x-x.mean()
-    if np.var(x) == 0:
+    acf = scalar_autocorrelation(x)
+    if acf is None:
         reasons.append("Constant observable cannot establish independent sampling")
     else:
-        size = 1 << (2*len(x)-1).bit_length()
-        ft = np.fft.rfft(centered, n=size)
-        cov = np.fft.irfft(ft*ft.conj(), n=size)[:len(x)]/np.arange(len(x), 0, -1)
-        acf = cov/cov[0]
-        zeros = np.flatnonzero(acf[1:] <= 0)
-        stop = int(zeros[0])+1 if len(zeros) else len(x)
-        g = max(1., float(1+2*acf[1:stop].sum()))
+        g, found_zero = statistical_inefficiency(acf)
         tau = dt*g/2
         result.update(correlation_time_ps=tau, effective_samples_heuristic=len(x)/g)
-        if not len(zeros) or (block_frames-1)*dt < 10*tau:
+        if not found_zero or (block_frames-1)*dt < 10*tau:
             reasons.append("Blocks do not resolve estimated correlation times")
     if count < 8:
         reasons.append("Need at least eight complete temporal blocks")
