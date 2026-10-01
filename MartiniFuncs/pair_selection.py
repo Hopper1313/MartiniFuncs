@@ -65,8 +65,7 @@ class PairAssessment:
 
 
 def _subgraph(graph, ids):
-    ids = set(ids)
-    return {i: [(j, s) for j, s in graph.get(i, []) if j in ids] for i in ids}
+    return mfg.induced_subgraph(graph, ids)
 
 
 def _cpd_sites(graph, elements, cpd):

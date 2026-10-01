@@ -20,7 +20,7 @@ convert persistent IDs to local ASE indices explicitly.
 
 from __future__ import annotations
 
-from collections import defaultdict, deque
+from collections import OrderedDict, defaultdict, deque
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TypeAlias
@@ -36,6 +36,9 @@ from ase.neighborlist import NeighborList, first_neighbors, neighbor_list
 AtomID: TypeAlias = int
 Shift: TypeAlias = np.ndarray
 BondGraph: TypeAlias = dict[AtomID, list[tuple[AtomID, Shift]]]
+
+# id(ID array) -> (ID values, {ID: local row}); see get_index_maps.
+_INDEX_MAP_CACHE: OrderedDict = OrderedDict()
 
 
 # -----------------------------------------------------------------------------
@@ -104,13 +107,30 @@ def get_index_maps(
     object preserves per-atom arrays, so a sliced object can legitimately have
     IDs such as ``[15, 27, 400, 1200]`` while its local indices remain
     ``[0, 1, 2, 3]``.
+
+    Results are cached per ID array (validated by content on every call), so
+    repeated lookups on one frame no longer rebuild the dictionary. Treat the
+    returned dictionary as read-only.
     """
+    if index_array is not None and index_array in atoms.arrays:
+        current = atoms.arrays[index_array]
+        cached = _INDEX_MAP_CACHE.get(id(current))
+        # The mapping depends only on the ID values, so a content match is
+        # always a valid hit even if Python reused the array's id().
+        if cached is not None and cached[0].shape == current.shape and np.array_equal(cached[0], current):
+            _INDEX_MAP_CACHE.move_to_end(id(current))
+            return cached[0].copy(), cached[1]
+
     local_to_id = ensure_index_array(atoms, index_array=index_array)
 
     id_to_local = {
         int(atom_id): int(local_idx)
         for local_idx, atom_id in enumerate(local_to_id)
     }
+    if index_array is not None:
+        _INDEX_MAP_CACHE[id(atoms.arrays[index_array])] = (local_to_id.copy(), id_to_local)
+        while len(_INDEX_MAP_CACHE) > 32:
+            _INDEX_MAP_CACHE.popitem(last=False)
 
     return local_to_id, id_to_local
 
@@ -167,6 +187,72 @@ def local_indices(
 # -----------------------------------------------------------------------------
 
 
+def periodic_pairs(
+    positions: np.ndarray,
+    cell: np.ndarray,
+    pbc: Sequence[bool],
+    cutoff: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """All ordered pairs (i, j, S) with |r_j + S @ cell - r_i| < cutoff, excluding (i, i, 0).
+
+    Returns local indices i, j, integer image shifts S (n, 3) and distances d,
+    sorted by (i, j, S). Both directions are present and periodic self-images
+    (i == j, S != 0) are included, as in ``ase.neighborlist.neighbor_list``.
+
+    Fully periodic nonsingular cells and fully nonperiodic systems use a SciPy
+    KD-tree: positions are wrapped into the cell, ghost images are added only
+    within ``cutoff`` of a face (several layers if the cutoff exceeds a face
+    spacing), and shifts are mapped back to the input coordinates. Mixed
+    periodicity falls back to ASE's ``neighbor_list``. Distances are recomputed
+    from the input positions as |r_j + S @ cell - r_i|.
+    """
+    from scipy.spatial import cKDTree
+
+    positions = np.asarray(positions, dtype=float)
+    cell = np.asarray(cell, dtype=float)
+    pbc = np.asarray(pbc, dtype=bool)
+    if cutoff <= 0 or len(positions) == 0:
+        return (np.empty(0, int), np.empty(0, int), np.empty((0, 3), int), np.empty(0, float))
+
+    if pbc.all() and abs(np.linalg.det(cell)) > 1e-12:
+        fractional = np.linalg.solve(cell.T, positions.T).T
+        images = np.floor(fractional).astype(int)
+        inside = fractional - images
+        volume = abs(np.linalg.det(cell))
+        spacing = np.array([volume / np.linalg.norm(np.cross(cell[(k+1) % 3], cell[(k+2) % 3]))
+                            for k in range(3)])
+        margin = cutoff / spacing
+        layers = np.ceil(margin).astype(int)
+        ghost_rows, ghost_shifts = [], []
+        for shift in np.array(np.meshgrid(*[np.arange(-n, n + 1) for n in layers], indexing="ij")).reshape(3, -1).T:
+            moved = inside + shift
+            keep = np.all((moved >= -margin) & (moved <= 1 + margin), axis=1)
+            ghost_rows.append(np.flatnonzero(keep))
+            ghost_shifts.append(np.repeat(shift[None, :], keep.sum(), axis=0))
+        ghost_rows = np.concatenate(ghost_rows)
+        ghost_shifts = np.concatenate(ghost_shifts)
+        found = cKDTree(inside @ cell).sparse_distance_matrix(
+            cKDTree((inside[ghost_rows] + ghost_shifts) @ cell), cutoff, output_type="ndarray")
+        i = found["i"].astype(int)
+        j = ghost_rows[found["j"]]
+        # r_wrapped = r - images @ cell, so S = s + images_i - images_j in input coordinates.
+        S = ghost_shifts[found["j"]] + images[i] - images[j]
+    elif not pbc.any():
+        found = cKDTree(positions).sparse_distance_matrix(cKDTree(positions), cutoff, output_type="ndarray")
+        i, j = found["i"].astype(int), found["j"].astype(int)
+        S = np.zeros((len(i), 3), dtype=int)
+    else:
+        search = Atoms(positions=positions, cell=cell, pbc=pbc)
+        i, j, S = neighbor_list("ijS", search, cutoff=cutoff, self_interaction=False)
+        S = np.asarray(S, dtype=int)
+
+    distances = np.linalg.norm(positions[j] + S @ cell - positions[i], axis=1)
+    keep = (distances < cutoff) & ~((i == j) & ~S.any(axis=1))
+    i, j, S, distances = i[keep], j[keep], S[keep], distances[keep]
+    order = np.lexsort((S[:, 2], S[:, 1], S[:, 0], j, i))
+    return i[order], j[order], S[order], distances[order]
+
+
 def build_bond_graph(
     atoms: Atoms,
     scale: float = 1.15,
@@ -186,70 +272,44 @@ def build_bond_graph(
     Local ASE indices are used internally for all coordinate-array access, then
     converted to persistent IDs when graph edges are stored.
 
-    A bond satisfies |r_j+S_ij @ cell-r_i| <= scale*(rcov_i+rcov_j).
-    Cell and positions are Angstrom, S_ij integer image shifts. skin expands
-    neighbor candidates only; it does not change the final bond criterion.
+    A bond satisfies |r_j+S_ij @ cell-r_i| < scale*(rcov_i+rcov_j).
+    Cell and positions are Angstrom, S_ij integer image shifts. skin is kept
+    for API compatibility; it never changed the final bond criterion.
+    The default scale, 1.3, is the package-wide bond criterion.
+    Each adjacency list is sorted by (neighbor ID, shift), so traversal order
+    (and hence component atom order) does not depend on geometry. Periodic
+    self-image bonds (an atom bonded to its own image) are not stored.
     """
     numbers = atoms.get_atomic_numbers()
-    cell = atoms.cell.array
     local_to_id, _ = get_index_maps(atoms, index_array=index_array)
+    radii = scale * covalent_radii[numbers]
+    pbc = atoms.pbc if periodic else np.zeros(3, dtype=bool)
+    i, j, S, d = periodic_pairs(atoms.positions, atoms.cell.array, pbc,
+                                2 * float(radii.max()) if len(radii) else 0.)
+    bonded = (j > i) & (d < radii[i] + radii[j])
+    i, j, S = i[bonded], j[bonded], S[bonded]
 
-    # If periodic=False, make the neighbor search itself non-periodic rather
-    # than merely discarding offsets afterwards.
-    search_atoms = atoms
-    if not periodic and np.any(atoms.pbc):
-        search_atoms = atoms.copy()
-        search_atoms.pbc = False
-
-    cutoffs = scale * covalent_radii[numbers]
-
-    nl = NeighborList(
-        cutoffs,
-        skin=skin,
-        bothways=True,
-        self_interaction=False,
-    )
-    nl.update(search_atoms)
-
+    entries = defaultdict(list)
+    for a, b, shift in zip(local_to_id[i].tolist(), local_to_id[j].tolist(), S):
+        entries[a].append((b, tuple(shift.tolist())))
+        entries[b].append((a, tuple((-shift).tolist())))
     graph: BondGraph = defaultdict(list)
-
-    for local_i in range(len(atoms)):
-        neighbors, offsets = nl.get_neighbors(local_i)
-
-        for local_j, S in zip(neighbors, offsets):
-            local_j = int(local_j)
-
-            # NeighborList is bothways=True. Store each bond once here, then
-            # explicitly insert both graph directions with opposite shifts.
-            if local_j <= local_i:
-                continue
-
-            S = np.asarray(S, dtype=int)
-
-            if periodic:
-                rij = (
-                    atoms.positions[local_j]
-                    + S @ cell
-                    - atoms.positions[local_i]
-                )
-            else:
-                S = np.zeros(3, dtype=int)
-                rij = atoms.positions[local_j] - atoms.positions[local_i]
-
-            dij = np.linalg.norm(rij)
-            cutoff_ij = scale * (
-                covalent_radii[numbers[local_i]]
-                + covalent_radii[numbers[local_j]]
-            )
-
-            if dij <= cutoff_ij:
-                i = int(local_to_id[local_i])
-                j = int(local_to_id[local_j])
-
-                graph[i].append((j, S.copy()))
-                graph[j].append((i, -S.copy()))
-
+    for node in sorted(entries):
+        graph[node] = [(neighbor, np.array(shift, dtype=int)) for neighbor, shift in sorted(entries[node])]
     return graph
+
+
+def induced_subgraph(
+    graph: Mapping[int, Sequence[tuple[int, np.ndarray]]],
+    ids: Iterable[int],
+) -> dict[int, list[tuple[int, np.ndarray]]]:
+    """Bonds of ``graph`` whose both ends lie in ``ids`` (persistent atom IDs).
+
+    For one molecule this equals rebuilding the bond graph on that molecule
+    alone, without another neighbor search. Adjacency order is preserved.
+    """
+    ids = set(map(int, ids))
+    return {i: [(j, s) for j, s in graph.get(i, []) if j in ids] for i in ids}
 
 
 def _graph_nodes(graph: Mapping[int, Sequence[tuple[int, np.ndarray]]]) -> set[int]:
@@ -692,12 +752,7 @@ def build_shell_neighbor_index(
     if cutoff <= 0:
         raise ValueError("cutoff must be > 0.")
 
-    i, j, d, S = neighbor_list(
-        "ijdS",
-        atoms,
-        cutoff=cutoff,
-        self_interaction=False,
-    )
+    i, j, S, d = periodic_pairs(atoms.positions, atoms.cell.array, atoms.pbc, float(cutoff))
 
     seed = first_neighbors(len(atoms), i)
     local_to_id, id_to_local = get_index_maps(atoms, index_array=index_array)

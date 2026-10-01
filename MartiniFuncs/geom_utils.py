@@ -190,6 +190,23 @@ def get_mal_CC(bond_graph, elements):
 # -----------------------------------------------------------------------------
 
 
+def _mal_site_centers(atoms: Atoms, graph, mal_components, elements) -> np.ndarray:
+    """Reactive C=C COM of each dienophile, in its unwrapped molecular frame.
+
+    Sites come from the molecule's induced subgraph of the frame bond graph,
+    which equals a bond graph rebuilt on the isolated molecule.
+    """
+    centers = []
+    for comp in mal_components:
+        mal_cc = get_mal_CC(mfg.induced_subgraph(graph, comp), elements)
+        if len(mal_cc) != 2:
+            raise ValueError(
+                f"Could not identify MAL reactive C=C for component {comp[:5]}..."
+            )
+        centers.append(_site_center_of_mass(atoms, graph, comp, mal_cc))
+    return np.asarray(centers)
+
+
 def _reaction_components(atoms: Atoms, scale: float):
     graph = mfg.build_bond_graph(
         atoms,
@@ -263,19 +280,7 @@ def get_all_prereactive_pairs(
     ])
 
     # MAL search point = COM of the reactive C=C in the unwrapped MAL frame.
-    mal_centers = []
-    for comp in mal_components:
-        mal_atoms = _subset(atoms, comp)
-        mal_graph = mfg.build_bond_graph(mal_atoms, scale=scale, index_array="global_index")
-        mal_cc = get_mal_CC(mal_graph, elements)
-        if len(mal_cc) != 2:
-            raise ValueError(
-                f"Could not identify MAL reactive C=C for component {comp[:5]}..."
-            )
-        mal_centers.append(
-            _site_center_of_mass(atoms, graph, comp, mal_cc)
-        )
-    mal_centers = np.asarray(mal_centers)
+    mal_centers = _mal_site_centers(atoms, graph, mal_components, elements)
 
     if printing:
         print(len(mal_centers), "mal CC double bonds found")
@@ -975,13 +980,7 @@ def get_pairs_distance_distribution(atoms: Atoms, scale: float = 1.3):
         for comp in cpd_components
     ])
 
-    mal_pos = []
-    for comp in mal_components:
-        mal_atoms = _subset(atoms, comp)
-        mal_graph = mfg.build_bond_graph(mal_atoms, scale=scale, index_array="global_index")
-        mal_cc = get_mal_CC(mal_graph, elements)
-        mal_pos.append(_site_center_of_mass(atoms, graph, comp, mal_cc))
-    mal_pos = np.asarray(mal_pos)
+    mal_pos = _mal_site_centers(atoms, graph, mal_components, elements)
 
     if len(cpd_pos) == 0 or len(mal_pos) == 0:
         return np.empty(0, dtype=float)
