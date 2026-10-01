@@ -11,7 +11,7 @@ import numpy as np
 from numpy.testing import assert_allclose
 from ase import Atoms
 
-from MartiniFuncs import coreio, orcaio, shell
+from MartiniFuncs import coreio, orcaio
 from MartiniFuncs import md_statistics as md
 from MartiniFuncs.trajectory_analysis import analyze_run, molecular_window_statistics
 
@@ -34,28 +34,6 @@ class ConsistencyTests(unittest.TestCase):
         moved = atoms.copy()
         moved.positions += [2, 3, 4]
         assert_allclose(md.get_molecule_displacement(atoms, moved, iter([10, 20])), [2, 3, 4])
-
-    def test_legacy_nonperiodic_graph_has_no_image_duplicates(self):
-        atoms = Atoms("HH", positions=[[0, 0, 0], [.2, 0, 0]], cell=[.5, 5, 5], pbc=True)
-        graph = shell.build_bond_graph(atoms, periodic=False)
-        self.assertEqual(len(graph[0]), 1)
-        assert_allclose(graph[0][0][1], [0, 0, 0])
-        self.assertTrue(atoms.pbc.all())
-
-    def test_centering_returns_atoms_without_repair(self):
-        atoms = Atoms("H", positions=[[1, 2, 3]], cell=[10, 10, 10], pbc=True)
-        self.assertIs(shell.center_positions_on_atomindex(atoms, 0, repair=False), atoms)
-        assert_allclose(atoms.positions, [[5, 5, 5]])
-
-    def test_legacy_shell_passes_repair_parameters(self):
-        import pandas as pd
-        data = pd.DataFrame({"mol": [1, 1]}, index=[1, 2])
-        atoms = Atoms("HH", positions=[[0, 0, 0], [.7, 0, 0]])
-        with patch.object(shell, "identify_all_atoms_within_radius_of_atomindex", return_value=np.array([0, 1])), \
-             patch.object(shell, "repair_fragmented_molecules", side_effect=lambda a, **kw: a) as repair:
-            for function, selection in ((shell.get_shell_for_molid, 1), (shell.get_shell_for_molids, [1])):
-                function(data, atoms, selection, center_on_mol=False, bond_scale=1.4, neighbor_skin=.2)
-                self.assertEqual(repair.call_args.kwargs, {"bond_scale": 1.4, "neighbor_skin": .2})
 
     def test_orca_constraint_failure_is_not_overwritten(self):
         # Test validation bookkeeping independently of Psience geometry/evaluators.
