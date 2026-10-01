@@ -18,7 +18,7 @@ import periodictable as pt
 from ase import Atoms
 from ase.calculators.lammps import convert
 from ase.io.lammpsdata import read_lammps_data
-from ase.io.lammpsrun import read_lammps_dump_text
+from ase.io.lammpsrun import construct_cell
 
 
 @dataclass
@@ -54,31 +54,59 @@ def mass_to_symbol(target_mass):
                key=lambda e: abs(e.mass - target_mass)).symbol
 
 
+_FRAME_MARKER = b"ITEM: TIMESTEP"
+_READ_BLOCK = 1 << 24
+
+
 def _iter_blocks(path, byte_range=None):
-    """Yield one text frame at a time without losing boundary markers."""
-    with open(path, 'rb') as stream:
-        if byte_range is not None:
-            stream.seek(byte_range[0])
-        position = 0 if byte_range is None else byte_range[0]
-        block = []
-        line_number = 0
-        while byte_range is None or position < byte_range[1]:
-            raw = stream.readline()
-            if not raw:
-                break
-            position += len(raw)
-            line = raw.decode('utf-8').replace('\r\n', '\n')
-            line_number += 1
-            if line.strip() == "ITEM: TIMESTEP":
-                if block:
-                    yield "".join(block)
-                block = [line]
-            elif block:
-                block.append(line)
-            elif line.strip():
-                raise ValueError(f"{path}:{line_number}: expected ITEM: TIMESTEP")
-        if block:
-            yield "".join(block)
+    """Yield one text frame at a time without losing boundary markers.
+
+    Frames are split at lines equal to "ITEM: TIMESTEP" using bytes.find on
+    16 MiB reads (no per-line Python work); CRLF is normalized to LF.
+    byte_range=(start, stop) reads only that half-open byte range.
+    """
+    start, stop = (0, None) if byte_range is None else byte_range
+    pattern = b"\n" + _FRAME_MARKER
+    with open(path, "rb") as stream:
+        stream.seek(start)
+        remaining = None if stop is None else stop - start
+        buffer, checked = b"", False
+        while True:
+            size = _READ_BLOCK if remaining is None else min(_READ_BLOCK, remaining)
+            chunk = stream.read(size) if size > 0 else b""
+            if remaining is not None:
+                remaining -= len(chunk)
+            eof = not chunk or remaining == 0
+            buffer += chunk
+            if not checked:
+                stripped = buffer.lstrip()
+                if not stripped:
+                    if eof:
+                        return
+                    continue
+                if len(stripped) <= len(_FRAME_MARKER) and not eof:
+                    continue
+                if not stripped.startswith(_FRAME_MARKER):
+                    line_number = buffer[:len(buffer) - len(stripped)].count(b"\n") + 1
+                    raise ValueError(f"{path}:{line_number}: expected ITEM: TIMESTEP")
+                buffer, checked = stripped, True
+            cut, search = 0, 1
+            while True:
+                hit = buffer.find(pattern, search)
+                if hit < 0:
+                    break
+                end = hit + len(pattern)
+                if end >= len(buffer) and not eof:
+                    break   # the byte after the marker decides; read more first
+                if buffer[end:end + 1] in (b"\n", b"\r", b""):
+                    yield buffer[cut:hit + 1].decode("utf-8").replace("\r\n", "\n")
+                    cut = hit + 1
+                search = hit + 1
+            buffer = buffer[cut:]
+            if eof:
+                if buffer.strip():
+                    yield buffer.decode("utf-8").replace("\r\n", "\n")
+                return
 
 
 def _parse_block(text):
@@ -130,22 +158,10 @@ def _parse_block(text):
             names = line.split()[2:]
             if "id" not in names or len(set(names)) != len(names):
                 raise ValueError("ATOMS requires unique column names including 'id'")
-            rows = []
-            for row_index in range(count):
-                values = take().split()
-                if len(values) != len(names):
-                    raise ValueError(f"Atom row {row_index + 1}: expected {len(names)} columns, got {len(values)}")
-                rows.append(values)
-            columns = {}
-            for i, name in enumerate(names):
-                dtype = str if name == "element" else int if (
-                    name in {"id", "type", "mol", "ix", "iy", "iz"}
-                    or name.startswith(("i_", "i2_"))
-                ) else float
-                values = np.asarray([row[i] for row in rows], dtype=dtype)
-                if dtype is not str and not np.isfinite(values).all():
-                    raise ValueError(f"Non-finite values in {name}")
-                columns[name] = values
+            lines_text = [take() for _ in range(count)]
+            columns = _atom_columns_fast(lines_text, names)
+            if columns is None:
+                columns = _atom_columns_strict(lines_text, names)
             ids = columns["id"]
             if np.any(ids <= 0) or len(np.unique(ids)) != count:
                 raise ValueError("Atom IDs must be positive and unique")
@@ -164,6 +180,127 @@ def _parse_block(text):
         else:
             raise ValueError(f"Unsupported header: {line}")
     raise ValueError("Frame contains no ATOMS section")
+
+
+def _column_type(name):
+    """Python type of a dump column: element is str, IDs/types/images/i_ are int."""
+    if name == "element":
+        return str
+    if name in {"id", "type", "mol", "ix", "iy", "iz"} or name.startswith(("i_", "i2_")):
+        return int
+    return float
+
+
+def _atom_columns_strict(lines, names):
+    """Row-by-row parse with precise errors; the reference for _atom_columns_fast."""
+    rows = []
+    for row_index, line in enumerate(lines):
+        values = line.split()
+        if len(values) != len(names):
+            raise ValueError(f"Atom row {row_index + 1}: expected {len(names)} columns, got {len(values)}")
+        rows.append(values)
+    columns = {}
+    for i, name in enumerate(names):
+        dtype = _column_type(name)
+        values = np.asarray([row[i] for row in rows], dtype=dtype)
+        if dtype is not str and not np.isfinite(values).all():
+            raise ValueError(f"Non-finite values in {name}")
+        columns[name] = values
+    return columns
+
+
+def _atom_columns_fast(lines, names):
+    """Single C-level parse of numeric columns, or None to use the strict parser.
+
+    Only taken when every row has exactly len(names)-1 single spaces and no
+    tabs, so loadtxt (which ignores surplus columns) sees exactly one value per
+    name. Integer columns parse as strictly as int(); floats are bit-identical
+    to float(). Any anomaly (non-finite, bad token) defers to the strict parser,
+    which raises the detailed error.
+    """
+    text = "\n".join(lines)
+    if "\t" in text or text.count(" ") != len(lines) * (len(names) - 1):
+        return None
+    numeric = [k for k, name in enumerate(names) if _column_type(name) is not str]
+    dtype = [(names[k], np.int64 if _column_type(names[k]) is int else np.float64) for k in numeric]
+    try:
+        data = np.loadtxt(StringIO(text), usecols=numeric, dtype=dtype, ndmin=1, comments=None)
+    except ValueError:
+        return None
+    if data.shape != (len(lines),):
+        return None
+    columns = {}
+    for k, name in enumerate(names):
+        if _column_type(name) is str:
+            columns[name] = np.asarray([line.split(" ", k + 1)[k] for line in lines])
+        else:
+            values = np.ascontiguousarray(data[name])
+            if values.dtype.kind == "f" and not np.isfinite(values).all():
+                return None
+            columns[name] = values
+    return columns
+
+
+def _cell_from_bounds(bounds, units):
+    """ASE cell, origin (celldisp) and PBC from parsed BOX BOUNDS, as ASE's dump reader does.
+
+    Orthogonal/restricted-triclinic bounds go through ase.io.lammpsrun.construct_cell
+    (bounding box minus tilts); "abc origin" boxes give rows directly.
+    PBC comes from the last three boundary labels ("p" means periodic).
+    """
+    labels, rows = bounds["header"], np.asarray(bounds["rows"], dtype=float)
+    pbc = ["p" in d.lower() for d in labels[-3:]] if len(labels) >= 3 else [False] * 3
+    if labels[:2] == ["abc", "origin"]:
+        cell, celldisp = rows[:, :3], rows[:, 3]
+    else:
+        offdiag = rows[:, 2] if rows.shape[1] > 2 else np.zeros(3)
+        if rows.shape[1] > 2 and len(labels) >= 3:
+            offdiag = offdiag[[labels.index(i) for i in ("xy", "xz", "yz")]]
+        cell, celldisp = construct_cell(rows[:, :2].flatten(), offdiag)
+    return convert(cell, "distance", units, "ASE"), convert(celldisp, "distance", units, "ASE"), pbc
+
+
+def _atoms_from_columns(columns, symbols, bounds, units):
+    """Build Atoms from parsed, ID-sorted columns with ASE's dump conventions.
+
+    Mirrors ase.io.lammpsrun: positions from x, else xs (scaled), else xu,
+    else xsu (scaled); velocities/forces/charges unit-converted; f_/v_/c_/d_
+    columns become float arrays, i_ columns int arrays and type an int array.
+    Forces are returned rather than attached as a calculator. Avoids ASE
+    re-parsing the frame text.
+    """
+    cell, celldisp, pbc = _cell_from_bounds(bounds, units)
+
+    def vector(names, quantity=None):
+        if not all(name in columns for name in names):
+            return None
+        values = np.column_stack([columns[name] for name in names]).astype(float)
+        return convert(values, quantity, units, "ASE") if quantity else values
+
+    quaternions = vector(["c_q[1]", "c_q[2]", "c_q[3]", "c_q[4]"])
+    if "x" in columns:
+        geometry = dict(positions=vector(["x", "y", "z"], "distance"))
+    elif "xs" in columns:
+        geometry = dict(scaled_positions=vector(["xs", "ys", "zs"]))
+    elif "xu" in columns:
+        geometry = dict(positions=vector(["xu", "yu", "zu"], "distance"))
+    elif "xsu" in columns:
+        geometry = dict(scaled_positions=vector(["xsu", "ysu", "zsu"]))
+    else:
+        raise ValueError("No atomic positions found in LAMMPS output")
+    if quaternions is not None and "positions" not in geometry:
+        raise ValueError("Quaternion dumps require unscaled positions")
+    atoms = Atoms(symbols=list(symbols), pbc=pbc, celldisp=celldisp, cell=cell, **geometry)
+    if quaternions is not None:
+        atoms.new_array("quaternions", quaternions, dtype=float)
+    if "q" in columns:
+        atoms.set_initial_charges(convert(columns["q"].astype(float), "charge", units, "ASE"))
+    for name, values in columns.items():
+        if name.startswith(("f_", "v_", "d_", "d2_")) or (name.startswith("c_") and not name.startswith("c_q[")):
+            atoms.new_array(name, values, dtype="float")
+        elif name.startswith(("i_", "i2_")) or name == "type":
+            atoms.new_array(name, values, dtype="int")
+    return atoms, vector(["vx", "vy", "vz"], "velocity"), vector(["fx", "fy", "fz"], "force")
 
 
 def _records(columns, id_offset):
@@ -239,28 +376,15 @@ def iter_lammps_frames(path, *, units, input_datafile=None, type_symbols=None,
                 symbols = [mass_to_symbol(m) for m in convert(columns["mass"], "mass", units, "ASE")]
             if symbols is None:
                 raise ValueError("Provide dump elements, type_symbols, data file, or masses")
-            # Insert explicit elements so arbitrary type labels cannot be
-            # interpreted as atomic numbers by ASE.
-            if "element" not in columns:
-                lookup = dict(zip(ids, symbols))
-                rows = text.splitlines()
-                header = next(i for i, row in enumerate(rows) if row.startswith("ITEM: ATOMS "))
-                id_col = rows[header].split()[2:].index("id")
-                rows[header] += " element"
-                for i in range(header + 1, header + 1 + len(ids)):
-                    rows[i] += " " + str(lookup[int(rows[i].split()[id_col])])
-                text = "\n".join(rows) + "\n"
-            atoms = read_lammps_dump_text(StringIO(text), index=0, order=True, units=units)
-            velocities = atoms.get_velocities() if "vx" in columns else None
-            forces = atoms.get_forces() if "fx" in columns else None
-            atoms.calc = None
+            # Symbols are passed explicitly, so arbitrary type labels are never
+            # interpreted as atomic numbers.
+            atoms, velocities, forces = _atoms_from_columns(columns, symbols, bounds, units)
             # ASE stores origin separately and omits it from scaled positions.
             scaled = "x" not in columns and ("xs" in columns or
                      ("xu" not in columns and "xsu" in columns))
             origin = np.asarray(atoms.get_celldisp()).ravel()
             if scaled:
                 atoms.positions += origin
-            atoms.set_chemical_symbols(symbols)
             if "mass" in columns:
                 if np.any(columns["mass"] <= 0):
                     raise ValueError("Masses must be positive")
