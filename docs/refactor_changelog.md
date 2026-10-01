@@ -437,3 +437,60 @@ From the first review, still open:
 - **`coreio`:** it always attaches an `aimnet2` evaluator, and Psience is imported at module level.
 - **Export:** each pair is still placed three times per frame (geometry, record, shell).
 - **Repository:** `__pycache__/` is tracked in git although `.gitignore` excludes it.
+
+---
+
+# Round 2 (2026-10-01)
+
+Verification works as in round 1. A fresh baseline was captured at commit `1fbef82`, and each phase's
+outputs were compared with it. Each phase's commit was tested on its own checked-out tree.
+
+## Phase A: input/output bug fixes
+
+### A.1 Image flags always match the stored positions
+**Changed:** `atoms.arrays["image_flags"]` now satisfies r + n·H = the LAMMPS-unwrapped position in
+every case:
+- `x`/`xs` columns: the dumped `ix`/`iy`/`iz`;
+- already-unwrapped `xu`/`xsu` columns: zero;
+- `wrap=True`: the dumped flags plus the lattice shift that wrapping applied.
+
+The raw `ix`/`iy`/`iz` values remain in `frame.columns`.
+
+**Why:**
+- With `wrap=True` the flags were kept unchanged, so whole-molecule reconstruction from them was
+  wrong by whole box vectors.
+- With `xu` columns the image was counted twice.
+
+**Verified:**
+- On the NPT fixture, positions reconstructed from image flags after `wrap=True` used to differ from
+  those without wrapping by up to 22.8 Å (a full box); they now agree to 7e-15 Å.
+- New tests cover triclinic wrapping, `xu` against `x`, and `xu` with `wrap=True`.
+
+### A.2 Unambiguous box origin and cell
+**Changed:** dump `box_bounds` and the bounds from `read_input_datafile` both gain `origin` and `cell`
+(rows a, b, c). In dumps, `xlo`…`zhi` keep their LAMMPS meaning, which is the bounding box for
+triclinic cells. The data-file bounds keep the real box limits.
+
+**Verified:**
+- On the sheared fixture, `origin` and `cell` equal ASE's `celldisp` and cell, while `xhi − xlo`
+  differs from a, the tilted case.
+- The data-file cell diagonal equals hi − lo.
+
+### A.3 `geom_utils.pair_data_to_xyz`
+**Changed:** velocities and forces are optional, the comment line's `columns=` lists what was
+written, and values use 17 significant digits, as in the extxyz writer. Previously it raised
+`KeyError` without velocities, and `%12.8f` turned forces below 5e-9 eV/Å into 0.
+
+### A.4 `coreio`
+**Changed:**
+- Psience and McUtils are imported only inside the functions that use them, and `ANG_TO_BOHR` /
+  `BOHR_TO_ANG` are computed on first access. The mass/XYZ helpers now import without Psience.
+- `ase_atoms_to_molecule(..., energy_evaluator=None)` gives a molecule without an evaluator; this used
+  to crash. The default still attaches Psience's `aimnet2` evaluator, because `orcaio` (deliberately
+  unchanged) relies on it.
+
+**Verified:** tests import `coreio` with Psience and McUtils blocked, and exercise the
+no-evaluator option.
+
+**Baseline comparison:** the only differences are the added `box_bounds` keys and the corrected flags
+in the `wrap=True` fixture.

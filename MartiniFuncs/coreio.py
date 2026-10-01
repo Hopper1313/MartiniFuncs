@@ -1,31 +1,48 @@
-from Psience.Molecools import Molecule
-from McUtils.Data import UnitsData
+"""ASE <-> Psience conversion and small structure helpers.
+
+Psience and McUtils are imported only by the functions that need them, so the
+mass/XYZ helpers here work without those packages installed.
+"""
 from ase import Atoms
-import McUtils.Coordinerds as coordops
 import numpy as np
 from ase.data import chemical_symbols, atomic_masses
 from ase.io import read
 
-ANG_TO_BOHR = UnitsData.convert("Angstroms", "BohrRadius")
-BOHR_TO_ANG = UnitsData.convert("BohrRadius", "Angstroms")
 
-def ase_atoms_to_molecule(ase_atoms, charge=0,energy_evaluator=['aimnet2',None]):
+def __getattr__(name):
+    """ANG_TO_BOHR / BOHR_TO_ANG from McUtils, computed on first access."""
+    if name in ("ANG_TO_BOHR", "BOHR_TO_ANG"):
+        from McUtils.Data import UnitsData
+        source, target = ("Angstroms", "BohrRadius") if name == "ANG_TO_BOHR" else ("BohrRadius", "Angstroms")
+        value = UnitsData.convert(source, target)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def ase_atoms_to_molecule(ase_atoms, charge=0, energy_evaluator=['aimnet2', None]):
     """Convert ASE coordinates in Angstrom to Psience coordinates in Bohr.
 
-    This legacy helper also attaches an evaluator. For geometry-only display,
-    use visualization.to_display_molecule, which applies the same conversion.
+    energy_evaluator=None attaches no evaluator (geometry only). The default,
+    ('aimnet2', None), keeps the historical behaviour of attaching Psience's
+    'aimnet2' evaluator; ('aimnet2', model_path) selects a model file. For
+    geometry-only display, visualization.to_display_molecule does the same
+    conversion.
 
     r_bohr=r_ASE*ANG_TO_BOHR; ANG_TO_BOHR is McUtils' Angstrom-to-Bohr
     conversion. This legacy evaluator path is not the UMA workflow.
     """
-    coords_bohr = ase_atoms.get_positions() * ANG_TO_BOHR
+    from Psience.Molecools import Molecule
+    from . import coreio
+    coords_bohr = ase_atoms.get_positions() * coreio.ANG_TO_BOHR
     symbols = ase_atoms.get_chemical_symbols()
-    # energy_evaluator={'method':'aimnet2', 'model':path/to/jpt}
-    if energy_evaluator[1] is not None and energy_evaluator[0] == 'aimnet2':
-        mol=Molecule(atoms=symbols, coords=coords_bohr, energy_evaluator={'method':'aimnet2', 'model':energy_evaluator[1]},charge=charge)
-    else:
-        mol = Molecule(atoms=symbols, coords=coords_bohr, energy_evaluator='aimnet2', charge=charge)
-    return mol
+    if energy_evaluator is None:
+        return Molecule(atoms=symbols, coords=coords_bohr, charge=charge)
+    name, model = energy_evaluator
+    if model is not None and name == 'aimnet2':
+        return Molecule(atoms=symbols, coords=coords_bohr,
+                        energy_evaluator={'method': 'aimnet2', 'model': model}, charge=charge)
+    return Molecule(atoms=symbols, coords=coords_bohr, energy_evaluator=name, charge=charge)
 
 def molecule_to_ase_atoms(molecule):
     """Convert Psience coordinates in Bohr to ASE coordinates in Angstrom.
@@ -33,7 +50,8 @@ def molecule_to_ase_atoms(molecule):
     r_angstrom=molecule.coords*BOHR_TO_ANG. No cell, constraints,
     forces, or velocities are transferred.
     """
-    coords_ang = molecule.coords * BOHR_TO_ANG
+    from . import coreio
+    coords_ang = molecule.coords * coreio.BOHR_TO_ANG
     symbols = molecule.atoms
     ase_atoms = Atoms(symbols=symbols, positions=coords_ang)
     return ase_atoms

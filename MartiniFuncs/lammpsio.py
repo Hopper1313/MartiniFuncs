@@ -180,6 +180,8 @@ def _parse_block(text):
             if any(len(row) != width for row in rows) or not np.isfinite(rows).all():
                 raise ValueError("Invalid BOX BOUNDS rows")
             bounds = {"header": labels, "rows": rows}
+            cell, origin = _raw_cell(labels, rows)
+            bounds.update(origin=origin.tolist(), cell=cell.tolist())
             if width != 4:
                 bounds.update(dict(zip(("xlo", "xhi", "ylo", "yhi", "zlo", "zhi"),
                                        np.asarray(rows)[:, :2].ravel().tolist())))
@@ -274,6 +276,21 @@ def _atom_columns_fast(lines, names):
     return columns
 
 
+def _raw_cell(labels, rows):
+    """Cell rows and origin (LAMMPS lo corner) in source units from BOX BOUNDS.
+
+    Restricted triclinic bounds are bounding-box values; ase.io.lammpsrun.
+    construct_cell removes the tilts. "abc origin" boxes give rows directly.
+    """
+    rows = np.asarray(rows, dtype=float)
+    if labels[:2] == ["abc", "origin"]:
+        return rows[:, :3].copy(), rows[:, 3].copy()
+    offdiag = rows[:, 2] if rows.shape[1] > 2 else np.zeros(3)
+    if rows.shape[1] > 2 and len(labels) >= 3:
+        offdiag = offdiag[[labels.index(i) for i in ("xy", "xz", "yz")]]
+    return construct_cell(rows[:, :2].flatten(), offdiag)
+
+
 def _cell_from_bounds(bounds, units):
     """ASE cell, origin (celldisp) and PBC from parsed BOX BOUNDS, as ASE's dump reader does.
 
@@ -281,15 +298,9 @@ def _cell_from_bounds(bounds, units):
     (bounding box minus tilts); "abc origin" boxes give rows directly.
     PBC comes from the last three boundary labels ("p" means periodic).
     """
-    labels, rows = bounds["header"], np.asarray(bounds["rows"], dtype=float)
+    labels = bounds["header"]
     pbc = ["p" in d.lower() for d in labels[-3:]] if len(labels) >= 3 else [False] * 3
-    if labels[:2] == ["abc", "origin"]:
-        cell, celldisp = rows[:, :3], rows[:, 3]
-    else:
-        offdiag = rows[:, 2] if rows.shape[1] > 2 else np.zeros(3)
-        if rows.shape[1] > 2 and len(labels) >= 3:
-            offdiag = offdiag[[labels.index(i) for i in ("xy", "xz", "yz")]]
-        cell, celldisp = construct_cell(rows[:, :2].flatten(), offdiag)
+    cell, celldisp = _raw_cell(labels, bounds["rows"])
     return convert(cell, "distance", units, "ASE"), convert(celldisp, "distance", units, "ASE"), pbc
 
 
@@ -379,7 +390,13 @@ def iter_lammps_frames(path, *, units, input_datafile=None, type_symbols=None,
     q_ASE=q_source*unit_factor(source, ASE) to distances, masses, velocities
     and forces. Scaled coordinates obey r=s @ cell+origin; optional wrapping
     acts on r-origin. global_index=lammps_id-id_offset; image flags are stored,
-    not added to positions. For wrapped r and image n, whole r is r+n @ cell.
+    not added to positions. arrays['image_flags'] always refers to the stored
+    positions: r + n @ cell is the LAMMPS-unwrapped position. It equals the
+    dumped ix/iy/iz for x/xs columns, is zero for already-unwrapped xu/xsu
+    columns, and includes the lattice shift applied by wrap=True. The raw
+    ix/iy/iz values stay in frame.columns. box_bounds keeps the dump's own
+    xlo..zhi (LAMMPS bounding-box values for triclinic boxes) and adds the
+    unambiguous origin and cell (rows a, b, c), in source units.
     byte_range is an internal half-open range from a frame-offset index;
     frame_offset preserves source frame numbering when reading that range.
     """
@@ -430,10 +447,21 @@ def iter_lammps_frames(path, *, units, input_datafile=None, type_symbols=None,
                 atoms.set_masses([data[int(i)]["mass"] for i in ids])
             if velocities is not None:
                 atoms.set_velocities(velocities)
+            if "ix" in columns:
+                # LAMMPS images of the dumped coordinates. Unwrapped columns
+                # (xu/xsu) already contain them, so relative to the stored
+                # positions the images are zero.
+                images = np.column_stack([columns[k] for k in ("ix", "iy", "iz")])
+                if "x" not in columns and "xs" not in columns:
+                    images = np.zeros_like(images)
             if wrap:
+                before = atoms.get_scaled_positions(wrap=False)
                 atoms.positions -= origin
                 atoms.wrap()
                 atoms.positions += origin
+                if "ix" in columns:
+                    # Keep r + n @ cell invariant: add the lattice shift wrap removed.
+                    images = images + np.rint(before - atoms.get_scaled_positions(wrap=False)).astype(int)
             atoms.new_array("lammps_id", ids.copy())
             atoms.new_array("global_index", ids - id_offset)
             if forces is not None:
@@ -441,7 +469,7 @@ def iter_lammps_frames(path, *, units, input_datafile=None, type_symbols=None,
             if "mol" in columns:
                 atoms.new_array("molecule_id", columns["mol"].copy())
             if "ix" in columns:
-                atoms.new_array("image_flags", np.column_stack([columns[k] for k in ("ix", "iy", "iz")]))
+                atoms.new_array("image_flags", images)
             atoms.info.update(source=str(Path(path).resolve()), frame_index=index,
                               timestep=timestep, lammps_units=units,
                               force_units="eV/Angstrom", velocity_units="ASE", id_offset=int(id_offset))
@@ -543,6 +571,8 @@ def read_input_datafile(filename, *, units="metal", atom_style=None):
     ASE converts positions/masses to Angstrom/amu. For restricted triclinic
     cell H, returned bounds have hi=origin+diag(H) and tilts xy=H[1,0],
     xz=H[2,0], yz=H[2,1]; these are cell limits, not enclosing dump-box bounds.
+    origin and cell (rows a, b, c) are included under the same keys as in dump
+    box_bounds, so the two sources can be compared directly (Angstrom here).
     """
     atoms = read_lammps_data(filename, units=units, atom_style=atom_style,
                              sort_by_id=False, read_image_flags=False)
@@ -564,7 +594,7 @@ def read_input_datafile(filename, *, units="metal", atom_style=None):
     cell = atoms.cell.array
     bounds = dict(zip(("xlo", "ylo", "zlo"), origin))
     bounds.update(dict(zip(("xhi", "yhi", "zhi"), origin + cell.diagonal())))
-    bounds.update(xy=cell[1, 0], xz=cell[2, 0], yz=cell[2, 1])
+    bounds.update(xy=cell[1, 0], xz=cell[2, 0], yz=cell[2, 1], origin=origin.tolist(), cell=cell.tolist())
     return len(atoms), len(type_data), bounds, type_data, records, by_id
 
 

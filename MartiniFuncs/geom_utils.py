@@ -889,18 +889,32 @@ def pair_data_to_xyz(data, filename):
     """Write pair/cluster data with pair identity stored in the XYZ comment.
 
     Local indices are 0-based row indices in the extracted XYZ structure.
-    Global IDs are persistent atom IDs from ``global_index``.
+    Global IDs are persistent atom IDs from ``global_index``. Velocities and
+    forces are optional; the comment line's ``columns=`` lists what is written.
+    Values use 17 significant digits. Units are those of the record (see
+    pair_data_to_extxyz); prefer pair_data_to_extxyz, which records them.
     """
 
     def _index_list(values):
         return "[" + ",".join(str(int(x)) for x in values) + "]"
 
+    def _number(value):
+        # Same 17-significant-digit format as pair_data_to_extxyz: %12.8f
+        # truncated small force components to zero.
+        return format(float(value), ".17g")
+
     with open(filename, "w") as f:
         for i in range(len(data)):
             positions = np.asarray(data[i]["positions"])
             symbols = data[i]["symbols"]
-            forces = np.asarray(data[i]["forces"])
-            velocities = np.asarray(data[i]["velocities"])
+            vectors = [("x,y,z", positions)]
+            if "velocities" in data[i]:
+                vectors.append(("vx,vy,vz", np.asarray(data[i]["velocities"])))
+            if "forces" in data[i]:
+                vectors.append(("fx,fy,fz", np.asarray(data[i]["forces"])))
+            for label, values in vectors:
+                if values.shape != positions.shape:
+                    raise ValueError(f"Cluster {i}: {label} must have shape {positions.shape}")
 
             cpd_local = data[i].get("cpd_local_indices", [])
             mal_local = data[i].get("mal_local_indices", [])
@@ -922,18 +936,11 @@ def pair_data_to_xyz(data, filename):
                 f"MAL_global={_index_list(mal_global)} "
                 f"cluster_local={_index_list(cluster_local)} "
                 f"cluster_global={_index_list(cluster_global)} "
-                f"columns=x,y,z,vx,vy,vz,fx,fy,fz\n"
+                f"columns={','.join(label for label, _ in vectors)}\n"
             )
 
-            for sym, pos, vel, force in zip(
-                symbols, positions, velocities, forces
-            ):
-                f.write(
-                    f"{sym} "
-                    f"{pos[0]:>12.8f} {pos[1]:>12.8f} {pos[2]:>12.8f} "
-                    f"{vel[0]:>12.8f} {vel[1]:>12.8f} {vel[2]:>12.8f} "
-                    f"{force[0]:>12.8f} {force[1]:>12.8f} {force[2]:>12.8f}\n"
-                )
+            for row, sym in enumerate(symbols):
+                f.write(" ".join([str(sym)] + [_number(v) for _, values in vectors for v in values[row]]) + "\n")
 
 
 # -----------------------------------------------------------------------------
