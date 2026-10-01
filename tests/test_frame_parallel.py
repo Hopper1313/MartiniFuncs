@@ -5,10 +5,10 @@ import unittest
 
 import numpy as np
 
-from MartiniFuncs.frame_parallel import frame_offsets
-from MartiniFuncs.lammpsio import iter_lammps_frames
-from MartiniFuncs.reaction_detection import PossibleReactionError
-from MartiniFuncs.trajectory_analysis import analyze_run
+from MartiniFuncs.trajectory.parallel import frame_offsets
+from MartiniFuncs.io.lammps import iter_lammps_frames
+from MartiniFuncs.trajectory.reactions import PossibleReactionError
+from MartiniFuncs.trajectory.analysis import analyze_run
 
 
 def dump_frame(step, symbols, xs, half=10):

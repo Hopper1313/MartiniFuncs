@@ -1,7 +1,7 @@
 """Heartbeat and stage lifecycle logging without scientific work."""
 from threading import Event
 import unittest
-from MartiniFuncs.progress import run_stage
+from MartiniFuncs.workflows.progress import run_stage
 
 
 class ProgressTests(unittest.TestCase):

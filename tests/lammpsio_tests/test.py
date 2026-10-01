@@ -7,12 +7,11 @@ from pathlib import Path
 import argparse
 import json
 
-from MartiniFuncs.lammpsio import read_lammps_frame, read_lammps_input_settings
-from MartiniFuncs.geom_utils import (
-    get_all_prereactive_pairs, get_pair_shell_clusters,
-    get_cluster_positions_and_forces, pair_data_to_extxyz,
-)
-from MartiniFuncs.pair_selection import PairCriteria, assess_prereactive_pairs
+from MartiniFuncs.io.lammps import read_lammps_frame, read_lammps_input_settings
+from MartiniFuncs.chemistry.cpd_n4t.pairs import get_all_prereactive_pairs
+from MartiniFuncs.pairs.structures import (get_pair_shell_clusters, get_cluster_positions_and_forces,
+                                           pair_data_to_extxyz)
+from MartiniFuncs.chemistry.cpd_n4t.selection import PairCriteria, assess_prereactive_pairs
 
 
 def main():

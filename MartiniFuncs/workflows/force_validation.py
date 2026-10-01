@@ -1,6 +1,6 @@
 """Compare full-frame MD forces with a supplied ASE calculator.
 
-Run ``python -m MartiniFuncs.force_validation --help`` for a local UMA check.
+Run ``python -m MartiniFuncs.workflows.force_validation --help`` for a local UMA check.
 No checkpoint is bundled or downloaded. Matching forces validates reproduction,
 not the accuracy of UMA or the suitability of MD forces as an external load.
 """
@@ -16,7 +16,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .lammpsio import iter_lammps_frames, read_lammps_input_settings
+from MartiniFuncs.io.lammps import iter_lammps_frames, read_lammps_input_settings
 
 
 # Confirmed settings for the collaboration's uma-s-1p1 MD runs.

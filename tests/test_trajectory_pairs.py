@@ -7,12 +7,13 @@ import unittest
 import numpy as np
 from numpy.testing import assert_allclose, assert_array_equal
 
-from MartiniFuncs import graph, md_statistics as md
-from MartiniFuncs.geom_utils import get_all_prereactive_pairs
-from MartiniFuncs.lammpsio import iter_lammps_frames, read_lammps_frame
-from MartiniFuncs.pair_selection import PairCriteria, assess_prereactive_pairs
-from MartiniFuncs.trajectory_analysis import analyze_run
-from MartiniFuncs.trajectory_pairs import FixedPairTopology
+from MartiniFuncs.structure import graph
+from MartiniFuncs.pairs import lifetimes
+from MartiniFuncs.chemistry.cpd_n4t.pairs import get_all_prereactive_pairs
+from MartiniFuncs.io.lammps import iter_lammps_frames, read_lammps_frame
+from MartiniFuncs.chemistry.cpd_n4t.selection import PairCriteria, assess_prereactive_pairs
+from MartiniFuncs.trajectory.analysis import analyze_run
+from MartiniFuncs.pairs.topology import FixedPairTopology
 
 
 FIXTURES = Path(__file__).parent / "lammpsio_tests"
@@ -123,13 +124,13 @@ class TrajectoryPairTests(unittest.TestCase):
                 self.assertEqual(result["frames"], reference["frames"])
                 assert_array_equal(result["com_angstrom"], reference["com_angstrom"])
                 times = [r["time_ps"] for r in result["frames"]]
-                self.assertEqual(md.get_pair_lifetime(result["pairs_by_frame"], times),
-                                 md.get_pair_lifetime(reference["pairs_by_frame"], times))
+                self.assertEqual(lifetimes.get_pair_lifetime(result["pairs_by_frame"], times),
+                                 lifetimes.get_pair_lifetime(reference["pairs_by_frame"], times))
 
     def test_worker_failure_propagates_in_order(self):
-        """The production pool (frame_parallel.ordered_tasks) yields results in task
+        """The production pool (trajectory.parallel.ordered_tasks) yields results in task
         order and re-raises a worker's exception at that task's position."""
-        from MartiniFuncs.frame_parallel import ordered_tasks
+        from MartiniFuncs.trajectory.parallel import ordered_tasks
         results = ordered_tasks(int, ["1", "2", "not a number", "4"], workers=2)
         self.assertEqual([next(results), next(results)], [1, 2])
         with self.assertRaisesRegex(ValueError, "not a number"):

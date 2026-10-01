@@ -5,9 +5,6 @@ are Angstrom/ps, time arguments are ps, forces are eV/Angstrom. Array trajectory
 inputs must have a fixed object ordering across time; no implicit unwrapping,
 alignment, drift subtraction, or species averaging is performed.
 """
-from dataclasses import dataclass
-from itertools import zip_longest
-
 import numpy as np
 from ase import units
 
@@ -256,50 +253,6 @@ def get_cell_deformation(first, second):
     return np.linalg.solve(a, b)
 
 
-def get_pair_geometry(atoms, pair, shift, *, scale=1.3):
-    """Existing CPD/dienophile diagnostics, distances in Angstrom, angles in degrees.
-
-    Delegates to pair_selection.measure_pair_geometry: bond distances
-    are Euclidean in one placed image; angles are degrees(arccos(|a dot b| /
-    (|a||b|))). See that function for the reactive axes and plane definitions.
-    """
-    from .pair_selection import measure_pair_geometry
-    return measure_pair_geometry(atoms, pair, shift, scale=scale)
-
-
-def get_pair_geometry_timeseries(atoms_by_frame, pairs_by_frame, shifts_by_frame,
-                                 times_ps, *, pair, scale=1.3):
-    """Track one pair's existing geometry diagnostics across synchronized frames.
-
-    Pair/shift lists are the outputs of get_all_prereactive_pairs for each frame.
-    Absence from the candidate list returns geometry=None; invalid geometry has
-    an explicit error string. Absence is not evidence of molecular destruction.
-    No threshold or orientation criterion is changed here.
-    """
-    key = pair_identity(pair)
-    times = np.asarray(times_ps, dtype=float)
-    _times(times, len(times))
-    result, sentinel = [], object()
-    for atoms, pairs, shifts, time in zip_longest(
-            atoms_by_frame, pairs_by_frame, shifts_by_frame, times, fillvalue=sentinel):
-        if any(value is sentinel for value in (atoms, pairs, shifts, time)):
-            raise ValueError("Supply geometry, pairs, shifts, and time for every frame")
-        if len(pairs) != len(shifts):
-            raise ValueError("Each candidate pair requires one periodic shift")
-        matches = [(p, s) for p, s in zip(pairs, shifts) if pair_identity(p) == key]
-        if len(matches) > 1:
-            raise ValueError("Duplicate pair identities in a frame")
-        geometry, error = None, None
-        if matches:
-            try:
-                geometry = get_pair_geometry(atoms, *matches[0], scale=scale)
-            except ValueError as exc:
-                error = str(exc)
-        result.append({"time_ps": float(time), "pair": key, "present": bool(matches),
-                       "geometry": geometry, "error": error})
-    return result
-
-
 def validate_times(times_ps, length=None, *, minimum=2, uniform=False):
     """Shared timestamp check for every statistic in the package; returns times in ps.
 
@@ -395,90 +348,6 @@ def lag_correlation(values, nlag=None, *, subtract_mean=False):
     return total / ((samples - np.arange(nlag)) * objects)
 
 
-def _is_diagonal(cell):
-    return np.array_equal(cell, np.diag(np.diagonal(cell)))
-
-
-def minimum_image(vectors, cell):
-    """Shift Cartesian vectors (..., 3) by lattice vectors to fractional components in [-1/2, 1/2).
-
-    d' = d - floor(d H^-1 + 1/2) H, with H the row-vector cell. For a diagonal
-    cell this is the componentwise d - L floor(d/L + 1/2) used by TOR. It is
-    the nearest image whenever |d| is below half the smallest plane spacing,
-    which holds for per-frame molecular steps.
-    """
-    cell = np.asarray(cell, dtype=float)
-    d = np.asarray(vectors, dtype=float)
-    if _is_diagonal(cell):
-        lengths = np.diagonal(cell)
-        return d - lengths * np.floor(d / lengths + .5)
-    fractional = np.linalg.solve(cell.T, d.reshape(-1, 3).T).T.reshape(d.shape)
-    return (fractional - np.floor(fractional + .5)) @ cell
-
-
-def cell_plane_spacings(cell):
-    """Distances between opposite cell faces, V/|a_j x a_k|, in Angstrom."""
-    cell = np.asarray(cell, dtype=float)
-    volume = abs(np.linalg.det(cell))
-    return np.array([volume / np.linalg.norm(np.cross(cell[(i+1) % 3], cell[(i+2) % 3])) for i in range(3)])
-
-
-def affine_step(previous_points, steps, previous_cell, cell, previous_origin, origin):
-    """Displacement over one frame of points that ride with the cell deformation.
-
-    A point with fixed fractional coordinates s, r = o + s H, moves by
-    (o_t - o_(t-1)) + s (H_t - H_(t-1)). s is taken at the step midpoint,
-    s = (s_(t-1) + s_t)/2 with s_t computed for the continuous (not rewrapped)
-    end point r_(t-1) + step, which is second-order accurate in the frame
-    spacing. Zero when cell and origin are unchanged. Row-vector cells.
-    """
-    p = np.asarray(previous_points, dtype=float).reshape(-1, 3)
-    d = np.asarray(steps, dtype=float).reshape(-1, 3)
-    previous_cell, cell = np.asarray(previous_cell, dtype=float), np.asarray(cell, dtype=float)
-    previous_origin, origin = np.asarray(previous_origin, dtype=float), np.asarray(origin, dtype=float)
-    if np.array_equal(previous_cell, cell) and np.array_equal(previous_origin, origin):
-        return np.zeros(np.shape(steps))
-    s_before = np.linalg.solve(previous_cell.T, (p - previous_origin).T).T
-    s_after = np.linalg.solve(cell.T, (p + d - origin).T).T
-    shift = (origin - previous_origin) + 0.5 * (s_before + s_after) @ (cell - previous_cell)
-    return shift.reshape(np.shape(steps))
-
-
-def wrap_about_center(points, cell, center):
-    """The image of each point inside the cell centered at center: c + mic(r - c)."""
-    center = np.asarray(center, dtype=float)
-    return center + minimum_image(np.asarray(points, dtype=float) - center, cell)
-
-
-def unwrap_com_trajectory(com, cells, centers=None):
-    """TOR temporal unwrapping of whole-molecule COMs for any periodic cell.
-
-    Each frame's COMs are first wrapped into that frame's cell about its center
-    c_t, W_t = c_t + mic(R_t - c_t, H_t) (centers=None uses c_t = 0, i.e. input
-    already wrapped about the origin). Then u_0 = W_0 - c_0 and
-    u_t = u_(t-1) + mic(W_t - W_(t-1), H_t), with mic the minimum image in the
-    destination cell (Bullerjahn et al., JCTC 19 (2023) 3406, Eq. 2, for
-    row-vector cells). For orthorhombic cells with a fixed center this is
-    exactly the componentwise TOR update on centered wrapped COMs. The
-    canonical centered wrap matters under barostat dilation: the image chosen
-    for a COM changes its affine displacement by (image) x dL. A moving center
-    (e.g. a growing shear tilt) contributes its true lab-frame motion.
-    Displacements are lab-frame: an imposed shear flow or barostat dilation is
-    not subtracted. Requires inter-sample steps below half the smallest plane
-    spacing; that cannot be verified from wrapped data.
-    """
-    com = np.asarray(com, dtype=float)
-    cells = np.asarray(cells, dtype=float)
-    centers = np.zeros((len(com), 3)) if centers is None else np.asarray(centers, dtype=float)
-    if (com.ndim != 3 or com.shape[-1] != 3 or len(com) < 1 or cells.shape != (len(com), 3, 3)
-            or centers.shape != (len(com), 3) or not np.isfinite(com).all() or not np.isfinite(cells).all()):
-        raise ValueError("Expected finite COMs (T, N, 3), cells (T, 3, 3) and centers (T, 3)")
-    wrapped = np.stack([wrap_about_center(r, h, c) for r, h, c in zip(com, cells, centers)])
-    steps = [minimum_image(wrapped[t] - wrapped[t-1], cells[t]) for t in range(1, len(com))]
-    start = wrapped[:1] - centers[0]
-    return np.concatenate((start, start + np.cumsum(steps, axis=0)), axis=0) if steps else start
-
-
 def _series(values, times_ps):
     """Validate vectors of shape (T,N,3) and uniform timestamps; return vectors
     and lag[k]=k*(times_ps[1]-times_ps[0]), k=0,...,T-1, in ps.
@@ -554,35 +423,6 @@ def get_atomic_msd(positions, times_ps, *, unwrapped, selection):
     and all T-k origins; lag[k]=k*dt. Uses get_molecular_msd with atomic rows.
     """
     return get_molecular_msd(positions, times_ps, unwrapped=unwrapped, selection=selection)
-
-
-def unwrap_orthorhombic_com(wrapped_com, box_lengths):
-    """TOR temporal unwrapping for whole-molecule COMs in orthorhombic NPT cells.
-
-    Input shape (frames, molecules, 3), Angstrom, with COMs wrapped consistently
-    into origin-centered boxes; box_lengths has shape (frames, 3). Molecules
-    must first be made whole. Requires inter-sample motion below half a box in
-    every direction; that assumption cannot be established from wrapped data
-    alone. Does not support shear, moving origins, or atomwise unwrapping.
-
-    Implements Eq. 2 of Bullerjahn et al., JCTC 19 (2023), 3406-3417,
-    doi:10.1021/acs.jctc.3c00308, using the destination box length.
-
-    Componentwise, d_t=w_t-w_(t-1), delta_t=d_t-L_t*floor(d_t/L_t+1/2),
-    u_0=w_0 and u_t=u_(t-1)+delta_t. w=wrapped_com and L=box_lengths;
-    L_t is the destination frame's box, not the initial box. No drift or
-    affine box-motion subtraction is added. This is unwrap_com_trajectory with
-    diagonal cells; use that function directly for triclinic/sheared cells.
-    """
-    wrapped = np.asarray(wrapped_com, dtype=float)
-    lengths = np.asarray(box_lengths, dtype=float)
-    if (wrapped.ndim != 3 or wrapped.shape[-1] != 3 or len(wrapped) < 1
-            or lengths.shape != (len(wrapped), 3) or not np.isfinite(wrapped).all()
-            or not np.isfinite(lengths).all() or np.any(lengths <= 0)):
-        raise ValueError("Expected finite COMs (T, N, 3) and positive lengths (T, 3)")
-    if np.any(abs(wrapped) > lengths[:, None, :] / 2 + 1e-8):
-        raise ValueError("COMs must be wrapped into origin-centered boxes")
-    return unwrap_com_trajectory(wrapped, np.stack([np.diag(L) for L in lengths]), np.zeros((len(wrapped), 3)))
 
 
 def get_molecular_diffusion_coefficient(msd_result, *, fit_start_ps, fit_end_ps):
@@ -676,92 +516,3 @@ def get_molecular_force_autocorrelation(net_forces, times_ps, **kwargs):
     between atoms within each molecule. kwargs follow the atomic correlation.
     """
     return get_atomic_force_autocorrelation(net_forces, times_ps, **kwargs)
-
-
-def pair_identity(pair):
-    """Canonical unordered pair of molecule atom-ID tuples; independent of rows."""
-    if len(pair) != 2:
-        raise ValueError("A pair must contain two molecule ID collections")
-    first, second = (tuple(sorted(group)) for group in pair)
-    if (not first or not second or len(set(first)) != len(first)
-            or len(set(second)) != len(second) or set(first) & set(second)):
-        raise ValueError("Pair molecules need nonempty, distinct, disjoint atom IDs")
-    return tuple(sorted((first, second)))
-
-
-@dataclass(frozen=True)
-class PairLifetime:
-    pair: tuple
-    first_frame: int
-    last_frame: int
-    first_time_ps: float
-    last_time_ps: float
-    observed_span_ps: float
-    detected_frames: int
-    left_censored: bool
-    right_censored: bool
-
-
-def get_pair_lifetime(pairs_by_frame, times_ps, *, max_gap_frames=0, progress=None):
-    """Track encounter episodes from per-frame lists of molecule-ID pairs.
-
-    Directly accepts pair lists from get_all_prereactive_pairs, or filtered lists.
-    Use one fixed selection criterion throughout. Molecule IDs here are atom-ID
-    sets, not per-frame candidate numbers. Pair order/atom order is immaterial.
-
-    Default episodes are continuous detections. max_gap_frames bridges that many
-    missing samples (intermittent definition). Span = last detection minus first
-    detection: a single-sample event has span zero, not a known zero lifetime.
-    Entry/exit occur between samples and are not interpolated. Boundary episodes
-    are censored with the same gap allowance at both ends: an episode is
-    left-censored when its first detection is within max_gap_frames of the first
-    supplied frame (it could be bridged to earlier, unseen detections) and
-    right-censored when still open at the final frame. Do not average these
-    spans as unbiased physical lifetimes.
-    The iterable of pair lists is consumed once; trajectory coordinates are not
-    retained. Timestamps may be irregular. Returned frame indices are local to
-    the supplied trajectory/window. Missing frames are not absent detections.
-
-    observed_span_ps=times_ps[last_frame]-times_ps[first_frame]. Two
-    detections at indices i<j remain in one encounter when j-i-1 <=
-    max_gap_frames; detected_frames counts observations, not bridged gaps.
-    Optional progress reports completed frame counts and the final sorting stage.
-    """
-    if (isinstance(max_gap_frames, (bool, np.bool_)) or not isinstance(max_gap_frames, (int, np.integer))
-            or max_gap_frames < 0):
-        raise ValueError("max_gap_frames must be a nonnegative integer")
-    times = np.asarray(times_ps, dtype=float)
-    if times.ndim != 1:
-        raise ValueError("Timestamps must be one-dimensional")
-    _times(times, len(times))
-    active, result = {}, []
-
-    def finish(key, state, censored):
-        start, end, count = state
-        result.append(PairLifetime(key, start, end, float(times[start]), float(times[end]),
-                                   float(times[end] - times[start]), count, start <= max_gap_frames, censored))
-
-    sentinel = object()
-    for index, (pairs, time) in enumerate(zip_longest(pairs_by_frame, times, fillvalue=sentinel)):
-        if pairs is sentinel or time is sentinel:
-            raise ValueError("One pair list is required for every timestamp")
-        current = {pair_identity(pair) for pair in pairs}
-        for key in list(active):
-            # On a detected frame the gap excludes this frame; on an absent
-            # frame it includes it. Close only when the allowed gap is exceeded.
-            gap = index - active[key][1] - (1 if key in current else 0)
-            if gap > max_gap_frames:
-                finish(key, active.pop(key), False)
-        for key in sorted(current):
-            if key in active:
-                active[key][1] = index
-                active[key][2] += 1
-            else:
-                active[key] = [index, index, 1]
-        if progress and ((index+1) % max(1, len(times)//20) == 0 or index+1 == len(times)):
-            progress(f'Pair lifetimes: {index+1}/{len(times)} frames processed; {len(result)} closed encounters')
-    for key, state in active.items():
-        finish(key, state, True)
-    if progress:
-        progress(f'Pair lifetimes: sorting {len(result)} encounters')
-    return sorted(result, key=lambda episode: (episode.first_frame, episode.pair))

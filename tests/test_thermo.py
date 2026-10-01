@@ -2,7 +2,7 @@ from pathlib import Path
 import tempfile
 import unittest
 import pandas as pd
-from MartiniFuncs.thermo import read_lammps_thermo, attach_thermo, discover_thermo_file
+from MartiniFuncs.io.thermo import read_lammps_thermo, attach_thermo, discover_thermo_file
 
 
 class ThermoTests(unittest.TestCase):

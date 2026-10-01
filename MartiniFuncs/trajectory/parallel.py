@@ -15,7 +15,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from .lammpsio import iter_lammps_frames
+from MartiniFuncs.io.lammps import iter_lammps_frames
 
 
 class FrameSummary(NamedTuple):
@@ -163,14 +163,14 @@ def prepare_frame(frame, context):
     Whole molecular coordinates follow parent-child minimum-image displacements.
     COM is sum(m_i*r_i)/sum(m_i), COM velocity is sum(m_i*v_i)/sum(m_i), and
     net molecular force is sum(F_i). Velocities convert from ASE units to A/ps;
-    source forces remain eV/A. Density and temperature delegate to md_statistics.
+    source forces remain eV/A. Density and temperature delegate to statistics.md.
     This is spatial reconstruction only; temporal unwrapping is deliberately
     left to the ordered consumer.
     """
     from ase.geometry import find_mic
     from ase import units as ase_units
-    from . import md_statistics as md
-    from .reaction_detection import find_possible_products, PossibleReactionError
+    from MartiniFuncs.statistics import md
+    from MartiniFuncs.trajectory.reactions import find_possible_products, PossibleReactionError
     atoms = frame.atoms
     # analyze_run screens the first frame before building its topology.
     if context['reaction_atom_counts'] is not None and frame.index != context.get('prescreened_frame'):
@@ -199,7 +199,7 @@ def prepare_frame(frame, context):
     if context.get('check_topology'):
         # A changed topology is reported, not raised, so the caller can apply
         # its persistence rule and end the segment cleanly.
-        from .reaction_detection import topology_change
+        from MartiniFuncs.trajectory.reactions import topology_change
         topology = topology_change(atoms, context['groups'], context['molecule_sizes'], bond_scale=context['bond_scale'])
     elif len(edges) and np.any(np.linalg.norm(whole[edges[:, 1]] - whole[edges[:, 0]], axis=1) > 1.25 * context['cutoffs']):
         raise ValueError(f'Frame {frame.index}: fixed molecular topology no longer reconstructs consistently')
@@ -208,14 +208,14 @@ def prepare_frame(frame, context):
     pairs = shifts = None
     candidates = None
     if context['compute_pairs'] and frame.index % context['frame_stride'] == 0:
-        from .pair_candidates import frame_candidates, metric_row
+        from MartiniFuncs.pairs.candidates import frame_candidates, metric_row
         radius = context.get('reactive_radius', 3.25)
         if context['topology'] is not None:
             pairs, shifts, _, rows = context['topology'].evaluate(
                 whole, atoms.cell.array, atoms.pbc, criteria=context['pair_criteria'],
                 reactive_radius=radius, candidates=True)
         else:
-            from .geom_utils import get_all_prereactive_pairs
+            from MartiniFuncs.chemistry.cpd_n4t.pairs import get_all_prereactive_pairs
             pairs, shifts, found = get_all_prereactive_pairs(
                 atoms, scale=context['bond_scale'], criteria=context['pair_criteria'],
                 reactive_radius=radius, return_candidates=True)

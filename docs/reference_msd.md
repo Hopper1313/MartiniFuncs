@@ -17,8 +17,8 @@ position gives zero squared displacement. It does not imply equilibrium.
 
 ```python
 import numpy as np
-from MartiniFuncs.postprocessing import load_analysis_cache
-from MartiniFuncs.md_statistics import get_molecular_reference_msd
+from MartiniFuncs.workflows.postprocess import load_analysis_cache
+from MartiniFuncs.statistics.md import get_molecular_reference_msd
 
 result, manifest = load_analysis_cache('postprocess/cache')
 if result['com_angstrom'] is None:

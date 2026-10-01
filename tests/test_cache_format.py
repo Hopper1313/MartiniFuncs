@@ -8,9 +8,9 @@ from array import array
 
 import numpy as np
 
-from MartiniFuncs import frame_parallel
-from MartiniFuncs.postprocessing import (SCHEMA_VERSION, cache_analysis, cached_frame_offsets, export_pairs,
-                                         load_analysis_cache, write_report)
+from MartiniFuncs.trajectory import parallel
+from MartiniFuncs.workflows.postprocess import (SCHEMA_VERSION, cache_analysis, cached_frame_offsets,
+                                                export_pairs, load_analysis_cache, write_report)
 
 FIXTURES = Path(__file__).parent / "lammpsio_tests"
 
@@ -92,17 +92,17 @@ class CacheFormatTests(unittest.TestCase):
         texts = [p.read_bytes() for p in sources]
         texts += [texts[0].replace(b"\n", b"\r\n"), b"\n\n" + texts[1],
                   b"ITEM: TIMESTEP\n0\nITEM: NUMBER OF ATOMS\n0\nITEM: TIMESTEP\n5\nITEM: NUMBER OF ATOMS\n0\n"]
-        original = frame_parallel._SCAN_BLOCK
-        self.addCleanup(setattr, frame_parallel, "_SCAN_BLOCK", original)
+        original = parallel._SCAN_BLOCK
+        self.addCleanup(setattr, parallel, "_SCAN_BLOCK", original)
         for k, text in enumerate(texts):
             path = self.root / f"case{k}.lammpstrj"
             path.write_bytes(text)
             for block in (original, 15, 16, 37, 4096):
-                frame_parallel._SCAN_BLOCK = block
-                np.testing.assert_array_equal(frame_parallel.frame_offsets(path), line_scan_offsets(path))
+                parallel._SCAN_BLOCK = block
+                np.testing.assert_array_equal(parallel.frame_offsets(path), line_scan_offsets(path))
         (self.root / "bad.lammpstrj").write_bytes(b"garbage\nITEM: TIMESTEP\n")
         with self.assertRaisesRegex(ValueError, "expected ITEM: TIMESTEP"):
-            frame_parallel.frame_offsets(self.root / "bad.lammpstrj")
+            parallel.frame_offsets(self.root / "bad.lammpstrj")
 
 
 if __name__ == "__main__":

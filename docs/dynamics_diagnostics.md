@@ -1,6 +1,6 @@
 # Dynamics diagnostics: what is computed, and why
 
-Code: `MartiniFuncs/dynamics.py`, plus new outputs of `trajectory_analysis.analyze_run`:
+Code: `MartiniFuncs/statistics/dynamics.py`, plus new outputs of `trajectory.analysis.analyze_run`:
 `com_nonaffine_angstrom`, `cell_origin_angstrom`, `orientation_axes`, topology events, and
 `analyze_segments`. All quantities use molecular centres of mass (COMs) unless stated otherwise.
 
@@ -213,7 +213,7 @@ between the near-equal directions.
 |r_j + S·H − r_i| < 1.3(r_cov,i + r_cov_j).
 
 **Change.** A frame differs from the reference if any bond joins two reference molecules (a merge) or any
-molecule splits into several pieces. `reaction_detection.topology_change` returns the changed
+molecule splits into several pieces. `trajectory.reactions.topology_change` returns the changed
 components; it is generic and not limited to one product size.
 
 **Persistence.** A change counts once it lasts `topology_persistence` consecutive source frames, meaning

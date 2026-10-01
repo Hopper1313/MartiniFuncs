@@ -11,7 +11,7 @@ python -m pip install -e .
 martini-postprocess --help
 ```
 
-`python -m MartiniFuncs.cli` is equivalent and also works from the repository.
+`python -m MartiniFuncs` is equivalent and also works from the repository.
 No notebook, GUI, UMA weights, or GPU is required. MD forces are read from the
 dump; they are not recomputed. This is one-node postprocessing, not MPI.
 
@@ -98,12 +98,12 @@ rereading the dump:
 
 ```sh
 # cache once with a generous radius
-python -m MartiniFuncs.cli run RUN_DIR --output ANALYSIS --units metal --timestep-ps 0.0005     --reactive-radius 4.0 --no-export-pairs
+python -m MartiniFuncs run RUN_DIR --output ANALYSIS --units metal --timestep-ps 0.0005     --reactive-radius 4.0 --no-export-pairs
 # recompute counts, distributions and lifetimes for any radius / thresholds
-python -m MartiniFuncs.cli report ANALYSIS/cache --output R3p0 --reactive-radius 3.0
-python -m MartiniFuncs.cli report ANALYSIS/cache --output R3p5_axis30 --reactive-radius 3.5 --max-axis-angle 30
+python -m MartiniFuncs report ANALYSIS/cache --output R3p0 --reactive-radius 3.0
+python -m MartiniFuncs report ANALYSIS/cache --output R3p5_axis30 --reactive-radius 3.5 --max-axis-angle 30
 # export structures for one selection
-python -m MartiniFuncs.cli extract ANALYSIS/cache --output PAIRS_R3p0 --reactive-radius 3.0 --shell-radius 3
+python -m MartiniFuncs extract ANALYSIS/cache --output PAIRS_R3p0 --reactive-radius 3.0 --shell-radius 3
 ```
 
 **Selection rules:**
@@ -119,9 +119,9 @@ python -m MartiniFuncs.cli extract ANALYSIS/cache --output PAIRS_R3p0 --reactive
   each geometry metric.
 
 **From Python:**
-- `pair_candidates.select_pairs(result, reactive_radius=..., criteria=...)` returns
+- `pairs.candidates.select_pairs(result, reactive_radius=..., criteria=...)` returns
   the per-frame pairs in the usual format.
-- `pair_candidates.candidate_table(result)` returns every candidate as a pandas
+- `pairs.candidates.candidate_table(result)` returns every candidate as a pandas
   DataFrame.
 
 A selected radius gives exactly the pairs a fresh analysis at that radius would
@@ -158,7 +158,7 @@ ignored.
 - `--reaction-events off`: no check (the fixed-topology bond-stretch check then
   stops the job if a molecule falls apart).
 - For statistics that respect the new species, use
-  `trajectory_analysis.analyze_segments` (Python API). It splits the run at each
+  `trajectory.analysis.analyze_segments` (Python API). It splits the run at each
   event into fixed-topology segments.
 
 `--reaction-atom-counts 11 23` is the older possible-product screen. It aborts with
@@ -260,8 +260,8 @@ locally with Pandas/Matplotlib; the CLI does not require plotting dependencies.
 Python access uses the same package APIs:
 
 ```python
-from MartiniFuncs.postprocessing import load_analysis_cache
-from MartiniFuncs.trajectory_analysis import molecular_window_statistics
+from MartiniFuncs.workflows.postprocess import load_analysis_cache
+from MartiniFuncs.trajectory.analysis import molecular_window_statistics
 result, provenance = load_analysis_cache("/scratch/my_run_analysis/cache")
 window = molecular_window_statistics(result, startframe=1500, endframe=2000, max_lag_ps=50)
 ```

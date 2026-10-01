@@ -8,12 +8,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from MartiniFuncs import md_statistics as md
-from MartiniFuncs.cli import main
-from MartiniFuncs.pair_candidates import candidate_table, select_pairs
-from MartiniFuncs.pair_selection import PairCriteria
-from MartiniFuncs.postprocessing import cache_analysis, load_analysis_cache
-from MartiniFuncs.trajectory_analysis import analyze_run
+from MartiniFuncs.pairs import lifetimes
+from MartiniFuncs.workflows.cli import main
+from MartiniFuncs.pairs.candidates import candidate_table, select_pairs
+from MartiniFuncs.chemistry.cpd_n4t.selection import PairCriteria
+from MartiniFuncs.workflows.postprocess import cache_analysis, load_analysis_cache
+from MartiniFuncs.trajectory.analysis import analyze_run
 
 FIXTURES = Path(__file__).parent / "lammpsio_tests"
 OPTIONS = dict(units="metal", timestep_ps=.0005, compute_pairs=True)
@@ -89,7 +89,7 @@ class PairReselectionTests(unittest.TestCase):
                     status = main([command, str(out / "cache"), "--output", str(target), "--quiet"] + selection + extra)
                 self.assertEqual(status, 0, errors.getvalue())
             times = [r["time_ps"] for r in fresh["frames"]]
-            expected = md.get_pair_lifetime(fresh["pairs_by_frame"], times)
+            expected = lifetimes.get_pair_lifetime(fresh["pairs_by_frame"], times)
             with (out / "r3" / "pair_lifetimes.csv").open() as handle:
                 rows = list(csv.DictReader(handle))
             self.assertEqual(len(rows), len(expected))

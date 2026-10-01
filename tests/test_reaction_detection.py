@@ -5,8 +5,9 @@ from types import SimpleNamespace
 from unittest.mock import patch
 import numpy as np
 from ase import Atoms
-from MartiniFuncs.reaction_detection import find_possible_products, scan_possible_products, PossibleReactionError
-from MartiniFuncs.trajectory_analysis import analyze_run
+from MartiniFuncs.trajectory.reactions import (find_possible_products, scan_possible_products,
+                                               PossibleReactionError)
+from MartiniFuncs.trajectory.analysis import analyze_run
 
 
 def frame(index, merged):
@@ -38,7 +39,7 @@ class ReactionDetectionTests(unittest.TestCase):
             Path(directory, 'trajectory.lammpstrj').touch()
             for events, expected in (([frame(0, False), frame(1, True), frame(2, False)], 1),
                                      ([frame(0, True)], 0)):
-                with patch('MartiniFuncs.trajectory_analysis.iter_lammps_frames', return_value=iter(events)):
+                with patch('MartiniFuncs.trajectory.analysis.iter_lammps_frames', return_value=iter(events)):
                     with self.assertRaises(PossibleReactionError) as caught:
                         analyze_run(directory, units='metal', timestep_ps=.001, frame_stride=2,
                                     reaction_atom_counts=(2, 3))

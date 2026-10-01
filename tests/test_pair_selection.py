@@ -4,11 +4,10 @@ import unittest
 import numpy as np
 from numpy.testing import assert_allclose
 
-from MartiniFuncs.lammpsio import read_lammps_frame
-from MartiniFuncs.geom_utils import get_all_prereactive_pairs
-from MartiniFuncs.pair_selection import (
-    PairCriteria, assess_prereactive_pairs, measure_pair_geometry,
-)
+from MartiniFuncs.io.lammps import read_lammps_frame
+from MartiniFuncs.chemistry.cpd_n4t.pairs import get_all_prereactive_pairs
+from MartiniFuncs.chemistry.cpd_n4t.selection import (PairCriteria, assess_prereactive_pairs,
+                                                      measure_pair_geometry)
 
 
 class PairSelectionTests(unittest.TestCase):
@@ -31,7 +30,7 @@ class PairSelectionTests(unittest.TestCase):
         self.assertEqual(shifts, [self.shifts[1]])
 
     def test_distances_match_jointly_placed_cartesian_coordinates(self):
-        from MartiniFuncs import graph as graph
+        from MartiniFuncs.structure import graph
         bonded = graph.build_bond_graph(self.atoms, scale=1.3)
         for pair, shift in zip(self.pairs, self.shifts):
             geometry = measure_pair_geometry(self.atoms, pair, shift, graph=bonded)

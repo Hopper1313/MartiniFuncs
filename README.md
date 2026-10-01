@@ -4,11 +4,27 @@ Tools for extracting molecular encounters, source forces, and complete molecular
 environments from LAMMPS trajectories. Transition-state generation and reaction
 barrier validation are future pipeline stages.
 
+## Package layout
+
+| Subpackage | Contents |
+|---|---|
+| `MartiniFuncs.io` | `lammps` (dump/input reader), `lammps_inputs`, `thermo`, `orca`, `psience` |
+| `MartiniFuncs.structure` | `graph` (bond graphs, periodic neighbours), `periodic` (minimum image, TOR COM unwrapping), `molecules`, `alignment`, `packing` |
+| `MartiniFuncs.trajectory` | `analysis` (`analyze_run`, `analyze_segments`), `parallel` (indexed frame chunks), `reactions` (topology-change events) |
+| `MartiniFuncs.statistics` | `md` (molecular observables, FFT lag MSD/correlations), `dynamics`, `diffusion`, `stability` |
+| `MartiniFuncs.pairs` | chemistry-independent pair machinery: `candidates` (cached candidates, `select_pairs`), `lifetimes`, `screening`, `structures` (pair/shell clusters, Extended XYZ), `topology` |
+| `MartiniFuncs.chemistry.cpd_n4t` | the CPD + N4T Diels-Alder model: `pairs` (molecule classes, pair screen), `selection` (reactive sites, `PairCriteria`), `visualization` |
+| `MartiniFuncs.workflows` | `cli` (`python -m MartiniFuncs`), `postprocess` (cache/report/export), `progress`, `force_validation` |
+| `MartiniFuncs.legacy` | superseded helpers kept for reference only |
+
+Common entry points are also importable lazily from the top level, e.g.
+`from MartiniFuncs import analyze_run, select_pairs, PairCriteria`.
+
 ## Post-simulation CLI and Slurm
 
 See the [CLI guide](docs/postprocessing_cli.md) for automatic directory discovery,
 cached molecular statistics, pair/force/shell exports, reusable frame-window reports,
-and Slurm job/job-array templates. Run `python -m MartiniFuncs.cli --help`, or use
+and Slurm job/job-array templates. Run `python -m MartiniFuncs --help`, or use
 `martini-postprocess` after reinstalling the package to register the new command.
 
 ## Recommended workflow notebooks
@@ -25,7 +41,7 @@ research reports. The older notebooks below remain available as examples.
 Use [04_plot_md_statistics_from_directory.ipynb](examples/04_plot_md_statistics_from_directory.ipynb)
 for new runs. Set `SIMULATION_DIR`; unique input and text dump files are discovered
 recursively. Set `INPUT_FILE`, `DUMP_FILE`, or `DATA_FILE` when necessary to select
-the correct files. This notebook uses `MartiniFuncs.trajectory_analysis` directly,
+the correct files. This notebook uses `MartiniFuncs.trajectory.analysis` directly,
 without any saved NPT reports. It plots scalar histories, species-resolved
 **all-molecule COM MSD**, molecular velocity and net-force correlations, optional
 diffusion fits, and optional CPD/dienophile pair lifetimes. It has no arbitrary
@@ -61,7 +77,7 @@ and isomer distinctions need additional handling. COM unwrapping (TOR) supports
 any fully periodic cell: orthorhombic NPT, triclinic and sheared (`fix deform`)
 cells, with a fixed or moving box center. Displacements are lab-frame, so an
 imposed shear flow is not subtracted. LAMMPS thermo logs are parsed by
-`MartiniFuncs.thermo` (see docs/thermo_output.md).
+`MartiniFuncs.io.thermo` (see docs/thermo_output.md).
 
 ## Installation and tests
 
@@ -85,7 +101,7 @@ diagnostics before optionally writing clusters with `--output clusters.extxyz`.
 ## Read synchronized frames
 
 ```python
-from MartiniFuncs.lammpsio import iter_lammps_frames, read_lammps_input_settings
+from MartiniFuncs.io.lammps import iter_lammps_frames, read_lammps_input_settings
 
 settings = read_lammps_input_settings("tests/lammpsio_tests/infile.in")
 for frame in iter_lammps_frames(
@@ -129,11 +145,10 @@ Model, task, charge, and spin are not inferred from comments.
 ## Inspect and filter encounters
 
 ```python
-from MartiniFuncs.geom_utils import (
-    get_all_prereactive_pairs, get_pair_shell_clusters,
-    get_cluster_positions_and_forces, pair_data_to_extxyz,
-)
-from MartiniFuncs.pair_selection import PairCriteria, assess_prereactive_pairs
+from MartiniFuncs.chemistry.cpd_n4t.pairs import get_all_prereactive_pairs
+from MartiniFuncs.pairs.structures import (get_pair_shell_clusters, get_cluster_positions_and_forces,
+                                           pair_data_to_extxyz)
+from MartiniFuncs.chemistry.cpd_n4t.selection import PairCriteria, assess_prereactive_pairs
 
 pairs, shifts = get_all_prereactive_pairs(frame.atoms, scale=1.3)
 reports = assess_prereactive_pairs(frame.atoms, pairs, shifts, scale=1.3)
@@ -177,7 +192,7 @@ forces. Whole shell molecules can extend beyond the nominal shell radius.
 
 ## Reproduce UMA forces locally
 
-The user-facing workflow lives in `MartiniFuncs.force_validation`, as both the
+The user-facing workflow lives in `MartiniFuncs.workflows.force_validation`, as both the
 `validate_forces()` Python API and a command-line module. It compares full
 periodic snapshots before extraction or relaxation. Tests under
 `tests/test_force_comparison.py` only exercise the comparison code with an
@@ -212,7 +227,7 @@ For example, **if the full system is neutral and singlet**, from the repository
 root:
 
 ```sh
-python -m MartiniFuncs.force_validation tests/lammpsio_tests/multiple_frames.lammpstrj --input tests/lammpsio_tests/infile.in --checkpoint /path/outside/repo/uma-s-1p1.pt --charge 0 --spin 1 --atol 0.001 --output force_report.json
+python -m MartiniFuncs.workflows.force_validation tests/lammpsio_tests/multiple_frames.lammpstrj --input tests/lammpsio_tests/infile.in --checkpoint /path/outside/repo/uma-s-1p1.pt --charge 0 --spin 1 --atol 0.001 --output force_report.json
 ```
 
 The default checks only frame 0 using `omol`. Add `--indices 0 4 8` to check
@@ -224,7 +239,7 @@ raises an error; duplicate indices are rejected.
 The same operation is available from Python:
 
 ```python
-from MartiniFuncs.force_validation import validate_forces
+from MartiniFuncs.workflows.force_validation import validate_forces
 
 report = validate_forces(
     dump="tests/lammpsio_tests/multiple_frames.lammpstrj",
@@ -277,12 +292,12 @@ For a quick check on the large shear dump, use frame 0: later positive indices
 scan forward and negative indices scan to the end. The notebook regression test
 exercises frame 0 when this optional dataset is available.
 
-`visualization.to_display_molecule(atoms)` converts geometry to Psience Bohr
+`chemistry.cpd_n4t.visualization.to_display_molecule(atoms)` converts geometry to Psience Bohr
 coordinates without an energy evaluator: 1 Angstrom is approximately 1.889726
 Bohr. ASE objects retain their original Angstrom coordinates. Conversion back
-with `coreio.molecule_to_ase_atoms` applies Bohr to Angstrom. The legacy
-`coreio.ase_atoms_to_molecule` retains its existing evaluator behavior.
-`visualization.plot_cluster` colors CPD green, MAL orange, and shell atoms gray;
+with `io.psience.molecule_to_ase_atoms` applies Bohr to Angstrom. The legacy
+`io.psience.ase_atoms_to_molecule` retains its existing evaluator behavior.
+`chemistry.cpd_n4t.visualization.plot_cluster` colors CPD green, MAL orange, and shell atoms gray;
 optional red arrows represent `lammps_forces` in eV/Angstrom. `force_scale=0.2`
 means a 1 eV/Angstrom force is drawn as a 0.2 Angstrom displacement. Forces are
 never normalized, evaluated, or interpreted as environment-only forces.
@@ -296,7 +311,7 @@ simulation-cell views. For guessed reaction-forming bonds, use
 `to_display_molecule`, append the local-index bonds to `mol.bonds`, and call
 `mol.plot`; retain its existing inferred bonds.
 
-`geometry.align_geometry` returns `(aligned, rmsd, transform)` and matches fit
+`structure.alignment.align_geometry` returns `(aligned, rmsd, transform)` and matches fit
 atoms by `global_index` when both structures provide it. Its transform uses
 `positions @ rotation + translation`; vectors use only `@ rotation`.
 `lammps_forces`, `forces`, `velocities`, and ASE `momenta` arrays rotate by default.
@@ -305,7 +320,7 @@ stays in the original frame; live calculator results are not copied. Alignment
 requires finite, unwrapped structures, not periodic frames. Collinear fits
 cannot determine a unique orientation.
 
-The existing `geom_utils.align_atoms` keeps row correspondence and its two-value
+The existing `legacy.geom_utils.align_atoms` keeps row correspondence and its two-value
 return, but now rotates stored vectors and rejects periodic inputs. Extract a
 finite cluster before using it. Neither alignment API reorders atoms.
 
@@ -326,7 +341,7 @@ No changes to `cmcc-reactions` are part of this milestone.
 
 ## MD statistics
 
-`MartiniFuncs.md_statistics` separates spatial scope in its public names:
+`MartiniFuncs.statistics.md` separates spatial scope in its public names:
 
 - Molecule: `get_molecule_center_of_mass`, `get_molecule_com_velocity`,
   `get_molecule_net_force`, `get_molecule_orientation`, `get_molecule_rmsd`,
@@ -361,9 +376,9 @@ function returns a specified two-atom axis, not a unique three-dimensional frame
 
 ```python
 from dataclasses import asdict
-from MartiniFuncs.lammpsio import iter_lammps_frames, read_lammps_input_settings
-from MartiniFuncs.geom_utils import get_all_prereactive_pairs
-from MartiniFuncs.md_statistics import get_pair_lifetime
+from MartiniFuncs.io.lammps import iter_lammps_frames, read_lammps_input_settings
+from MartiniFuncs.chemistry.cpd_n4t.pairs import get_all_prereactive_pairs
+from MartiniFuncs.statistics.md import get_pair_lifetime
 
 settings = read_lammps_input_settings("tests/lammpsio_tests/infile.in")
 # This fixture uses metal units: timestep is in ps.
@@ -406,7 +421,7 @@ counts. These functions store arrays in memory and use direct O(T² N) lag sums;
 use a suitable time window for large trajectories.
 
 ```python
-from MartiniFuncs.md_statistics import (
+from MartiniFuncs.statistics.md import (
     get_molecular_msd, get_molecular_diffusion_coefficient,
 )
 # com_positions_unwrapped: COM positions in Angstrom, one column per CPD.
@@ -436,7 +451,7 @@ trajectories and species-resolved MSD fits for the 1 ns NPT fixture. The workflo
 supports orthorhombic boxes with a fixed box center and fixed initial molecular
 topology (`analyze_run` itself supports any fully periodic cell). It reconstructs
 whole molecules before wrapping their COMs into a centered cell and applying
-`md_statistics.unwrap_orthorhombic_com`. This uses the
+`structure.periodic.unwrap_orthorhombic_com`. This uses the
 TOR algorithm (Bullerjahn et al., DOI: 10.1021/acs.jctc.3c00308), not atomwise
 image-flag trajectories. Sufficient temporal sampling remains an assumption.
 All initial bonds are checked for excessive stretching during reconstruction.
@@ -464,7 +479,7 @@ wrapped molecular centers as well as TOR coordinates; NPT structural analysis
 must use the former. The report uses four disjoint 125 ps blocks from 500 ps
 through, but excluding, 1000 ps (250 frames each).
 
-`MartiniFuncs.stability.get_series_statistics` provides scalar summaries,
+`MartiniFuncs.statistics.stability.get_series_statistics` provides scalar summaries,
 first-zero-truncated autocorrelation diagnostics, and batch-mean standard errors
 at multiple averaging durations. `get_molecular_com_rdf` computes species COM
 RDFs and nearest-neighbor distances in fully periodic (orthorhombic or triclinic) cells. RDFs
@@ -483,7 +498,7 @@ for a complete 40+40 example with editable composition/cell settings, Psience
 views, periodic contact checks, and data/run-template export. Set `WRITE_FILES=True`
 in the setup cell to enable export; existing files remain protected by default.
 
-`MartiniFuncs.initial_configurations` accepts whole nonperiodic ASE molecule
+`MartiniFuncs.structure.packing` accepts whole nonperiodic ASE molecule
 templates (coordinates in Angstrom), copy counts, and an orthorhombic periodic
 cell. It randomly rotates and translates rigid copies and rejects intermolecular
 atom contacts below `min_distance`, including contacts across box boundaries.
@@ -491,10 +506,10 @@ It supports any number of species, not just CPD/dienophile.
 
 ```python
 from ase.io import read
-from MartiniFuncs.initial_configurations import (
+from MartiniFuncs.structure.packing import (
     MoleculeSpec, pack_molecules, write_initial_data,
 )
-from MartiniFuncs.lammps_inputs import render_lammps_input
+from MartiniFuncs.io.lammps_inputs import render_lammps_input
 from pathlib import Path
 
 a = read("molecule_A.xyz")  # Whole molecular geometry, Angstrom

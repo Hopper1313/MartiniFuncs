@@ -10,16 +10,16 @@ The separate `mlip-demo` directory and `cmcc-reactions` were not modified.
 
 | Location | Issue and correction |
 |---|---|
-| `coreio.check_if_internal_part_of_multiple_fragments` | An intersection containing only atom 0 evaluated as false. Test whether the intersection is nonempty. |
-| `coreio.get_symbol_from_mass` | The nearest-mass search included ASE's dummy element X. Exclude it and reject nonpositive/nonfinite masses. |
-| `orcaio._validate_constraint_in_optimization` | The discrepancy flag was reset immediately before returning, always reporting success. Preserve failures detected in the selected frames. |
+| `io.psience.check_if_internal_part_of_multiple_fragments` | An intersection containing only atom 0 evaluated as false. Test whether the intersection is nonempty. |
+| `io.psience.get_symbol_from_mass` | The nearest-mass search included ASE's dummy element X. Exclude it and reject nonpositive/nonfinite masses. |
+| `io.orca._validate_constraint_in_optimization` | The discrepancy flag was reset immediately before returning, always reporting success. Preserve failures detected in the selected frames. |
 | `shell.build_bond_graph` | `periodic=False` still searched periodic images, allowing duplicate neighbors and nonzero image shifts. Disable PBC during the search and return zero shifts. |
 | Legacy shell centering/extraction | `repair=False` returned None; final shell repairs ignored the supplied bond scale/skin. Return the shifted Atoms and honor both parameters. |
-| `md_statistics.get_molecule_displacement` | A generator of atom IDs was exhausted by the first COM calculation. Materialize it once for both frames. |
-| `trajectory_analysis.analyze_run` | Striding could hide timestep resets in skipped frames. Check every source frame before downsampling. |
+| `statistics.md.get_molecule_displacement` | A generator of atom IDs was exhausted by the first COM calculation. Materialize it once for both frames. |
+| `trajectory.analysis.analyze_run` | Striding could hide timestep resets in skipped frames. Check every source frame before downsampling. |
 | `molecular_window_statistics` | Uniform-time validation was looser than direct MSD/correlation calls. Use the same timestamp validator. |
-| `force_validation.compare_frame_forces` | Invalid source forces could produce NaN report metrics. Reject nonfinite, empty, or incorrectly shaped source arrays. |
-| `geom_utils.pair_data_to_extxyz` | Removed a duplicate metadata-copy loop; output is unchanged. |
+| `workflows.force_validation.compare_frame_forces` | Invalid source forces could produce NaN report metrics. Reject nonfinite, empty, or incorrectly shaped source arrays. |
+| `pairs.structures.pair_data_to_extxyz` | Removed a duplicate metadata-copy loop; output is unchanged. |
 
 Public signatures remain unchanged. Invalid inputs now fail earlier; repaired
 legacy functions can give different results precisely in the cases above.
@@ -31,14 +31,14 @@ No pair thresholds, bond display behavior, or scientific models were changed.
    `shell.get_idxs_for_molid` computes ID minus one and downstream functions
    use those values as ASE rows. This requires consecutive IDs in sorted order.
    `shell.process_lammps_frame` also assumes a fixed column set and three values
-   per box-bound line. Use `lammpsio` plus `graph`/`geom_utils` in new workflows;
+   per box-bound line. Use `io.lammps` plus `structure.graph`/`pairs` in new workflows;
    replacing these legacy interfaces needs a deliberate compatibility migration.
 
 2. **The legacy evaluator helper is not UMA integration.**
-   `coreio.ase_atoms_to_molecule` defaults to AIMNet2 and falls back to AIMNet2
+   `io.psience.ase_atoms_to_molecule` defaults to AIMNet2 and falls back to AIMNet2
    even for other evaluator names. Its coordinate conversion is correct, but
    its evaluator API needs redesign before reuse for calculations. Use
-   `visualization.to_display_molecule` for display and `force_validation` for UMA.
+   `chemistry.cpd_n4t.visualization.to_display_molecule` for display and `workflows.force_validation` for UMA.
 
 3. **Pair screening and angle measurements use different centers.**
    `get_all_prereactive_pairs` screens whole-CPD COM to dienophile C=C COM.

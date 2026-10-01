@@ -1,4 +1,4 @@
-"""Image flags stay consistent with stored positions; explicit box origin/cell; XYZ writer; lazy coreio."""
+"""Image flags stay consistent with stored positions; explicit box origin/cell; XYZ writer; lazy io.psience."""
 import subprocess
 import sys
 import tempfile
@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 from numpy.testing import assert_allclose
 
-from MartiniFuncs.lammpsio import read_lammps_frame, read_input_datafile
+from MartiniFuncs.io.lammps import read_lammps_frame, read_input_datafile
 
 FIXTURES = Path(__file__).parent / "lammpsio_tests"
 
@@ -62,7 +62,7 @@ class ImageFlagTests(unittest.TestCase):
 
 class WriterTests(unittest.TestCase):
     def test_xyz_writer_optional_velocities_and_full_precision(self):
-        from MartiniFuncs.geom_utils import pair_data_to_xyz
+        from MartiniFuncs.legacy.geom_utils import pair_data_to_xyz
         record = dict(positions=[[0., 0, 0], [1, 0, 0]], symbols=["H", "H"],
                       forces=[[1.23456789e-9, 0, 0], [0, 0, -2.5]])
         with tempfile.TemporaryDirectory() as tmp:
@@ -76,14 +76,14 @@ class WriterTests(unittest.TestCase):
 class CoreioImportTests(unittest.TestCase):
     def test_mass_helpers_import_without_psience(self):
         code = ("import sys; sys.modules['Psience'] = None; sys.modules['McUtils'] = None\n"
-                "from MartiniFuncs import coreio\nprint(coreio.get_symbol_from_mass(12.0))")
+                "from MartiniFuncs.io import psience\nprint(psience.get_symbol_from_mass(12.0))")
         out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                              cwd=Path(__file__).parents[1])
         self.assertEqual(out.stdout.strip(), "C", out.stderr)
 
     def test_no_evaluator_option(self):
         try:
-            from MartiniFuncs.coreio import ase_atoms_to_molecule
+            from MartiniFuncs.io.psience import ase_atoms_to_molecule
             from ase import Atoms
             ase_atoms_to_molecule(Atoms("H2", positions=[[0, 0, 0], [0.74, 0, 0]]), energy_evaluator=None)
         except ImportError:

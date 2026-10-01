@@ -2,10 +2,10 @@
 
 Usage (also available as the installed martini-postprocess command)::
 
-    python -m MartiniFuncs.cli run RUN_DIR --output ANALYSIS_DIR --units metal --timestep-ps 0.0005
-    python -m MartiniFuncs.cli run RUN_DIR --output PAIR_ANALYSIS --units metal --timestep-ps 0.0005 --no-lag-statistics --shell-radius 3
-    python -m MartiniFuncs.cli report ANALYSIS_DIR/cache --output REPORT_DIR --startframe 1000 --endframe 2000
-    python -m MartiniFuncs.cli extract ANALYSIS_DIR/cache --output PAIRS_DIR --startframe 1000 --endframe 2000 --shell-radius 3
+    python -m MartiniFuncs run RUN_DIR --output ANALYSIS_DIR --units metal --timestep-ps 0.0005
+    python -m MartiniFuncs run RUN_DIR --output PAIR_ANALYSIS --units metal --timestep-ps 0.0005 --no-lag-statistics --shell-radius 3
+    python -m MartiniFuncs report ANALYSIS_DIR/cache --output REPORT_DIR --startframe 1000 --endframe 2000
+    python -m MartiniFuncs extract ANALYSIS_DIR/cache --output PAIRS_DIR --startframe 1000 --endframe 2000 --shell-radius 3
 
 collect uses the same indexed parallel frame processing as run, and writes both
 pairs.extxyz and clusters.extxyz without generating statistical reports.
@@ -66,8 +66,8 @@ run/report support independent lag-statistic, lifetime and frame-summary choices
 --no-lag-statistics skips MSD/correlation work entirely while retaining lifetimes.
 CLI stages log timestamps, actual progress counts and 30-second elapsed heartbeats;
 --quiet suppresses these messages. Heartbeats are not completion estimates.
-Scientific equations live in trajectory_analysis, md_statistics, and pair_selection;
-persistence/export behavior lives in postprocessing. See docs/postprocessing_cli.md
+Scientific equations live in trajectory.analysis, statistics.md, pairs and
+chemistry.cpd_n4t; persistence/export behavior lives in workflows.postprocess. See docs/postprocessing_cli.md
 for output schemas, cache reuse, and Slurm submission examples.
 """
 import argparse
@@ -77,9 +77,9 @@ import os
 from pathlib import Path
 import sys
 
-from .pair_selection import PairCriteria
-from .postprocessing import cache_analysis, export_pairs, write_report
-from .progress import log, run_stage
+from MartiniFuncs.chemistry.cpd_n4t.selection import PairCriteria
+from MartiniFuncs.workflows.postprocess import cache_analysis, export_pairs, write_report
+from MartiniFuncs.workflows.progress import log, run_stage
 
 
 def _frame_options(parser):
@@ -135,7 +135,7 @@ def _selection_kwargs(args):
 
 
 def _report_kwargs(args):
-    """Pass frame bounds and lag settings unchanged to postprocessing.write_report.
+    """Pass frame bounds and lag settings unchanged to workflows.postprocess.write_report.
 
     This conversion performs no frame-to-time conversion: cached timestamps
     determine lag spacing after the report selects the requested source frames.

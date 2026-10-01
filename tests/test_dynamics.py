@@ -7,9 +7,9 @@ from pathlib import Path
 import numpy as np
 from numpy.testing import assert_allclose
 
-from MartiniFuncs import dynamics as dy
-from MartiniFuncs import md_statistics as md
-from MartiniFuncs.frame_parallel import principal_axes
+from MartiniFuncs.statistics import dynamics as dy
+from MartiniFuncs.structure import periodic
+from MartiniFuncs.trajectory.parallel import principal_axes
 
 FIXTURES = Path(__file__).parent / "lammpsio_tests"
 
@@ -31,10 +31,10 @@ class NonAffineTests(unittest.TestCase):
                                 np.array([np.full(3, -(20 + .3 * np.sin(t)) / 2) for t in range(60)]))):
             points = np.array([o + s @ h for h, o in zip(cells, origins)])
             centers = origins + cells.sum(axis=1) / 2
-            wrapped = np.array([md.minimum_image(p - c, h) for p, c, h in zip(points, centers, cells)])
+            wrapped = np.array([periodic.minimum_image(p - c, h) for p, c, h in zip(points, centers, cells)])
             nonaffine = dy.unwrap_nonaffine(wrapped, cells, origins)
             assert_allclose(nonaffine - nonaffine[0], 0, atol=1e-9)
-            lab = md.unwrap_com_trajectory(wrapped + centers[:, None], cells, centers)
+            lab = periodic.unwrap_com_trajectory(wrapped + centers[:, None], cells, centers)
             self.assertGreater(np.abs(lab - lab[0]).max(), .1)   # the lab frame does see the affine motion
 
     def test_shear_plus_diffusion_recovers_diffusive_msd(self):
@@ -52,17 +52,17 @@ class NonAffineTests(unittest.TestCase):
             points.append(points[-1] + noise + s_mid @ (cells[t] - cells[t - 1]))
         points = np.array(points)
         centers = origins + cells.sum(axis=1) / 2
-        wrapped = np.array([md.minimum_image(p - c, h) for p, c, h in zip(points, centers, cells)])
+        wrapped = np.array([periodic.minimum_image(p - c, h) for p, c, h in zip(points, centers, cells)])
         nonaffine = dy.unwrap_nonaffine(wrapped, cells, origins)
         lag = 100
         msd = np.mean(np.sum((nonaffine[lag:] - nonaffine[:-lag]) ** 2, axis=-1))
         self.assertAlmostEqual(msd / (3 * sigma ** 2 * lag), 1, delta=.08)
-        lab = md.unwrap_com_trajectory(wrapped + centers[:, None], cells, centers)
+        lab = periodic.unwrap_com_trajectory(wrapped + centers[:, None], cells, centers)
         lab_msd = np.mean(np.sum((lab[lag:] - lab[:-lag]) ** 2, axis=-1))
         self.assertGreater(lab_msd, 2 * msd)   # Taylor dispersion from the flow in the lab frame
 
     def test_analyze_run_stores_nonaffine_consistent_with_array_version(self):
-        from MartiniFuncs.trajectory_analysis import analyze_run
+        from MartiniFuncs.trajectory.analysis import analyze_run
         with tempfile.TemporaryDirectory() as tmp:
             shutil.copy(FIXTURES / "sheared_frames.lammpstrj", tmp)
             r = analyze_run(tmp, units="metal", timestep_ps=.0005)
@@ -189,8 +189,8 @@ class TopologySegmentTests(unittest.TestCase):
     def make_reacting_dump(self, tmp, event_frame=4, flicker_frame=2):
         """multiple_frames with one CPD moved onto a dienophile carbon from event_frame on,
         and for one isolated flicker frame (a transient contact that must be ignored)."""
-        from MartiniFuncs import graph
-        from MartiniFuncs.lammpsio import iter_lammps_frames, _iter_blocks
+        from MartiniFuncs.structure import graph
+        from MartiniFuncs.io.lammps import iter_lammps_frames, _iter_blocks
         source = FIXTURES / "multiple_frames.lammpstrj"
         frames = list(iter_lammps_frames(source, units="metal"))
         atoms = frames[0].atoms
@@ -239,7 +239,7 @@ class TopologySegmentTests(unittest.TestCase):
         return cpd, mal
 
     def test_segments_split_at_persistent_reaction_only(self):
-        from MartiniFuncs.trajectory_analysis import analyze_run, analyze_segments
+        from MartiniFuncs.trajectory.analysis import analyze_run, analyze_segments
         with tempfile.TemporaryDirectory() as tmp:
             cpd, mal = self.make_reacting_dump(tmp)
             out = analyze_segments(tmp, units="metal", timestep_ps=.0005, topology_persistence=3)
@@ -258,7 +258,7 @@ class TopologySegmentTests(unittest.TestCase):
             self.assertEqual(len(recorded["frames"]), 9)
 
     def test_source_range_matches_full_run(self):
-        from MartiniFuncs.trajectory_analysis import analyze_run
+        from MartiniFuncs.trajectory.analysis import analyze_run
         with tempfile.TemporaryDirectory() as tmp:
             shutil.copy(FIXTURES / "multiple_frames.lammpstrj", tmp)
             full = analyze_run(tmp, units="metal", timestep_ps=.0005)

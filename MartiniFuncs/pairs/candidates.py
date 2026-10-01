@@ -57,7 +57,7 @@ def candidate_mask(candidates, *, reactive_radius=None, criteria=None):
     screen_distance < reactive_radius (strict, as in the screen). With criteria
     (a PairCriteria, possibly all None): the geometry must have been measured,
     and each non-None threshold rejects values strictly above it (equality
-    passes), exactly as pair_selection._rejection_reasons.
+    passes), exactly as chemistry.cpd_n4t.selection._rejection_reasons.
     """
     metrics = np.asarray(candidates["metrics"])
     column = {name: metrics[:, i] for i, name in enumerate(METRICS)}

@@ -8,8 +8,9 @@ import numpy as np
 from numpy.testing import assert_array_equal
 from ase.calculators.calculator import Calculator, all_changes
 
-from MartiniFuncs.force_validation import compare_frame_forces, local_uma_calculator, validate_forces, MD_INFERENCE_SETTINGS
-from MartiniFuncs.lammpsio import read_lammps_frame
+from MartiniFuncs.workflows.force_validation import (compare_frame_forces, local_uma_calculator,
+                                                     validate_forces, MD_INFERENCE_SETTINGS)
+from MartiniFuncs.io.lammps import read_lammps_frame
 
 
 class HarmonicCalculator(Calculator):
@@ -37,7 +38,7 @@ class ForceValidationTests(unittest.TestCase):
             "9 H 1 2 3 -2 -4 -6\n2 H 2 3 4 -4 -6 -8\n"
         )
         self.frame = read_lammps_frame(self.path, units="metal")
-        metadata = patch("MartiniFuncs.force_validation.version", return_value="test")
+        metadata = patch("MartiniFuncs.workflows.force_validation.version", return_value="test")
         metadata.start()
         self.addCleanup(metadata.stop)
 
@@ -79,7 +80,7 @@ class ForceValidationTests(unittest.TestCase):
         checkpoint.write_bytes(b"test checkpoint placeholder")
         calc = HarmonicCalculator()
         calc.martini_inference_settings = MD_INFERENCE_SETTINGS.copy()
-        with patch("MartiniFuncs.force_validation.local_uma_calculator", return_value=calc) as loader:
+        with patch("MartiniFuncs.workflows.force_validation.local_uma_calculator", return_value=calc) as loader:
             input_file = Path(self.temp.name)/"in.continue"
             input_file.write_text("include unresolved_settings.in\n")
             result = validate_forces(self.path, checkpoint, units="metal", indices=[2, 0],
@@ -96,7 +97,7 @@ class ForceValidationTests(unittest.TestCase):
         checkpoint.write_bytes(b"placeholder")
         calc = HarmonicCalculator()
         calc.martini_inference_settings = MD_INFERENCE_SETTINGS.copy()
-        with patch("MartiniFuncs.force_validation.local_uma_calculator", return_value=calc) as loader:
+        with patch("MartiniFuncs.workflows.force_validation.local_uma_calculator", return_value=calc) as loader:
             result = validate_forces(self.path, checkpoint, units="metal", charge=0, spin=1, atol=.01)
             self.assertEqual(len(result["frames"]), 1)
             with self.assertRaises(IndexError):

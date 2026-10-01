@@ -9,7 +9,7 @@ import re
 import numpy as np
 from ase.data import atomic_numbers
 
-from .initial_configurations import _integer, _positive
+from MartiniFuncs.structure.packing import _integer, _positive
 
 
 def _filename(value, name):
@@ -67,7 +67,7 @@ def render_lammps_input(*, data_file, type_symbols, ensemble, steps,
     restart_every = _integer(restart_every, "restart_every")
     data_file = _filename(data_file, "data_file")
     prefix = _filename(output_prefix, "output_prefix")
-    from .lammpsio import type_symbol_list
+    from MartiniFuncs.io.lammps import type_symbol_list
     types = type_symbol_list(type_symbols)
     if not types or len(set(types)) != len(types) or any(s not in atomic_numbers or s == "X" for s in types):
         raise ValueError("type_symbols must be distinct chemical symbols in data-file type order")

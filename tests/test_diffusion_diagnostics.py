@@ -1,7 +1,7 @@
 """Known stochastic references and failure cases for scientific diagnostics."""
 import unittest
 import numpy as np
-from MartiniFuncs.diffusion_diagnostics import diffusion_diagnostics, scalar_stationarity
+from MartiniFuncs.statistics.diffusion import diffusion_diagnostics, scalar_stationarity
 
 
 class DiffusionDiagnosticsTests(unittest.TestCase):

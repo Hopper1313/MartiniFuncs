@@ -5,11 +5,10 @@ import numpy as np
 from numpy.testing import assert_allclose, assert_array_equal
 from ase import Atoms
 
-from MartiniFuncs.geometry import align_geometry
-from MartiniFuncs.geom_utils import align_atoms
-from MartiniFuncs.visualization import (
-    force_arrow_displacements, to_display_molecule, plot_cluster,
-)
+from MartiniFuncs.structure.alignment import align_geometry
+from MartiniFuncs.legacy.geom_utils import align_atoms
+from MartiniFuncs.chemistry.cpd_n4t.visualization import (force_arrow_displacements, to_display_molecule,
+                                                          plot_cluster)
 
 
 class GeometryVisualizationTests(unittest.TestCase):
@@ -78,7 +77,7 @@ class GeometryVisualizationTests(unittest.TestCase):
         self.assertEqual(len(molecule.atoms), len(self.atoms))
 
     def test_one_angstrom_and_reverse_conversion(self):
-        from MartiniFuncs.coreio import ase_atoms_to_molecule, molecule_to_ase_atoms
+        from MartiniFuncs.io.psience import ase_atoms_to_molecule, molecule_to_ase_atoms
         atoms = Atoms("H2", positions=[[0., 0., 0.], [1., 0., 0.]])
         for converter in (to_display_molecule, ase_atoms_to_molecule):
             molecule = converter(atoms)

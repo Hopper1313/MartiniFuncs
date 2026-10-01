@@ -8,14 +8,14 @@ from pathlib import Path
 
 import numpy as np
 
-from MartiniFuncs import md_statistics as md
+from MartiniFuncs.statistics import md
 
 
 def main():
     """Compare historical cached molecular diffusion windows.
 
     Within each hard-coded time window, MSD[k]=mean_{t,i}|R[t+k,i]-R[t,i]|^2;
-    fit MSD=a+6*D*lag using md_statistics. The 100 ps check recomputes the
+    fit MSD=a+6*D*lag using statistics.md. The 100 ps check recomputes the
     same all-origin mean directly. Nested-window fit spread is not uncertainty.
     """
     directory = Path(__file__).resolve().parents[1] / "reports/npt_statistics/diffusion"

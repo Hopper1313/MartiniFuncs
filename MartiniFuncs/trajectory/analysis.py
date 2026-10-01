@@ -8,9 +8,11 @@ import re
 import numpy as np
 from ase.data import covalent_radii
 
-from . import graph, md_statistics as md
-from . import pair_candidates as _candidates
-from .lammpsio import iter_lammps_frames, read_lammps_input_settings
+from MartiniFuncs.structure import graph
+from MartiniFuncs.statistics import md
+from MartiniFuncs.structure import periodic
+from MartiniFuncs.pairs import candidates as _candidates
+from MartiniFuncs.io.lammps import iter_lammps_frames, read_lammps_input_settings
 
 
 def resolve_run_files(directory, *, input_file=None, dump_file=None, data_file=None, require_input=True):
@@ -97,7 +99,7 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
     minimum-image bond vectors along the initial graph's spanning tree.
     With R_t the whole-molecule COM and H_t the cell, accumulate
     u_t=u_(t-1)+mic(R_t-R_(t-1), H_t), u_0 the COM wrapped about the first cell
-    center; mic is md_statistics.minimum_image, which for orthorhombic cells is
+    center; mic is structure.periodic.minimum_image, which for orthorhombic cells is
     d-L*floor(d/L+1/2). This TOR update uses every source frame before striding.
     Temperature is 2*K/(f*k_B) without COM subtraction; '3N-3' specifies f only.
 
@@ -109,8 +111,8 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
 
     reactive_radius (Angstrom, default 3.25) is the pair screen: CPD COM to
     dienophile C=C COM, minimum image. With compute_pairs, pair_candidates holds
-    every candidate inside it with its measured geometry, so pair_candidates.
-    select_pairs can later apply any smaller radius or other PairCriteria
+    every candidate inside it with its measured geometry, so
+    pairs.candidates.select_pairs can later apply any smaller radius or other PairCriteria
     without rereading the dump; cache with a generous radius to explore.
 
     When compute_pairs=True, pair_backend='cached' reuses initial molecule/site
@@ -139,7 +141,7 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
 
     source_range=(start, stop) analyzes only source frames [start, stop) (stop
     None = end of dump); the first frame of the range defines the molecules.
-    frame_offsets may supply frame_parallel.frame_offsets for the dump.
+    frame_offsets may supply trajectory.parallel.frame_offsets for the dump.
 
     on_topology_change=None (default) keeps the fixed-membership behavior.
     "record" or "truncate" checks every source frame for a change of molecular
@@ -209,7 +211,7 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
         raise ValueError("Timestep missing from input: supply timestep_ps from the original run/restart settings")
     mappings = list(settings["dump_elements"].values())
     mapping = type_symbols if type_symbols is not None else (mappings[0] if mappings and all(m == mappings[0] for m in mappings) else None)
-    from .frame_parallel import analysis_frames, frame_offsets as index_frames, prepare_frame
+    from MartiniFuncs.trajectory.parallel import analysis_frames, frame_offsets as index_frames, prepare_frame
     preparation = {}
     reader_options = dict(units="metal", input_datafile=files["data"], type_symbols=mapping)
     offsets = frame_offsets
@@ -234,7 +236,7 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
     max_step_fraction = 0.
     notices = ["Molecular membership fixed from first-frame bond graph; species grouped by formula.",
                "No potential energy or pressure computed from atomic forces; read thermo logs with "
-               "MartiniFuncs.thermo."]
+               "MartiniFuncs.io.thermo."]
     previous_cell = previous_origin = running_nonaffine = previous_axes = None
     topology_events, topology_event = [], None
     pending_change, pending_start, pending_count, recorded_change = (), None, 0, ()
@@ -253,7 +255,7 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
             frames_read += 1
             atoms = getattr(frame, 'atoms', None)
             if first is None and reaction_atom_counts is not None:
-                from .reaction_detection import find_possible_products, PossibleReactionError
+                from MartiniFuncs.trajectory.reactions import find_possible_products, PossibleReactionError
                 hits = find_possible_products(atoms, reactant_atom_counts=reaction_atom_counts,
                                               bond_scale=bond_scale)
                 if hits:
@@ -292,7 +294,7 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
                     if set(species) != {"C5H6", "C11H9NO2"}:
                         raise ValueError("Pair lifetime screening is currently specific to the CPD/dienophile mixture")
                     if pair_backend == "cached":
-                        from .trajectory_pairs import FixedPairTopology
+                        from MartiniFuncs.pairs.topology import FixedPairTopology
                         topology = FixedPairTopology.from_frame(atoms, bonded, components)
                         notices.append("Pair sites/topology cached from the first frame. The optional product-size "
                                        "screen does not track all new bonds. Use pair_backend='reference' "
@@ -329,17 +331,17 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
                 center = prepared.origin + cell.sum(axis=0)/2
                 # Canonical image inside the current cell (TOR convention), then
                 # destination-cell minimum-image steps; see md.unwrap_com_trajectory.
-                in_cell = md.wrap_about_center(com, cell, center)
+                in_cell = periodic.wrap_about_center(com, cell, center)
                 wrapped = in_cell - center
                 if previous_com is None:
                     running_com = wrapped.copy()
                     running_nonaffine = wrapped.copy()
                 else:
-                    step = md.minimum_image(in_cell-previous_com, cell)
+                    step = periodic.minimum_image(in_cell-previous_com, cell)
                     running_com += step
                     fraction = np.abs(np.linalg.solve(cell.T, step.reshape(-1, 3).T)).max()
                     max_step_fraction = max(max_step_fraction, float(fraction))
-                    running_nonaffine += step - md.affine_step(previous_com, step, previous_cell, cell,
+                    running_nonaffine += step - periodic.affine_step(previous_com, step, previous_cell, cell,
                                                                previous_origin, prepared.origin)
                 previous_com, previous_cell, previous_origin = in_cell, cell, prepared.origin
             axes = prepared.axes
@@ -414,7 +416,7 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
     elif max_step_fraction > .25:
         notices.append(f"Largest per-frame COM step is {max_step_fraction:.2f} of the cell; TOR unwrapping "
                        "is ambiguous at 0.5. Save frames more often.")
-    if not diffusion_reason and len(cells) and not all(md._is_diagonal(c) for c in cells):
+    if not diffusion_reason and len(cells) and not all(periodic._is_diagonal(c) for c in cells):
         notices.append("Non-orthorhombic cell: COM displacements are lab-frame and include any imposed shear flow.")
     range_end = topology_event["frame"] if topology_event is not None else range_start + frames_read
     return {"files":files,"settings":settings,"frames":rows,"frames_read":frames_read,
@@ -470,7 +472,7 @@ def analyze_segments(directory, *, topology_persistence=5, progress=None, **opti
     """
     if "source_range" in options or "on_topology_change" in options:
         raise ValueError("analyze_segments sets source_range and on_topology_change itself")
-    from .frame_parallel import frame_offsets
+    from MartiniFuncs.trajectory.parallel import frame_offsets
     files = resolve_run_files(directory, input_file=options.get("input_file"), dump_file=options.get("dump_file"),
                               data_file=options.get("data_file"), require_input=False)
     offsets = frame_offsets(files["dump"])

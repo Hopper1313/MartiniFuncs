@@ -4,7 +4,7 @@ From the environment containing MartiniFuncs, run this in PowerShell:
 
 ```powershell
 $run = "C:/Users/nicho/Documents/Martini collab/uma_data/smaller_system/continued_run"
-python -m MartiniFuncs.cli collect "$run" --output "./pair_exports" --units metal --timestep-ps 0.0005 --shell-radius 3.0 --workers 4 --batch-size 32
+python -m MartiniFuncs collect "$run" --output "./pair_exports" --units metal --timestep-ps 0.0005 --shell-radius 3.0 --workers 4 --batch-size 32
 ```
 
 `martini-postprocess collect` is the installed equivalent. Choose your physical
@@ -100,7 +100,7 @@ Identical completed requests are reused; conflicting or partial output is not
 overwritten. To change only shell radius, reuse the cache with a new directory:
 
 ```console
-python -m MartiniFuncs.cli extract pair_exports/cache --output shells_5A --shell-radius 5
+python -m MartiniFuncs extract pair_exports/cache --output shells_5A --shell-radius 5
 ```
 
 `--startframe`/`--endframe` use zero-based inclusive/exclusive source indices;

@@ -10,8 +10,10 @@ import time
 
 import numpy as np
 from ase.data import covalent_radii
-from MartiniFuncs import graph, md_statistics as md
-from MartiniFuncs.lammpsio import iter_lammps_frames, read_lammps_input_settings
+from MartiniFuncs.structure import graph
+from MartiniFuncs.statistics import md
+from MartiniFuncs.structure import periodic
+from MartiniFuncs.io.lammps import iter_lammps_frames, read_lammps_input_settings
 
 
 def main():
@@ -20,8 +22,8 @@ def main():
     For each fixed molecule R=sum(m_i*r_i)/sum(m_i), after bondwise
     minimum-image reconstruction d <- d-L*floor(d/L+1/2). Center/wrap R,
     then delegate temporal TOR unwrapping, MSD[k]=mean(|R[t+k]-R[t]|^2),
-    and the free-intercept fit D=slope/6 to md_statistics. Units are
-    Angstrom, ps, and Angstrom^2/ps. For new runs use trajectory_analysis.
+    and the free-intercept fit D=slope/6 to statistics.md. Units are
+    Angstrom, ps, and Angstrom^2/ps. For new runs use trajectory.analysis.
     """
     root = Path(__file__).resolve().parents[1]
     fixtures = root / "tests/lammpsio_tests"
@@ -95,7 +97,7 @@ def main():
     if np.max(np.ptp(centers, axis=0)) > 1e-7:
         raise ValueError("Box center moved; choose an explicit reference-frame convention")
     times, lengths, species = np.asarray(times), np.asarray(lengths), np.asarray(species)
-    unwrapped = md.unwrap_orthorhombic_com(wrapped, lengths)
+    unwrapped = periodic.unwrap_orthorhombic_com(wrapped, lengths)
     step_fraction = np.max(abs(np.diff(unwrapped, axis=0))/lengths[1:,None,:])
     np.savez_compressed(output / "com_trajectory.npz", time_ps=times, com_angstrom=unwrapped,
                         wrapped_com_angstrom=np.asarray(wrapped),

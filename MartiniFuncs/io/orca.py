@@ -2,7 +2,7 @@ from glob import glob
 
 import numpy as np
 
-from .coreio import initialize_constraints_boolean, ase_atoms_to_molecule, coords_str_to_ase
+from MartiniFuncs.io.psience import initialize_constraints_boolean, ase_atoms_to_molecule, coords_str_to_ase
 import McUtils.Coordinerds as coordops
 from McUtils import Numputils as nput
 from Psience.Molecools import Molecule

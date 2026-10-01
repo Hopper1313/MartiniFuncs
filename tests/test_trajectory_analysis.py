@@ -12,8 +12,9 @@ matplotlib.use("Agg")
 import numpy as np
 from numpy.testing import assert_allclose
 
-from MartiniFuncs import md_statistics as md
-from MartiniFuncs.trajectory_analysis import analyze_run, molecular_window_statistics, resolve_run_files, select_frame_window
+from MartiniFuncs.statistics import md
+from MartiniFuncs.trajectory.analysis import (analyze_run, molecular_window_statistics, resolve_run_files,
+                                              select_frame_window)
 
 
 class TrajectoryAnalysisTests(unittest.TestCase):

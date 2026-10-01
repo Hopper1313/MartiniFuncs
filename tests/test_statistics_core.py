@@ -8,10 +8,12 @@ import numpy as np
 import pandas as pd
 from numpy.testing import assert_allclose
 
-from MartiniFuncs import md_statistics as md
-from MartiniFuncs.stability import (_frame_distances, get_molecular_com_rdf, get_series_statistics,
-                                    scalar_autocorrelation)
-from MartiniFuncs.thermo import attach_thermo
+from MartiniFuncs.pairs import lifetimes
+from MartiniFuncs.statistics import md
+from MartiniFuncs.structure import periodic
+from MartiniFuncs.statistics.stability import (_frame_distances, get_molecular_com_rdf, get_series_statistics,
+                                               scalar_autocorrelation)
+from MartiniFuncs.io.thermo import attach_thermo
 
 FIXTURES = Path(__file__).parent / "lammpsio_tests"
 
@@ -69,7 +71,7 @@ class CellGeometryTests(unittest.TestCase):
         rng = np.random.default_rng(1)
         d = rng.uniform(-30, 30, (50, 3))
         L = np.array([10., 12., 9.])
-        assert_allclose(md.minimum_image(d, np.diag(L)), d - L*np.floor(d/L + .5))
+        assert_allclose(periodic.minimum_image(d, np.diag(L)), d - L*np.floor(d/L + .5))
 
     def test_triclinic_trajectory_crossing_every_face_is_recovered(self):
         rng = np.random.default_rng(2)
@@ -77,10 +79,10 @@ class CellGeometryTests(unittest.TestCase):
         cells = np.array([self.cell + [[0, 0, 0], [0.01*t, 0, 0], [0, 0, 0]] for t in range(400)])  # growing tilt
         # As in LAMMPS (fix deform remap v): step inside the current cell, then
         # wrap by that cell's lattice vectors when a face is crossed.
-        wrapped = [md.minimum_image(rng.uniform(-5, 5, (6, 3)), cells[0])]
+        wrapped = [periodic.minimum_image(rng.uniform(-5, 5, (6, 3)), cells[0])]
         for step, cell in zip(steps[1:], cells[1:]):
-            wrapped.append(md.minimum_image(wrapped[-1] + step, cell))
-        unwrapped = md.unwrap_com_trajectory(np.asarray(wrapped), cells)
+            wrapped.append(periodic.minimum_image(wrapped[-1] + step, cell))
+        unwrapped = periodic.unwrap_com_trajectory(np.asarray(wrapped), cells)
         assert_allclose(unwrapped[1:] - unwrapped[:-1], steps[1:], atol=1e-9)
         self.assertGreater(np.abs(unwrapped - unwrapped[0]).max(), 10)   # really crossed boundaries
 
@@ -88,14 +90,14 @@ class CellGeometryTests(unittest.TestCase):
         wrapped = np.zeros((3, 1, 3))
         wrapped[:, 0, 0] = [4.8, -4.8, 5.7]
         lengths = np.array([[10., 10, 10], [10., 10, 10], [12., 12, 12]])
-        assert_allclose(md.unwrap_orthorhombic_com(wrapped, lengths)[:, 0, 0], [4.8, 5.2, 3.7])
+        assert_allclose(periodic.unwrap_orthorhombic_com(wrapped, lengths)[:, 0, 0], [4.8, 5.2, 3.7])
 
     def test_triclinic_rdf_distances_are_true_minimum_images(self):
         rng = np.random.default_rng(4)
         delta = rng.uniform(-25, 25, (200, 3))
         shifts = np.array([[i, j, k] for i in range(-3, 4) for j in range(-3, 4) for k in range(-3, 4)]) @ self.cell
         brute = np.linalg.norm(delta[:, None, :] + shifts[None], axis=-1).min(axis=1)
-        limit = md.cell_plane_spacings(self.cell).min() / 2
+        limit = periodic.cell_plane_spacings(self.cell).min() / 2
         found = _frame_distances(delta, self.cell)
         assert_allclose(found[brute < limit], brute[brute < limit])
         self.assertTrue(np.all(found >= brute - 1e-12))
@@ -117,8 +119,8 @@ class CellGeometryTests(unittest.TestCase):
 
 class AnalysisFixesTests(unittest.TestCase):
     def test_sheared_cell_com_tracking_matches_image_flags(self):
-        from MartiniFuncs.lammpsio import iter_lammps_frames
-        from MartiniFuncs.trajectory_analysis import analyze_run
+        from MartiniFuncs.io.lammps import iter_lammps_frames
+        from MartiniFuncs.trajectory.analysis import analyze_run
         with tempfile.TemporaryDirectory() as tmp:
             shutil.copy(FIXTURES / "sheared_frames.lammpstrj", tmp)
             result = analyze_run(tmp, units="metal", timestep_ps=.0005)
@@ -153,11 +155,11 @@ class AnalysisFixesTests(unittest.TestCase):
 
     def test_pair_lifetime_censoring_uses_gap_and_rejects_bool(self):
         pair = ([1], [2])
-        episodes = md.get_pair_lifetime([[], [pair], [pair], [], [], []], np.arange(6.), max_gap_frames=1)
+        episodes = lifetimes.get_pair_lifetime([[], [pair], [pair], [], [], []], np.arange(6.), max_gap_frames=1)
         self.assertTrue(episodes[0].left_censored)   # could bridge to an unseen detection before frame 0
-        self.assertFalse(md.get_pair_lifetime([[], [pair], [], []], np.arange(4.))[0].left_censored)
+        self.assertFalse(lifetimes.get_pair_lifetime([[], [pair], [], []], np.arange(4.))[0].left_censored)
         with self.assertRaisesRegex(ValueError, "nonnegative integer"):
-            md.get_pair_lifetime([[pair]], [0.], max_gap_frames=True)
+            lifetimes.get_pair_lifetime([[pair]], [0.], max_gap_frames=True)
 
     def test_thermo_join_prefixes_colliding_columns(self):
         frames = pd.DataFrame(dict(timestep=[0, 10], time_ps=[0., .005], temperature_K=[399., 401.]))

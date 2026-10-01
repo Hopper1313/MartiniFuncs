@@ -675,3 +675,41 @@ analysis. Exploring other radii or thresholds required re-running the whole 300k
 
 On the 400-frame dense fixture, selecting 3.25 Angstrom from a 5 Angstrom cache reproduced the fresh
 analysis exactly. Default outputs are unchanged apart from the added files and fields.
+
+## Package reorganization into subpackages (2026-10-01)
+
+**Why:** the 25 flat modules mixed general trajectory machinery with the CPD + N4T chemistry, and
+`md_statistics`/`geom_utils` each held several unrelated topics. Subpackages make the chemistry
+replaceable (a general pair model follows in the next step) and make modules easier to find.
+
+**Changed (code motion only; no behaviour change):**
+
+| old module | new location |
+|---|---|
+| `lammpsio`, `lammps_inputs`, `thermo`, `orcaio`, `coreio` | `io.lammps`, `io.lammps_inputs`, `io.thermo`, `io.orca`, `io.psience` |
+| `graph`, `geometry`, `initial_configurations` | `structure.graph`, `structure.alignment`, `structure.packing` |
+| `trajectory_analysis`, `frame_parallel`, `reaction_detection` | `trajectory.analysis`, `trajectory.parallel`, `trajectory.reactions` |
+| `dynamics`, `diffusion_diagnostics`, `stability` | `statistics.dynamics`, `statistics.diffusion`, `statistics.stability` |
+| `pair_candidates`, `trajectory_pairs` | `pairs.candidates`, `pairs.topology` |
+| `pair_selection`, `visualization` | `chemistry.cpd_n4t.selection`, `chemistry.cpd_n4t.visualization` |
+| `postprocessing`, `cli`, `progress`, `force_validation` | `workflows.postprocess`, `workflows.cli`, `workflows.progress`, `workflows.force_validation` |
+| `md_statistics` | split: periodic-cell helpers (`minimum_image`, `cell_plane_spacings`, `affine_step`, `wrap_about_center`, `unwrap_com_trajectory`, `unwrap_orthorhombic_com`) to `structure.periodic`; `pair_identity`, `PairLifetime`, `get_pair_lifetime` to `pairs.lifetimes`; `get_pair_geometry[_timeseries]` to `chemistry.cpd_n4t.pairs`; everything else to `statistics.md` |
+| `geom_utils` | split: ID/mass helpers to `structure.molecules`; `_pairs_from_centers` to `pairs.screening`; pair/shell clusters, source vectors and `pair_data_to_extxyz` to `pairs.structures`; the CPD/N4T screen (`get_all_prereactive_pairs`, `get_mal_CC`, ...) to `chemistry.cpd_n4t.pairs`; unused helpers (`get_diels_alder_reaction_indices_from_pair`, `pair_data_to_xyz`, `align_atoms`, `get_pairs_distance_distribution`) to `legacy.geom_utils` |
+
+- No compatibility shims: every import in the package, tests, tools, example scripts and notebooks,
+  and every reference in the docs (except this changelog's history), now uses the new paths.
+- `python -m MartiniFuncs` runs the CLI (new `MartiniFuncs/__main__.py`); the console script is
+  `MartiniFuncs.workflows.cli:main` (reinstall with `pip install -e .` to re-register it).
+- The top-level `MartiniFuncs` lazily re-exports common entry points (`analyze_run`, `select_pairs`,
+  `PairCriteria`, `read_lammps_frame`, `cache_analysis`, ...).
+- The only output change: the analysis notice now names `MartiniFuncs.io.thermo`.
+- Existing caches remain valid (they store no module paths).
+
+**Verified:**
+- pyflakes: no new findings;
+- all 174 tests pass (1 skipped), as before;
+- the full capture against the pre-reorganization baseline: 11 differences, all of them the
+  thermo-notice text;
+- the CLI: serial and 4-worker outputs identical (116 files);
+- notebooks 02 and 04 run end to end;
+- an old-vs-new benchmark: identical timings.

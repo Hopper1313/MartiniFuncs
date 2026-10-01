@@ -8,9 +8,9 @@ from time import perf_counter
 
 import numpy as np
 
-from MartiniFuncs.pair_selection import PairCriteria
-from MartiniFuncs.trajectory_analysis import analyze_run
-from MartiniFuncs.md_statistics import get_pair_lifetime
+from MartiniFuncs.chemistry.cpd_n4t.selection import PairCriteria
+from MartiniFuncs.trajectory.analysis import analyze_run
+from MartiniFuncs.pairs.lifetimes import get_pair_lifetime
 
 
 def main():

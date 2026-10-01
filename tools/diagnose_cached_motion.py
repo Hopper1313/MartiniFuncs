@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from MartiniFuncs.thermo import discover_thermo_file, read_lammps_thermo
+from MartiniFuncs.io.thermo import discover_thermo_file, read_lammps_thermo
 
 
 def main():

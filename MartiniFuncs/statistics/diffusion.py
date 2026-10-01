@@ -7,8 +7,8 @@ No uncertainty is inferred by treating overlapping MSD lags as independent data.
 """
 import numpy as np
 
-from .md_statistics import lag_msd, validate_times
-from .stability import scalar_autocorrelation, statistical_inefficiency
+from MartiniFuncs.statistics.md import lag_msd, validate_times
+from MartiniFuncs.statistics.stability import scalar_autocorrelation, statistical_inefficiency
 
 
 def _times(times, count):
@@ -55,7 +55,7 @@ def diffusion_diagnostics(positions, times_ps, *, fit_intervals_ps, block_frames
     the incomplete tail for block statistics only. Each block supplies its own D.
     Report their mean and percentile bootstrap 95% interval (resample whole blocks,
     including all molecules together). D is reported in Angstrom^2/ps and in
-    cm^2/s (x1e-4), the same units as md_statistics.get_molecular_diffusion_coefficient.
+    cm^2/s (x1e-4), the same units as statistics.md.get_molecular_diffusion_coefficient.
     No displacement crosses a block boundary. Block span must be >=5*maximum lag.
 
     Screens require min_blocks, positive CI, CI half-width/mean<=max_relative_ci,

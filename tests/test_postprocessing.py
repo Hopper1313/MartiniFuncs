@@ -12,9 +12,9 @@ from ase.io import read
 import numpy as np
 from numpy.testing import assert_allclose
 
-from MartiniFuncs.cli import main, build_parser
-from MartiniFuncs.lammpsio import read_lammps_frame
-from MartiniFuncs.postprocessing import cache_analysis, load_analysis_cache, write_report, export_pairs
+from MartiniFuncs.workflows.cli import main, build_parser
+from MartiniFuncs.io.lammps import read_lammps_frame
+from MartiniFuncs.workflows.postprocess import cache_analysis, load_analysis_cache, write_report, export_pairs
 
 
 class PostprocessingTests(unittest.TestCase):
@@ -22,7 +22,7 @@ class PostprocessingTests(unittest.TestCase):
         args = ['run', self.run, '--output', self.output, '--units', 'metal',
                 '--timestep-ps', '.0005', '--shell-radius', '2', '--no-lag-statistics', '--quiet']
         # All np.mean lag reductions must be skipped, not merely hidden in output.
-        with patch('MartiniFuncs.trajectory_analysis.np.mean', side_effect=AssertionError('lag reduction called')):
+        with patch('MartiniFuncs.trajectory.analysis.np.mean', side_effect=AssertionError('lag reduction called')):
             status, errors = self.call(args)
         self.assertEqual(status, 0, errors)
         report = self.output/'reports/default'
@@ -47,7 +47,7 @@ class PostprocessingTests(unittest.TestCase):
 
     def test_parallel_full_frames_and_shells_match_serial(self):
         """Worker count/chunk boundaries must not change any scientific output."""
-        from MartiniFuncs.trajectory_analysis import analyze_run
+        from MartiniFuncs.trajectory.analysis import analyze_run
         options = dict(units='metal', timestep_ps=.0005, compute_pairs=True,
                        reaction_atom_counts=(11, 23), degrees_of_freedom='3N-3')
         serial = analyze_run(self.run, **options)
@@ -115,7 +115,7 @@ class PostprocessingTests(unittest.TestCase):
         self.assertTrue((self.output / "reports/default/diffusion.csv").exists())
         self.assertTrue((self.output / "reports/default/scalar_stability.json").exists())
         # Repeating an identical run must not analyze or export the dump again.
-        with patch("MartiniFuncs.postprocessing.analyze_run", side_effect=AssertionError("cache not reused")):
+        with patch("MartiniFuncs.workflows.postprocess.analyze_run", side_effect=AssertionError("cache not reused")):
             self.assertEqual(self.call(args)[0], 0)
         # Report generation still works after the original trajectory is removed.
         self.dump.unlink()
@@ -222,7 +222,7 @@ class PostprocessingTests(unittest.TestCase):
         coverage = pd.read_csv(self.output/"pairs/frames.csv")
         self.assertEqual(coverage.frame.tolist(), list(range(9)))
         self.assertEqual(coverage.pair_count.sum(), len(pairs))
-        with patch("MartiniFuncs.postprocessing.analyze_run", side_effect=AssertionError("must reuse")):
+        with patch("MartiniFuncs.workflows.postprocess.analyze_run", side_effect=AssertionError("must reuse")):
             self.assertEqual(self.call(args)[0], 0)
 
     def test_collect_zero_pairs_still_records_every_frame(self):

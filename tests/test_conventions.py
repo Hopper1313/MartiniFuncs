@@ -6,10 +6,16 @@ from pathlib import Path
 
 import numpy as np
 
-from MartiniFuncs import geom_utils, graph, md_statistics, pair_selection, reaction_detection, trajectory_analysis
-from MartiniFuncs.initial_configurations import write_initial_data
-from MartiniFuncs.lammps_inputs import render_lammps_input
-from MartiniFuncs.lammpsio import normalize_type_symbols, read_lammps_frame, type_symbol_list
+from MartiniFuncs.structure import graph
+from MartiniFuncs.chemistry.cpd_n4t import selection
+from MartiniFuncs.trajectory import reactions
+from MartiniFuncs.trajectory import analysis
+from MartiniFuncs.chemistry.cpd_n4t import pairs as cpd_pairs
+from MartiniFuncs.legacy import geom_utils as legacy_geom
+from MartiniFuncs.pairs import structures
+from MartiniFuncs.structure.packing import write_initial_data
+from MartiniFuncs.io.lammps_inputs import render_lammps_input
+from MartiniFuncs.io.lammps import normalize_type_symbols, read_lammps_frame, type_symbol_list
 
 
 class TypeSymbolTests(unittest.TestCase):
@@ -42,7 +48,7 @@ class TypeSymbolTests(unittest.TestCase):
         self.assertIn("dump_modify trajectory element C H sort id", listed)
         self.assertEqual(render_lammps_input(type_symbols={1: "C", 2: "H"}, **options), listed)
         from ase.build import molecule
-        from MartiniFuncs.initial_configurations import MoleculeSpec, pack_molecules
+        from MartiniFuncs.structure.packing import MoleculeSpec, pack_molecules
         atoms = pack_molecules([MoleculeSpec("water", molecule("H2O"), 5)], [12]*3, seed=4)
         with tempfile.TemporaryDirectory() as tmp:
             a = write_initial_data(atoms, Path(tmp) / "a.data", type_symbols=["O", "H"])
@@ -55,12 +61,12 @@ class TypeSymbolTests(unittest.TestCase):
 class BondScaleDefaultTests(unittest.TestCase):
     def test_every_public_default_is_one_point_three(self):
         functions = [graph.build_bond_graph, graph.repair_fragmented_molecules,
-                     geom_utils.get_diels_alder_reaction_indices_from_pair, geom_utils.get_all_prereactive_pairs,
-                     geom_utils.get_pair_shell_clusters, geom_utils.get_pair_positions_and_forces,
-                     geom_utils.get_pairs_distance_distribution, md_statistics.get_pair_geometry,
-                     pair_selection.measure_pair_geometry, pair_selection.assess_prereactive_pairs,
-                     reaction_detection.find_possible_products, reaction_detection.scan_possible_products,
-                     trajectory_analysis.analyze_run]
+                     legacy_geom.get_diels_alder_reaction_indices_from_pair, cpd_pairs.get_all_prereactive_pairs,
+                     structures.get_pair_shell_clusters, structures.get_pair_positions_and_forces,
+                     legacy_geom.get_pairs_distance_distribution, cpd_pairs.get_pair_geometry,
+                     selection.measure_pair_geometry, selection.assess_prereactive_pairs,
+                     reactions.find_possible_products, reactions.scan_possible_products,
+                     analysis.analyze_run]
         for function in functions:
             parameters = inspect.signature(function).parameters
             defaults = {name: p.default for name, p in parameters.items() if name in ("scale", "bond_scale")}

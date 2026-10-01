@@ -18,9 +18,12 @@ import platform
 
 import numpy as np
 
-from . import md_statistics as md
-from .pair_selection import PairCriteria
-from .trajectory_analysis import analyze_run, molecular_window_statistics, resolve_run_files, select_frame_window
+from MartiniFuncs.pairs import lifetimes
+from MartiniFuncs.statistics import md
+from MartiniFuncs.structure import periodic
+from MartiniFuncs.chemistry.cpd_n4t.selection import PairCriteria
+from MartiniFuncs.trajectory.analysis import (analyze_run, molecular_window_statistics, resolve_run_files,
+                                              select_frame_window)
 
 
 ARRAY_KEYS = ("species", "com_angstrom", "wrapped_com_angstrom", "box_lengths_angstrom", "cell_angstrom",
@@ -304,7 +307,7 @@ def cached_frame_offsets(cache_dir, result):
     manifest; callers already refuse to export when the dump has changed.
     The file is written atomically, so a partial write is never used.
     """
-    from .frame_parallel import frame_offsets
+    from MartiniFuncs.trajectory.parallel import frame_offsets
     path = Path(cache_dir) / "frame_offsets.npy"
     if path.is_file():
         return np.load(path, allow_pickle=False)
@@ -337,7 +340,7 @@ def write_report(cache_dir, output_dir, *, startframe=0, endframe=None,
     reactive_radius (Angstrom, at most the cached radius) and pair_criteria
     (PairCriteria) select pairs from the cached candidates for the lifetimes,
     the per-frame selected_pairs column and pair_metric_histograms.csv; see
-    pair_candidates.select_pairs. Neither means the analysis's own pairs.
+    pairs.candidates.select_pairs. Neither means the analysis's own pairs.
 
     startframe is inclusive and endframe exclusive, both zero-based source dump
     indices (not retained-row indices or timesteps). Defaults select the full
@@ -372,7 +375,7 @@ def write_report(cache_dir, output_dir, *, startframe=0, endframe=None,
     config.update(lag_statistics=requested, pair_lifetimes=pair_lifetimes, frame_summary=frame_summary,
                   reactive_radius=reactive_radius,
                   pair_criteria=asdict(pair_criteria) if pair_criteria is not None else None)
-    from .pair_candidates import candidate_mask, metric_histograms, select_pairs
+    from MartiniFuncs.pairs.candidates import candidate_mask, metric_histograms, select_pairs
     selection = reactive_radius is not None or pair_criteria is not None
     selected_pairs = (select_pairs(result, reactive_radius=reactive_radius, criteria=pair_criteria)[0]
                       if result["pairs_by_frame"] is not None else None)
@@ -439,20 +442,20 @@ def write_report(cache_dir, output_dir, *, startframe=0, endframe=None,
         if progress:
             progress(f'Computing pair lifetimes over {len(rows)} frames')
         pairs = [p for p, keep in zip(selected_pairs, window["frame_mask"]) if keep]
-        events = md.get_pair_lifetime(pairs, times, max_gap_frames=max_gap_frames, progress=progress)
+        events = lifetimes.get_pair_lifetime(pairs, times, max_gap_frames=max_gap_frames, progress=progress)
         # first_frame/last_frame count retained rows inside this window; the
         # source columns use the dump-frame numbering of every other output.
         source_frames = [r["frame"] for r in rows]
         _csv(output / "pair_lifetimes.csv",
              [dict(asdict(e), first_source_frame=source_frames[e.first_frame],
                    last_source_frame=source_frames[e.last_frame]) for e in events],
-             fields=list(md.PairLifetime.__dataclass_fields__) + ["first_source_frame", "last_source_frame"])
+             fields=list(lifetimes.PairLifetime.__dataclass_fields__) + ["first_source_frame", "last_source_frame"])
         if progress:
             progress(f'Wrote {len(events)} pair lifetime records')
     elif pair_lifetimes and progress:
         progress('Pair lifetimes unavailable: cache has no pair analysis')
     if stability:
-        from .stability import get_series_statistics
+        from MartiniFuncs.statistics.stability import get_series_statistics
         if len(times) < 3:
             raise ValueError('Scalar stability requires at least three frames')
         summary = {}
@@ -464,11 +467,11 @@ def write_report(cache_dir, output_dir, *, startframe=0, endframe=None,
         _json(output / "scalar_stability.json", summary)
     if rdf_bins is not None:
         from itertools import combinations_with_replacement
-        from .stability import get_molecular_com_rdf
+        from MartiniFuncs.statistics.stability import get_molecular_com_rdf
         cells = result.get("cell_angstrom")
         box = np.asarray(cells if cells is not None else result["box_lengths_angstrom"])[window["frame_mask"]]
         positions = result["wrapped_com_angstrom"][window["frame_mask"]]
-        spacing = (min(md.cell_plane_spacings(c).min() for c in box) if box.ndim == 3 else box.min())
+        spacing = (min(periodic.cell_plane_spacings(c).min() for c in box) if box.ndim == 3 else box.min())
         edges = np.linspace(0, .999*spacing/2, rdf_bins+1)
         rdf_files = []
         for a, b in combinations_with_replacement(sorted(set(result['species'])), 2):
@@ -529,7 +532,7 @@ def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endf
     after a reaction) are exported with membership_changed=true in index.jsonl
     and counted in the manifest; they never abort the export.
     reactive_radius / pair_criteria export only the pairs selected from the
-    cached candidates (pair_candidates.select_pairs); default: cached pairs.
+    cached candidates (pairs.candidates.select_pairs); default: cached pairs.
     Only selected frames are parsed (each from its own byte range), using
     frame offsets saved in the cache after the first export.
     preloaded=(result, manifest) skips reading the cache again.
@@ -550,7 +553,7 @@ def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endf
     if reactive_radius is not None or pair_criteria is not None:
         config.update(reactive_radius=reactive_radius,
                       pair_criteria=asdict(pair_criteria) if pair_criteria is not None else None)
-    from .pair_candidates import select_pairs
+    from MartiniFuncs.pairs.candidates import select_pairs
     chosen_pairs, chosen_shifts = select_pairs(result, reactive_radius=reactive_radius, criteria=pair_criteria)
     output, create = _begin_product(output_dir, config)
     if not create:
@@ -569,7 +572,7 @@ def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endf
         from contextlib import ExitStack
         with ExitStack() as stack:
             cluster_stream = stack.enter_context((output / "clusters.extxyz").open("w", encoding="utf-8")) if shell_radius is not None else None
-            from .frame_parallel import ordered_tasks
+            from MartiniFuncs.trajectory.parallel import ordered_tasks
             if selected:
                 if progress:
                     progress("Loading (or indexing once) source frame byte offsets for export...")
@@ -623,11 +626,11 @@ def _export_frame_chunk(task):
     all atom/structure IDs and file ordering are independent of worker scheduling.
     Forces are copied by source atom ID; no model is evaluated.
     """
-    from . import graph
-    from .geom_utils import (get_pair_positions_and_forces, get_pair_shell_clusters,
-                             get_cluster_positions_and_forces, pair_data_to_extxyz)
-    from .lammpsio import iter_lammps_frames
-    from .pair_selection import PairCriteria, assess_prereactive_pairs, site_cache
+    from MartiniFuncs.structure import graph
+    from MartiniFuncs.pairs.structures import (get_pair_positions_and_forces, get_pair_shell_clusters,
+                                               get_cluster_positions_and_forces, pair_data_to_extxyz)
+    from MartiniFuncs.io.lammps import iter_lammps_frames
+    from MartiniFuncs.chemistry.cpd_n4t.selection import PairCriteria, assess_prereactive_pairs, site_cache
     path, reader_options, ranges, selected, shell_radius, scale, count = task
     pair_stream, index_stream = StringIO(), StringIO()
     cluster_stream = StringIO() if shell_radius is not None else None

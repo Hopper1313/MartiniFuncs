@@ -7,12 +7,11 @@ import numpy as np
 from numpy.testing import assert_allclose, assert_array_equal
 from ase.io import read
 
-from MartiniFuncs.lammpsio import (
-    iter_lammps_frames, read_lammps_frame, my_readlammps,
-    split_lammpstrj, make_ase_obj_and_fix_atomtypes,
-    read_lammps_input_settings, read_input_datafile,
-)
-from MartiniFuncs import geom_utils as geom
+from MartiniFuncs.io.lammps import (iter_lammps_frames, read_lammps_frame, my_readlammps, split_lammpstrj,
+                                    make_ase_obj_and_fix_atomtypes, read_lammps_input_settings,
+                                    read_input_datafile)
+from MartiniFuncs.chemistry.cpd_n4t import pairs as cpd_pairs
+from MartiniFuncs.pairs import structures
 
 
 FIXTURES = Path(__file__).parent / "lammpsio_tests"
@@ -68,7 +67,7 @@ class LammpsIOTests(unittest.TestCase):
         self.assertEqual(my_readlammps(self.path, index=0)[0], 10)
         assert_allclose(last.atoms.arrays["lammps_forces"][1], [8, 9, 10])
         with self.assertRaisesRegex(ValueError, "different timesteps"):
-            geom._source_vectors(first.atoms, my_readlammps(self.path), [1, 8])
+            structures._source_vectors(first.atoms, my_readlammps(self.path), [1, 8])
         for index in (2, -3):
             with self.assertRaises(IndexError):
                 read_lammps_frame(self.path, units="metal", index=index)
@@ -186,12 +185,12 @@ class LammpsIOTests(unittest.TestCase):
         frame = read_lammps_frame(path, units="metal", input_datafile=FIXTURES / "frame_0.data")
         wrapped = make_ase_obj_and_fix_atomtypes(path, FIXTURES / "frame_0.data", units="metal")
         assert_allclose(frame.atoms.arrays["lammps_forces"], wrapped.arrays["lammps_forces"])
-        pairs, shifts = geom.get_all_prereactive_pairs(frame.atoms, scale=1.3)
+        pairs, shifts = cpd_pairs.get_all_prereactive_pairs(frame.atoms, scale=1.3)
         self.assertEqual(len(pairs), 2)
-        clusters = geom.get_pair_shell_clusters(frame.atoms, pairs, shifts, scale=1.3)
-        records = geom.get_cluster_positions_and_forces(frame.atoms, frame, clusters)
+        clusters = structures.get_pair_shell_clusters(frame.atoms, pairs, shifts, scale=1.3)
+        records = structures.get_cluster_positions_and_forces(frame.atoms, frame, clusters)
         stream = io.StringIO()
-        geom.pair_data_to_extxyz(records, stream)
+        structures.pair_data_to_extxyz(records, stream)
         stream.seek(0)
         images = read(stream, format="extxyz", index=":")
         for i, image in enumerate(images):

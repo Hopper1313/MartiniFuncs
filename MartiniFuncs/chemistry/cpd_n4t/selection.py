@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, fields
 import numpy as np
 
-from . import graph as mfg
+from MartiniFuncs.structure import graph as mfg
 
 
 @dataclass(frozen=True)

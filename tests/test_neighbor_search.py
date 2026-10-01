@@ -6,9 +6,9 @@ import numpy as np
 from ase import Atoms
 from ase.neighborlist import neighbor_list
 
-from MartiniFuncs import graph
-from MartiniFuncs.lammpsio import read_lammps_frame
-from MartiniFuncs.reaction_detection import find_possible_products
+from MartiniFuncs.structure import graph
+from MartiniFuncs.io.lammps import read_lammps_frame
+from MartiniFuncs.trajectory.reactions import find_possible_products
 
 FIXTURES = Path(__file__).parent / "lammpsio_tests"
 

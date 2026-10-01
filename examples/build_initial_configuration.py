@@ -9,10 +9,10 @@ from pathlib import Path
 from ase import Atoms
 from ase.io import write
 
-from MartiniFuncs import graph
-from MartiniFuncs.initial_configurations import MoleculeSpec, pack_molecules, write_initial_data
-from MartiniFuncs.lammps_inputs import render_lammps_input
-from MartiniFuncs.lammpsio import read_lammps_frame
+from MartiniFuncs.structure import graph
+from MartiniFuncs.structure.packing import MoleculeSpec, pack_molecules, write_initial_data
+from MartiniFuncs.io.lammps_inputs import render_lammps_input
+from MartiniFuncs.io.lammps import read_lammps_frame
 
 
 def main():

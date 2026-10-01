@@ -11,22 +11,23 @@ import numpy as np
 from numpy.testing import assert_allclose
 from ase import Atoms
 
-from MartiniFuncs import coreio, orcaio
-from MartiniFuncs import md_statistics as md
-from MartiniFuncs.trajectory_analysis import analyze_run, molecular_window_statistics
+from MartiniFuncs.io import psience
+from MartiniFuncs.io import orca
+from MartiniFuncs.statistics import md
+from MartiniFuncs.trajectory.analysis import analyze_run, molecular_window_statistics
 
 
 class ConsistencyTests(unittest.TestCase):
     def test_fragment_intersection_includes_atom_zero(self):
         molecule = SimpleNamespace(fragment_indices=[[0], [1, 2]])
-        self.assertTrue(coreio.check_if_internal_part_of_multiple_fragments([0, 1], molecule))
-        self.assertFalse(coreio.check_if_internal_part_of_multiple_fragments([1, 2], molecule))
+        self.assertTrue(psience.check_if_internal_part_of_multiple_fragments([0, 1], molecule))
+        self.assertFalse(psience.check_if_internal_part_of_multiple_fragments([1, 2], molecule))
 
     def test_mass_lookup_does_not_return_dummy_element(self):
-        self.assertEqual(coreio.get_symbol_from_mass(1.0), "H")
+        self.assertEqual(psience.get_symbol_from_mass(1.0), "H")
         for mass in (0, -1, np.nan, np.inf):
             with self.assertRaises(ValueError):
-                coreio.get_symbol_from_mass(mass)
+                psience.get_symbol_from_mass(mass)
 
     def test_displacement_accepts_one_shot_id_iterables(self):
         atoms = Atoms("HH", positions=[[0, 0, 0], [.7, 0, 0]])
@@ -38,15 +39,15 @@ class ConsistencyTests(unittest.TestCase):
     def test_orca_constraint_failure_is_not_overwritten(self):
         # Test validation bookkeeping independently of Psience geometry/evaluators.
         structures = [SimpleNamespace(coords=np.array([q])) for q in (1., 1.2, 1.)]
-        with patch.object(orcaio, "_get_specs_from_inp", return_value=[(0, 1)]), \
-             patch.object(orcaio, "read", return_value=structures), \
-             patch.object(orcaio, "ase_atoms_to_molecule", side_effect=lambda a: a), \
-             patch.object(orcaio.nput, "internal_coordinate_tensors", side_effect=lambda coords, *a, **kw: [coords]), \
+        with patch.object(orca, "_get_specs_from_inp", return_value=[(0, 1)]), \
+             patch.object(orca, "read", return_value=structures), \
+             patch.object(orca, "ase_atoms_to_molecule", side_effect=lambda a: a), \
+             patch.object(orca.nput, "internal_coordinate_tensors", side_effect=lambda coords, *a, **kw: [coords]), \
              redirect_stdout(StringIO()):
-            self.assertTrue(orcaio._validate_constraint_in_optimization("unused", "unused", endpoints_only=True))
-            self.assertFalse(orcaio._validate_constraint_in_optimization("unused", "unused", endpoints_only=False))
+            self.assertTrue(orca._validate_constraint_in_optimization("unused", "unused", endpoints_only=True))
+            self.assertFalse(orca._validate_constraint_in_optimization("unused", "unused", endpoints_only=False))
             structures[-1].coords[0] = 1.1
-            self.assertFalse(orcaio._validate_constraint_in_optimization("unused", "unused", endpoints_only=True))
+            self.assertFalse(orca._validate_constraint_in_optimization("unused", "unused", endpoints_only=True))
 
     def test_downsampling_does_not_hide_timestep_reset(self):
         with tempfile.TemporaryDirectory() as directory:

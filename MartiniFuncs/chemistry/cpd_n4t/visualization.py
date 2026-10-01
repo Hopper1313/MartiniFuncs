@@ -91,7 +91,7 @@ def plot_pair_geometry(atoms, *, disk_radius=2.0, transparency=0.5,
 
     Supply an extracted, whole, nonperiodic pair or pair-plus-shell with
     ``pair_role`` and ``global_index`` arrays. The site identification and fitted
-    plane normals are the same as in pair_selection.measure_pair_geometry.
+    plane normals are the same as in chemistry.cpd_n4t.selection.measure_pair_geometry.
     Disk centers are the CPD termini midpoint and dienophile C=C midpoint;
     their orientations are fits to the four reactive carbons in each molecule.
     For nonplanar sites, these are orientation guides centered on the sites,
@@ -109,8 +109,8 @@ def plot_pair_geometry(atoms, *, disk_radius=2.0, transparency=0.5,
     radius disk_radius in the Angstrom display frame.
     """
     import McUtils.Plots as plt
-    from . import graph as mfg
-    from .pair_selection import _sites, _normal
+    from MartiniFuncs.structure import graph as mfg
+    from MartiniFuncs.chemistry.cpd_n4t.selection import _sites, _normal
 
     if atoms.pbc.any():
         raise ValueError("Supply an extracted, whole, nonperiodic pair or cluster")

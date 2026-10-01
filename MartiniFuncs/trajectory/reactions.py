@@ -4,7 +4,7 @@ Atom count is a screening criterion, not proof of chemical connectivity or a
 particular product. Short contacts can join components under a distance cutoff.
 """
 import numpy as np
-from . import graph
+from MartiniFuncs.structure import graph
 
 
 class PossibleReactionError(ValueError):

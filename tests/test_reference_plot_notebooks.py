@@ -13,12 +13,12 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 
-from MartiniFuncs.postprocessing import cache_analysis
+from MartiniFuncs.workflows.postprocess import cache_analysis
 
 
 class ReferencePlotNotebookTests(unittest.TestCase):
     def test_reference_cells_refresh_module_missing_new_function(self):
-        import MartiniFuncs.md_statistics as statistics
+        from MartiniFuncs.statistics import md as statistics
         root = Path(__file__).resolve().parents[1]
         for name in ('examples/02_plot_md_statistics.ipynb',
                      'examples/04_plot_md_statistics_from_directory.ipynb',

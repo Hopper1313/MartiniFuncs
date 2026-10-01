@@ -48,8 +48,8 @@ aggregates, fragmentation, or all other reaction mechanisms.
 To inspect all occurrences instead of stopping at the first:
 
 ```python
-from MartiniFuncs.lammpsio import iter_lammps_frames
-from MartiniFuncs.reaction_detection import scan_possible_products
+from MartiniFuncs.io.lammps import iter_lammps_frames
+from MartiniFuncs.trajectory.reactions import scan_possible_products
 
 records = scan_possible_products(
     iter_lammps_frames(dump_path, units="metal", input_datafile=data_path),
@@ -90,7 +90,7 @@ Pressure/energy come from the output, not reconstruction from forces. Missing ob
 
 ## Package interfaces and uncertainty
 
-`diffusion_diagnostics.diffusion_diagnostics(positions, times_ps, ...)` takes
+`statistics.diffusion.diffusion_diagnostics(positions, times_ps, ...)` takes
 one species' TOR COM positions, shape `(frames, molecules, 3)`, in Angstrom.
 It computes all-molecule MSD, free-intercept slope/6 estimates, log-scaling
 exponents, and independent fits within nonoverlapping temporal blocks. Bootstrap

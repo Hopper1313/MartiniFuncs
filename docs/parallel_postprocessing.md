@@ -53,7 +53,7 @@ convention is a destination-cell minimum image, which for orthorhombic lengths L
 \]
 
 and for a general cell H_t uses the fractional components of W_t-W_{t-1}
-(`md_statistics.minimum_image`).
+(`structure.periodic.minimum_image`).
 
 The ordered parent applies this update across every source frame, including
 chunk boundaries and frames omitted by existing stride settings. Parallelization

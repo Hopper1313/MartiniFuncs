@@ -8,7 +8,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from MartiniFuncs.stability import get_molecular_com_rdf, get_series_statistics
+from MartiniFuncs.statistics.stability import get_molecular_com_rdf, get_series_statistics
 
 
 def main():

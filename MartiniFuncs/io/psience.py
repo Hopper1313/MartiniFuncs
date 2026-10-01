@@ -33,8 +33,8 @@ def ase_atoms_to_molecule(ase_atoms, charge=0, energy_evaluator=['aimnet2', None
     conversion. This legacy evaluator path is not the UMA workflow.
     """
     from Psience.Molecools import Molecule
-    from . import coreio
-    coords_bohr = ase_atoms.get_positions() * coreio.ANG_TO_BOHR
+    from MartiniFuncs.io import psience
+    coords_bohr = ase_atoms.get_positions() * psience.ANG_TO_BOHR
     symbols = ase_atoms.get_chemical_symbols()
     if energy_evaluator is None:
         return Molecule(atoms=symbols, coords=coords_bohr, charge=charge)
@@ -50,8 +50,8 @@ def molecule_to_ase_atoms(molecule):
     r_angstrom=molecule.coords*BOHR_TO_ANG. No cell, constraints,
     forces, or velocities are transferred.
     """
-    from . import coreio
-    coords_ang = molecule.coords * coreio.BOHR_TO_ANG
+    from MartiniFuncs.io import psience
+    coords_ang = molecule.coords * psience.BOHR_TO_ANG
     symbols = molecule.atoms
     ase_atoms = Atoms(symbols=symbols, positions=coords_ang)
     return ase_atoms

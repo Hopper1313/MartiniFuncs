@@ -88,7 +88,7 @@ def _frame_distances(delta, cell):
     fractional nearest image and then the shortest of its 27 neighbors, which is
     exact for distances below half the smallest plane spacing (the RDF range).
     """
-    from .md_statistics import _is_diagonal, minimum_image
+    from MartiniFuncs.structure.periodic import _is_diagonal, minimum_image
     if _is_diagonal(cell):
         return np.linalg.norm(minimum_image(delta, cell), axis=-1)
     base = minimum_image(delta, cell)
@@ -115,7 +115,7 @@ def get_molecular_com_rdf(positions, box_lengths, species, *, species_a, species
     they are not truncated at edges[-1]. edges[-1] may not exceed half the
     smallest face-to-face spacing of any frame.
     """
-    from .md_statistics import cell_plane_spacings
+    from MartiniFuncs.structure.periodic import cell_plane_spacings
     p = np.asarray(positions, dtype=float)
     lengths = np.asarray(box_lengths, dtype=float)
     labels = np.asarray(species)

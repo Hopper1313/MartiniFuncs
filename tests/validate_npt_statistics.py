@@ -13,10 +13,11 @@ import time
 import numpy as np
 from numpy.testing import assert_allclose
 
-from MartiniFuncs import md_statistics as md
-from MartiniFuncs import graph
-from MartiniFuncs.geom_utils import get_all_prereactive_pairs
-from MartiniFuncs.lammpsio import iter_lammps_frames, read_lammps_input_settings
+from MartiniFuncs.pairs import lifetimes
+from MartiniFuncs.statistics import md
+from MartiniFuncs.structure import graph
+from MartiniFuncs.chemistry.cpd_n4t.pairs import get_all_prereactive_pairs
+from MartiniFuncs.io.lammps import iter_lammps_frames, read_lammps_input_settings
 
 
 def check_episode_counts(rows, episodes):
@@ -157,12 +158,12 @@ def main():
         if stop == len(rows) or pairs_by_frame[stop] is None:
             if stop - segment_start == 1:
                 # A one-frame valid window is censored at both ends.
-                for pair in {md.pair_identity(p) for p in pairs_by_frame[segment_start]}:
-                    episodes.append(asdict(md.PairLifetime(
+                for pair in {lifetimes.pair_identity(p) for p in pairs_by_frame[segment_start]}:
+                    episodes.append(asdict(lifetimes.PairLifetime(
                         pair, segment_start, segment_start, float(times[segment_start]),
                         float(times[segment_start]), 0., 1, True, True)))
             if stop-segment_start >= 2:
-                for event in md.get_pair_lifetime(pairs_by_frame[segment_start:stop], times[segment_start:stop]):
+                for event in lifetimes.get_pair_lifetime(pairs_by_frame[segment_start:stop], times[segment_start:stop]):
                     data = asdict(event)
                     data["first_frame"] += segment_start
                     data["last_frame"] += segment_start

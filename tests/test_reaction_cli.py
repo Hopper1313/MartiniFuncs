@@ -7,8 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from MartiniFuncs.cli import main
-from MartiniFuncs.postprocessing import load_analysis_cache
+from MartiniFuncs.workflows.cli import main
+from MartiniFuncs.workflows.postprocess import load_analysis_cache
 import tests.test_dynamics as dynamics_tests
 
 

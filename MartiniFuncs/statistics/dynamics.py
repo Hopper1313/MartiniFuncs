@@ -10,7 +10,8 @@ to read the results are in docs/dynamics_diagnostics.md.
 import numpy as np
 from ase import units
 
-from . import md_statistics as md
+from MartiniFuncs.statistics import md
+from MartiniFuncs.structure import periodic
 
 KB_EV = units.kB                      # Boltzmann constant, eV/K
 EV_TO_KJ_MOL = 96.48533212331002      # 1 eV per particle in kJ/mol
@@ -63,8 +64,8 @@ def unwrap_nonaffine(wrapped_com, cells, origins, centers=None):
     out = np.empty_like(w)
     out[0] = w[0]
     for t in range(1, len(w)):
-        step = md.minimum_image(points[t] - points[t - 1], cells[t])
-        out[t] = out[t - 1] + step - md.affine_step(points[t - 1], step, cells[t - 1], cells[t],
+        step = periodic.minimum_image(points[t] - points[t - 1], cells[t])
+        out[t] = out[t - 1] + step - periodic.affine_step(points[t - 1], step, cells[t - 1], cells[t],
                                                     origins[t - 1], origins[t])
     return out
 

@@ -10,8 +10,8 @@ from ase import Atoms
 from ase.build import molecule
 from ase.io.lammpsdata import read_lammps_data
 
-from MartiniFuncs.initial_configurations import MoleculeSpec, PackingError, pack_molecules, write_initial_data
-from MartiniFuncs.lammps_inputs import render_lammps_input
+from MartiniFuncs.structure.packing import MoleculeSpec, PackingError, pack_molecules, write_initial_data
+from MartiniFuncs.io.lammps_inputs import render_lammps_input
 
 
 class InitialConfigurationTests(unittest.TestCase):

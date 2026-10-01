@@ -4,11 +4,11 @@
 It identifies molecules/reactive sites once and reuses the whole-molecule
 coordinates already computed for MD statistics. The distance screen, image
 selection, angle equations, and threshold logic are shared with the reference
-implementation in `geom_utils` and `pair_selection`.
+implementation in `chemistry.cpd_n4t.pairs` and `chemistry.cpd_n4t.selection`.
 
 ```python
-from MartiniFuncs.trajectory_analysis import analyze_run
-from MartiniFuncs.pair_selection import PairCriteria
+from MartiniFuncs.trajectory.analysis import analyze_run
+from MartiniFuncs.chemistry.cpd_n4t.selection import PairCriteria
 
 result = analyze_run(
     RUN_DIR, units="metal", timestep_ps=0.0005,

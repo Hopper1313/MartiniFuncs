@@ -1,18 +1,17 @@
 """Cached fixed-topology pair analysis.
 
-Used by trajectory_analysis; standalone, changing-topology frame extraction stays
-in geom_utils. This module never unwraps time series or loads a force calculator.
-Parallel evaluation runs through frame_parallel (indexed frame chunks).
+Used by trajectory.analysis; standalone, changing-topology frame extraction stays
+in chemistry.cpd_n4t.pairs. This module never unwraps time series or loads a force
+calculator. Parallel evaluation runs through trajectory.parallel (indexed frame chunks).
 """
 from dataclasses import dataclass
 
 import numpy as np
 
-from .geom_utils import _pairs_from_centers, get_mal_CC
-from .pair_selection import (
-    PairAssessment, _cpd_sites, _dienophile_sites, _subgraph,
-    _measure_placed_pair, _rejection_reasons,
-)
+from MartiniFuncs.pairs.screening import _pairs_from_centers
+from MartiniFuncs.chemistry.cpd_n4t.pairs import get_mal_CC
+from MartiniFuncs.chemistry.cpd_n4t.selection import (PairAssessment, _cpd_sites, _dienophile_sites,
+                                                      _subgraph, _measure_placed_pair, _rejection_reasons)
 
 
 @dataclass
@@ -78,7 +77,7 @@ class FixedPairTopology:
         criteria=None skips geometry checks and returns an empty assessment list.
         candidates=True also measures every screened pair and returns a fourth
         value: rows (cpd_molecule, mal_molecule, shift, metrics) for
-        pair_candidates.frame_candidates, independent of criteria.
+        pairs.candidates.frame_candidates, independent of criteria.
         """
         if not np.isfinite(reactive_radius) or reactive_radius <= 0:
             raise ValueError("reactive_radius must be positive and finite")
@@ -92,8 +91,8 @@ class FixedPairTopology:
             np.asarray(cell), pbc, reactive_radius, return_distances=True)
         if criteria is None and not candidates:
             return pairs, shifts, []
-        from .pair_candidates import metric_row
-        from .pair_selection import PairCriteria
+        from MartiniFuncs.pairs.candidates import metric_row
+        from MartiniFuncs.chemistry.cpd_n4t.selection import PairCriteria
         measure = criteria if criteria is not None else PairCriteria()
         cpd_index = {tuple(c): i for i, c in enumerate(self.cpd)}
         mal_index = {tuple(c): i for i, c in enumerate(self.mal)}

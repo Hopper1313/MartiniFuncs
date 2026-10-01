@@ -5,7 +5,10 @@ import numpy as np
 from numpy.testing import assert_allclose
 from ase import Atoms, units
 
-from MartiniFuncs import md_statistics as md
+from MartiniFuncs.chemistry.cpd_n4t import pairs as cpd_pairs
+from MartiniFuncs.pairs import lifetimes
+from MartiniFuncs.statistics import md
+from MartiniFuncs.structure import periodic
 
 
 class MDStatisticsTests(unittest.TestCase):
@@ -95,45 +98,45 @@ class MDStatisticsTests(unittest.TestCase):
         wrapped = np.zeros((3, 1, 3))
         wrapped[:, 0, 0] = [4.8, -4.8, 5.7]
         lengths = np.array([[10., 10, 10], [10., 10, 10], [12., 12, 12]])
-        result = md.unwrap_orthorhombic_com(wrapped, lengths)
+        result = periodic.unwrap_orthorhombic_com(wrapped, lengths)
         assert_allclose(result[:, 0, 0], [4.8, 5.2, 3.7])
         # Constant-cell crossings reduce to ordinary minimum-image increments.
         wrapped[:, 0, 0] = [4.8, -4.8, -4.4]
-        assert_allclose(md.unwrap_orthorhombic_com(wrapped, np.full((3,3),10.))[:,0,0],
+        assert_allclose(periodic.unwrap_orthorhombic_com(wrapped, np.full((3,3),10.))[:,0,0],
                         [4.8, 5.2, 5.6])
         with self.assertRaisesRegex(ValueError, "origin-centered"):
-            md.unwrap_orthorhombic_com(wrapped + 20, lengths)
+            periodic.unwrap_orthorhombic_com(wrapped + 20, lengths)
 
     def test_pair_lifetimes_order_gaps_and_censoring(self):
         a = ([90, 7], [33, 4])
         reordered = ([4, 33], [7, 90])
         pairs = [[a], [reordered, a], [], [a], [], []]
-        episodes = md.get_pair_lifetime(iter(pairs), np.arange(6) * .5)
+        episodes = lifetimes.get_pair_lifetime(iter(pairs), np.arange(6) * .5)
         self.assertEqual(len(episodes), 2)
         self.assertEqual(episodes[0].detected_frames, 2)
         self.assertEqual(episodes[0].observed_span_ps, .5)
         self.assertTrue(episodes[0].left_censored)
         self.assertFalse(episodes[0].right_censored)
         self.assertEqual(episodes[1].observed_span_ps, 0)
-        joined = md.get_pair_lifetime(pairs, np.arange(6) * .5, max_gap_frames=1)
+        joined = lifetimes.get_pair_lifetime(pairs, np.arange(6) * .5, max_gap_frames=1)
         self.assertEqual(len(joined), 1)
         self.assertEqual(joined[0].observed_span_ps, 1.5)
         self.assertEqual(joined[0].detected_frames, 3)
         self.assertFalse(joined[0].right_censored)
-        cropped = md.get_pair_lifetime(pairs[:4], np.arange(4) * .5, max_gap_frames=1)
+        cropped = lifetimes.get_pair_lifetime(pairs[:4], np.arange(4) * .5, max_gap_frames=1)
         self.assertTrue(cropped[0].right_censored)
-        self.assertEqual(md.get_pair_lifetime([[], []], [0, 1]), [])
+        self.assertEqual(lifetimes.get_pair_lifetime([[], []], [0, 1]), [])
 
     def test_pair_validation_and_irregular_times(self):
         pair = ([1], [2])
-        result = md.get_pair_lifetime([[pair], [pair], []], [0, .5, 2])
+        result = lifetimes.get_pair_lifetime([[pair], [pair], []], [0, .5, 2])
         self.assertEqual(result[0].observed_span_ps, .5)
         with self.assertRaisesRegex(ValueError, "every timestamp"):
-            md.get_pair_lifetime([[pair]], [0, 1])
+            lifetimes.get_pair_lifetime([[pair]], [0, 1])
         with self.assertRaisesRegex(ValueError, "disjoint"):
-            md.get_pair_lifetime([[([1], [1])], []], [0, 1])
+            lifetimes.get_pair_lifetime([[([1], [1])], []], [0, 1])
         with self.assertRaisesRegex(ValueError, "increasing"):
-            md.get_pair_lifetime([[], []], [1, 1])
+            lifetimes.get_pair_lifetime([[], []], [1, 1])
 
     def test_axes_force_projections_and_cell_map(self):
         assert_allclose(md.get_molecule_orientation(self.atoms, [90, 7]), [1, 0, 0])
@@ -145,16 +148,16 @@ class MDStatisticsTests(unittest.TestCase):
         assert_allclose(md.get_cell_deformation(self.atoms, second), deformation)
 
     def test_fixture_pair_tracking_uses_persistent_ids(self):
-        from MartiniFuncs.lammpsio import iter_lammps_frames
-        from MartiniFuncs.geom_utils import get_all_prereactive_pairs
+        from MartiniFuncs.io.lammps import iter_lammps_frames
+        from MartiniFuncs.chemistry.cpd_n4t.pairs import get_all_prereactive_pairs
         frames = list(iter_lammps_frames(Path(__file__).parent / "lammpsio_tests/multiple_frames.lammpstrj",
                                         units="metal"))
         candidates = [get_all_prereactive_pairs(f.atoms, scale=1.3) for f in frames]
         times = [f.timestep * .0005 for f in frames]
-        episodes = md.get_pair_lifetime([p for p, _ in candidates], times)
+        episodes = lifetimes.get_pair_lifetime([p for p, _ in candidates], times)
         self.assertGreater(len(episodes), 0)
         self.assertTrue(all(e.last_frame < len(frames) for e in episodes))
-        tracked = md.get_pair_geometry_timeseries(
+        tracked = cpd_pairs.get_pair_geometry_timeseries(
             [f.atoms for f in frames], [p for p, _ in candidates],
             [s for _, s in candidates], times, pair=candidates[0][0][0])
         self.assertTrue(tracked[0]["present"])

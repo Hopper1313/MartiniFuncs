@@ -24,7 +24,7 @@ uma = ["fairchem-core>=2.22,<3"]
 notebooks = ["ipython", "ipykernel", "jupyterlab", "matplotlib"]
 
 [project.scripts]
-martini-postprocess = "MartiniFuncs.cli:main"
+martini-postprocess = "MartiniFuncs.workflows.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

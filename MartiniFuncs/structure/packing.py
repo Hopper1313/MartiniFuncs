@@ -174,7 +174,7 @@ def write_initial_data(atoms, path, *, type_symbols=None, overwrite=False):
     if "momenta" in atoms.arrays or np.any(atoms.get_initial_charges() != 0):
         raise ValueError("Initial export is geometry-only; velocities/charges require a separate workflow")
     symbols = atoms.get_chemical_symbols()
-    from .lammpsio import type_symbol_list
+    from MartiniFuncs.io.lammps import type_symbol_list
     types = sorted(set(symbols)) if type_symbols is None else type_symbol_list(type_symbols)
     if len(set(types)) != len(types) or set(types) != set(symbols):
         raise ValueError("type_symbols must list every element exactly once")

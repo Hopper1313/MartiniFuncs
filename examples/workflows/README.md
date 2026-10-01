@@ -65,7 +65,7 @@ leave `INPUT_FILE`, `DUMP_FILE`, and `DATA_FILE` as `None`. The shared helper fi
 
 ```python
 from pathlib import Path
-from MartiniFuncs.trajectory_analysis import resolve_run_files
+from MartiniFuncs.trajectory.analysis import resolve_run_files
 
 RUN_DIR = Path(r"C:\path\to\simulation")
 files = resolve_run_files(RUN_DIR, require_input=False)

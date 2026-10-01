@@ -74,7 +74,7 @@ class WorkflowNotebookTests(unittest.TestCase):
         (self.directory/"run.out").write_text("Step Time Temp Press PotEng\n" + "".join(
             f"{step} {step*.0005} {400+step/8000} 25000 -1000\n" for step in range(0, 8001, 2000)))
         # Simulate an open kernel retaining the pre-dump_file function signature.
-        with patch("MartiniFuncs.thermo.attach_thermo", lambda frames, thermo, block=None: None):
+        with patch("MartiniFuncs.io.thermo.attach_thermo", lambda frames, thermo, block=None: None):
             result, _ = self.run_notebook("08_diffusion_and_equilibration.ipynb",
                 BOOTSTRAP_RESAMPLES=100, WRITE_FILES=True, OUTPUT_DIR=self.directory/"assessment")
         table = result["diffusion_table"]
@@ -98,7 +98,7 @@ class WorkflowNotebookTests(unittest.TestCase):
                          wrapped_com_angstrom=(p+5) % 10-5,
                          box_lengths_angstrom=np.ones((len(p), 3))*10,
                          frames_read=len(p), settings={}, files={}, notices=[])
-        with patch("MartiniFuncs.trajectory_analysis.analyze_run", return_value=synthetic):
+        with patch("MartiniFuncs.trajectory.analysis.analyze_run", return_value=synthetic):
             result, _ = self.run_notebook("08_diffusion_and_equilibration.ipynb",
                 FIT_INTERVALS_PS=[(1, 4), (2, 5), (3, 6)], BLOCK_DURATIONS_PS=[60, 120],
                 BOOTSTRAP_RESAMPLES=100, SCALAR_TOLERANCES={"density_g_cm3": .01}, SHOW_DETAILS=True)
@@ -123,7 +123,7 @@ class WorkflowNotebookTests(unittest.TestCase):
         np.testing.assert_allclose(manual["pair"].positions,selected["pair"].positions)
 
     def test_force_notebook_is_opt_in_and_passes_explicit_settings(self):
-        with patch("MartiniFuncs.force_validation.validate_forces") as validate:
+        with patch("MartiniFuncs.workflows.force_validation.validate_forces") as validate:
             self.run_notebook("06_reproduce_uma_forces.ipynb")
             validate.assert_not_called()
             validate.return_value = {"frames":[],"passed":True}

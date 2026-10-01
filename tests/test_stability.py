@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 from numpy.testing import assert_allclose
 
-from MartiniFuncs.stability import get_molecular_com_rdf, get_series_statistics
+from MartiniFuncs.statistics.stability import get_molecular_com_rdf, get_series_statistics
 
 
 class StabilityTests(unittest.TestCase):

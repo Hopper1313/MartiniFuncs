@@ -1,11 +1,11 @@
 # LAMMPS thermo output
 
-`MartiniFuncs.thermo` reads standard one-line `Step ...` tables from `.out` or
+`MartiniFuncs.io.thermo` reads standard one-line `Step ...` tables from `.out` or
 LAMMPS logs. Notebook 08 discovers a unique file automatically with
 `LOAD_THERMO=True`. Set `THERMO_FILE` if multiple outputs are present;
 `THERMO_BLOCK` selects a zero-based header occurrence for repeated run segments.
 
-Notebook 08's loading cell refreshes the stateless `thermo` module before using
+Notebook 08's loading cell refreshes the stateless `io.thermo` module before using
 it and prints its loaded file path. This avoids keeping an old function signature
 in an already-open kernel after updating the package. It also checks for the
 required API before starting analysis. Reopen the updated notebook from disk if
@@ -13,7 +13,7 @@ your editor is still displaying an older loading cell; rerunning unchanged old
 cell text does not load notebook edits.
 
 ```python
-from MartiniFuncs.thermo import discover_thermo_file, read_lammps_thermo, attach_thermo
+from MartiniFuncs.io.thermo import discover_thermo_file, read_lammps_thermo, attach_thermo
 
 path = discover_thermo_file(run_dir)
 thermo = read_lammps_thermo(path, units="metal")

@@ -16,7 +16,7 @@ import numpy as np
 from ase.data import atomic_numbers, covalent_radii
 from scipy.sparse.csgraph import connected_components
 
-from MartiniFuncs.trajectory_analysis import analyze_run, resolve_run_files
+from MartiniFuncs.trajectory.analysis import analyze_run, resolve_run_files
 
 
 def raw_frames(path):
