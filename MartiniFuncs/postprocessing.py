@@ -23,7 +23,8 @@ from .trajectory_analysis import analyze_run, molecular_window_statistics, resol
 
 
 ARRAY_KEYS = ("species", "com_angstrom", "wrapped_com_angstrom", "box_lengths_angstrom", "cell_angstrom",
-              "com_velocity_angstrom_ps", "net_force_eV_angstrom")
+              "com_velocity_angstrom_ps", "net_force_eV_angstrom", "cell_origin_angstrom",
+              "com_nonaffine_angstrom", "orientation_axes")
 SCHEMA_VERSION = 2
 SUPPORTED_SCHEMAS = {1, 2}
 

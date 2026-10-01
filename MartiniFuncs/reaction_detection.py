@@ -46,6 +46,38 @@ def _bonded_candidates(atoms, cutoff):
     return i, j, d
 
 
+def topology_change(atoms, groups, molecule_sizes, *, bond_scale=1.3):
+    """Components of the current bond graph that are not one of the reference molecules.
+
+    groups[row] is each atom's reference-molecule index and molecule_sizes its
+    atom count. With the same bond rule as graph.build_bond_graph, the frame has
+    the reference topology iff no bond joins two reference molecules and every
+    molecule is one component. Otherwise return the changed components (merged
+    or split pieces) as a sorted tuple of sorted atom-ID tuples; () if unchanged.
+    The fast check costs one neighbor search; details only when something changed.
+    """
+    from ase.data import covalent_radii
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    radii = bond_scale * covalent_radii[atoms.numbers]
+    i, j, d = _bonded_candidates(atoms, 2*float(radii.max()))
+    bonded = (j > i) & (d < radii[i] + radii[j])
+    i, j = i[bonded], j[bonded]
+    count, labels = connected_components(coo_matrix((np.ones(len(i)), (i, j)), shape=(len(atoms), len(atoms))),
+                                         directed=False)
+    if count == len(molecule_sizes) and not np.any(groups[i] != groups[j]):
+        return ()
+    ids = graph.ensure_index_array(atoms)
+    changed = []
+    for label in range(count):
+        rows = np.flatnonzero(labels == label)
+        members = np.unique(groups[rows])
+        if len(members) > 1 or len(rows) != molecule_sizes[members[0]]:
+            changed.append(tuple(sorted(int(x) for x in ids[rows])))
+    return tuple(sorted(changed))
+
+
 def find_possible_products(atoms, *, reactant_atom_counts, bond_scale=1.3):
     """Find components with size sum(reactant_atom_counts) in one current frame.
 

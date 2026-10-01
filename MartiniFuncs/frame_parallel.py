@@ -25,7 +25,11 @@ class FrameSummary(NamedTuple):
     cell (3, 3); pbc: periodic flags; origin: cell origin (LAMMPS lo corner).
     pairs/shifts: retained-frame pair candidates or None. scalars: density,
     volume and optional temperature. velocity: COM velocity Angstrom/ps or None.
-    force: net molecular force eV/Angstrom or None.
+    force: net molecular force eV/Angstrom or None. axes: (molecules, 2, 3)
+    principal axes (long axis, plane normal) or None; signs are arbitrary
+    here and are made continuous by analyze_run. topology: () when the frame
+    has the reference molecular topology, else the changed components (only
+    computed when context['check_topology'] is set).
     """
     com: np.ndarray
     cell: np.ndarray
@@ -36,6 +40,26 @@ class FrameSummary(NamedTuple):
     scalars: dict
     velocity: np.ndarray | None
     force: np.ndarray | None
+    axes: np.ndarray | None = None
+    topology: tuple = ()
+
+
+def principal_axes(whole, com, groups, masses, count):
+    """Per-molecule unit long axis and plane normal from the mass-weighted gyration tensor.
+
+    S_m = sum_{i in m} m_i (r_i - R_m)(r_i - R_m)^T. Its eigenvector with the
+    largest eigenvalue is the long axis; with the smallest, the direction of
+    least extent (the normal of a planar molecule). These are also the
+    principal axes of the inertia tensor I = tr(S) 1 - S (eigenvalue order
+    reversed). Returns (count, 2, 3); eigenvector signs are arbitrary.
+    """
+    r = whole - com[groups]
+    tensor = np.empty((count, 3, 3))
+    for a in range(3):
+        for b in range(a, 3):
+            tensor[:, a, b] = tensor[:, b, a] = np.bincount(groups, weights=masses * r[:, a] * r[:, b], minlength=count)
+    _, vectors = np.linalg.eigh(tensor)
+    return np.stack([vectors[:, :, 2], vectors[:, :, 0]], axis=1)
 
 
 @dataclass
@@ -170,7 +194,13 @@ def prepare_frame(frame, context):
             delta = find_mic(delta, atoms.cell, atoms.pbc)[0]
         whole[child] = whole[parent] + delta
     edges = context['edges']
-    if len(edges) and np.any(np.linalg.norm(whole[edges[:, 1]] - whole[edges[:, 0]], axis=1) > 1.25 * context['cutoffs']):
+    topology = ()
+    if context.get('check_topology'):
+        # A changed topology is reported, not raised, so the caller can apply
+        # its persistence rule and end the segment cleanly.
+        from .reaction_detection import topology_change
+        topology = topology_change(atoms, context['groups'], context['molecule_sizes'], bond_scale=context['bond_scale'])
+    elif len(edges) and np.any(np.linalg.norm(whole[edges[:, 1]] - whole[edges[:, 0]], axis=1) > 1.25 * context['cutoffs']):
         raise ValueError(f'Frame {frame.index}: fixed molecular topology no longer reconstructs consistently')
     com = np.column_stack([np.bincount(context['groups'], weights=context['masses'] * whole[:, axis]) /
                            context['molecular_masses'] for axis in range(3)])
@@ -193,8 +223,10 @@ def prepare_frame(frame, context):
     if context['has_forces']:
         f = atoms.arrays['lammps_forces']
         force = np.column_stack([np.bincount(context['groups'], weights=f[:, axis]) for axis in range(3)])
+    axes = (principal_axes(whole, com, context['groups'], context['masses'], len(context['molecular_masses']))
+            if context.get('orientations') else None)
     return FrameSummary(com, atoms.cell.array.copy(), atoms.pbc.copy(), np.asarray(atoms.get_celldisp()).ravel().copy(),
-                        pairs, shifts, scalars, velocity, force)
+                        pairs, shifts, scalars, velocity, force, axes, topology)
 
 
 def _initialize_analysis(path, options, context):
@@ -214,13 +246,26 @@ def _analysis_chunk(task):
     return result
 
 
-def analysis_frames(path, options, context, *, workers, batch_size, max_frames, progress):
-    """Yield frame zero for topology setup, then prepare indexed chunks in parallel.
+def analysis_frames(path, options, context, *, workers, batch_size, max_frames, progress,
+                    source_range=None, offsets=None):
+    """Yield the first frame for topology setup, then prepare indexed chunks in parallel.
 
-    The caller fills context after receiving frame zero. This preserves exactly
-    the serial first-frame molecular identities in every worker.
+    The caller fills context after receiving the first frame. This preserves
+    exactly the serial first-frame molecular identities in every worker.
+    source_range=(start, stop) restricts reading to source frames [start, stop)
+    (stop None = end); max_frames then counts from start. offsets may supply a
+    precomputed frame_offsets array.
     """
-    initial = iter_lammps_frames(path, **options)
+    start, stop = (0, None) if source_range is None else source_range
+    if offsets is None and (start or progress):
+        if progress:
+            progress('Indexing source frame byte offsets for parallel analysis...')
+        offsets = frame_offsets(path)
+    if start:
+        initial = iter_lammps_frames(path, byte_range=(int(offsets[start]), int(offsets[start+1])),
+                                     frame_offset=start, **options)
+    else:
+        initial = iter_lammps_frames(path, **options)
     try:
         first = next(initial, None)
         if first is None:
@@ -228,13 +273,14 @@ def analysis_frames(path, options, context, *, workers, batch_size, max_frames, 
         yield first
     finally:
         initial.close()
+    if offsets is None:
+        offsets = frame_offsets(path)
+    end = len(offsets)-1 if stop is None else min(stop, len(offsets)-1)
+    if max_frames is not None:
+        end = min(end, start + max_frames)
+    tasks = ((first_index, int(offsets[first_index]), int(offsets[min(first_index+batch_size, end)]))
+             for first_index in range(start+1, end, batch_size))
     if progress:
-        progress('Indexing source frame byte offsets for parallel analysis...')
-    offsets = frame_offsets(path)
-    stop = len(offsets)-1 if max_frames is None else min(max_frames, len(offsets)-1)
-    tasks = ((start, int(offsets[start]), int(offsets[min(start+batch_size, stop)]))
-             for start in range(1, stop, batch_size))
-    if progress:
-        progress(f'Parallel frame analysis: {stop} source frames, {workers} workers, {batch_size} frames/chunk')
+        progress(f'Parallel frame analysis: {end-start} source frames, {workers} workers, {batch_size} frames/chunk')
     yield from (frame for chunk in ordered_tasks(_analysis_chunk, tasks, workers,
                 _initialize_analysis, (str(Path(path).resolve()), options, context)) for frame in chunk)

@@ -543,3 +543,57 @@ shifted so molecules straddle every face.
 
 The sub-1 ms figure suggested earlier needs a chemistry-specific screen (reactive sites only), which
 would miss other reactions. It was not done.
+
+## Phase C: dynamics science
+
+Equations, assumptions, caveats and results on your NVT shear run are in `docs/dynamics_diagnostics.md`.
+
+**New module `MartiniFuncs/dynamics.py`:**
+- non-affine unwrapping;
+- non-Gaussian parameter, self van Hove function, successive-step correlation, sampling diagnostics;
+- Green–Kubo diffusion, Yeh–Hummer correction, NEMD shear viscosity;
+- P₁/P₂ rotational correlations and correlation times;
+- PMFs from g(r), with 1D/2D Jacobians, and an `index.jsonl` geometry loader.
+
+**`analyze_run` additions:**
+- always stored: `cell_origin_angstrom` and `com_nonaffine_angstrom` (affine cell motion removed at
+  every source frame);
+- opt-in: `orientations=True` → `orientation_axes`, sign-continuous principal axes per molecule (CLI
+  `--orientations`);
+- `source_range=(start, stop)`, for both the serial and parallel readers;
+- `on_topology_change="record"/"truncate"` with `topology_persistence`.
+
+**Other additions:**
+- `trajectory_analysis.analyze_segments`, which chains fixed-topology segments;
+- `reaction_detection.topology_change`;
+- `frame_parallel.principal_axes`;
+- `md_statistics.affine_step`.
+- The cache stores the new arrays (older caches simply lack them).
+
+**Verified:** `tests/test_dynamics.py` has 16 tests, each against a case with a known answer:
+
+| feature | reference case | result |
+|---|---|---|
+| shear and dilation removal | pure affine motion | 0 to 1e-9 Å |
+| shear and dilation removal | shear + Brownian | recovers 6Dt (lab-frame MSD is more than 2× larger) |
+| non-Gaussian parameter | Gaussian; mixture with f = ½ | 0; 1 |
+| van Hove | Brownian | matches the Gaussian |
+| step correlation | i.i.d. rattling; random walk | −½; 0 |
+| sampling diagnostics | free flight; caged | ratio 1; ratio < 0.2 |
+| Green–Kubo | exponential VACF | D = σ²/γ |
+| Yeh–Hummer, NEMD | closed-form values | exact; units and sign checked |
+| rotational correlations | rotational diffusion | e^(−2D_rτ), e^(−6D_rτ) |
+| principal axes | ring and rod | correct axes |
+| PMF | inverting a Boltzmann factor; isotropic angles | exact; flat |
+| segments | synthetic reaction in a real dump | split at the persistent event; earlier one-frame contact ignored; product becomes C₁₆H₁₅NO₂ |
+| `source_range` | full run, serial and parallel | identical |
+
+The shear fixture's stored non-affine trajectory equals the array function, with the flow only along x.
+
+**Baseline comparison against phase B:** only additions (new arrays, cache files and keys), plus the
+corrected notice: thermo logs *are* parsed, by `MartiniFuncs.thermo`.
+
+**Correction to the first review:** I called the 1.43–1.46 g/cm³ NPT density suspicious. The input
+(`tests/lammpsio_tests/infile.in`) compresses the system to 2.5 GPa on purpose, and the new diagnostics
+(caging, an elastic shear response of about 1 GPa) are consistent with that state. The slow dynamics are
+physical for this state point, not evidence of a pressure bug.

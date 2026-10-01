@@ -151,6 +151,8 @@ def _analysis_options(parser):
     screen.add_argument("--no-reaction-screen", dest="reaction_atom_counts", action="store_const", const=None,
                         help="skip the possible-product screen (collect enables it by default)")
     parser.add_argument("--pair-backend", choices=["cached", "reference"], default="cached")
+    parser.add_argument("--orientations", action="store_true",
+                        help="also cache each molecule's long axis and plane normal per frame (rotational dynamics)")
     parser.add_argument("--workers", type=int, default=1, help="local frame-processing and export processes, not MPI ranks (default: 1)")
     parser.add_argument("--batch-size", type=int, default=32, help="source frames per analysis chunk; retained frames per export chunk (default: 32)")
     for field in fields(PairCriteria):
@@ -251,6 +253,7 @@ def main(argv=None):
                            type_symbols=mapping, degrees_of_freedom=dof, compute_pairs=not args.no_pairs,
                            reaction_atom_counts=args.reaction_atom_counts,
                            pair_criteria=criteria, pair_backend=args.pair_backend, pair_workers=args.workers,
+                           **({"orientations": True} if args.orientations else {}),
                            pair_batch_size=args.batch_size)
             report = None
             if args.command == "run":

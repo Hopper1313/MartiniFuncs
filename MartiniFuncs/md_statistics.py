@@ -423,6 +423,27 @@ def cell_plane_spacings(cell):
     return np.array([volume / np.linalg.norm(np.cross(cell[(i+1) % 3], cell[(i+2) % 3])) for i in range(3)])
 
 
+def affine_step(previous_points, steps, previous_cell, cell, previous_origin, origin):
+    """Displacement over one frame of points that ride with the cell deformation.
+
+    A point with fixed fractional coordinates s, r = o + s H, moves by
+    (o_t - o_(t-1)) + s (H_t - H_(t-1)). s is taken at the step midpoint,
+    s = (s_(t-1) + s_t)/2 with s_t computed for the continuous (not rewrapped)
+    end point r_(t-1) + step, which is second-order accurate in the frame
+    spacing. Zero when cell and origin are unchanged. Row-vector cells.
+    """
+    p = np.asarray(previous_points, dtype=float).reshape(-1, 3)
+    d = np.asarray(steps, dtype=float).reshape(-1, 3)
+    previous_cell, cell = np.asarray(previous_cell, dtype=float), np.asarray(cell, dtype=float)
+    previous_origin, origin = np.asarray(previous_origin, dtype=float), np.asarray(origin, dtype=float)
+    if np.array_equal(previous_cell, cell) and np.array_equal(previous_origin, origin):
+        return np.zeros(np.shape(steps))
+    s_before = np.linalg.solve(previous_cell.T, (p - previous_origin).T).T
+    s_after = np.linalg.solve(cell.T, (p + d - origin).T).T
+    shift = (origin - previous_origin) + 0.5 * (s_before + s_after) @ (cell - previous_cell)
+    return shift.reshape(np.shape(steps))
+
+
 def wrap_about_center(points, cell, center):
     """The image of each point inside the cell centered at center: c + mic(r - c)."""
     center = np.asarray(center, dtype=float)

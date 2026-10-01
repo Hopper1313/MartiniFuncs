@@ -53,7 +53,8 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
                 degrees_of_freedom=None, compute_pairs=False, pair_criteria=None,
                 pair_backend="cached", pair_workers=1, pair_batch_size=32,
                 units=None, timestep_ps=None, units_style=None, type_symbols=None, progress=None,
-                reaction_atom_counts=None):
+                reaction_atom_counts=None, orientations=False, source_range=None,
+                on_topology_change=None, topology_persistence=1, frame_offsets=None):
     """Stream a text dump; retain scalar histories and all molecular COM vectors.
 
     max_frames caps source frames read, not retained frames. Molecules are the
@@ -117,9 +118,42 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
     Cached pairs retain initial component atom order; the reference graph's
     traversal order can change per frame. Molecular identity is the atom-ID set,
     not that traversal order. Candidate pair order and image conventions agree.
+
+    Also returned: cell_origin_angstrom (frames, 3), the LAMMPS lo corner, and
+    com_nonaffine_angstrom, the TOR trajectory with the affine motion of the
+    cell removed at every source frame (shear flow, barostat dilation); see
+    dynamics.unwrap_nonaffine and docs/dynamics_diagnostics.md. It equals
+    com_angstrom when the cell and its origin never change.
+
+    orientations=True adds orientation_axes (frames, molecules, 2, 3): each
+    molecule's unit long axis and plane normal (principal axes of its mass-
+    weighted gyration tensor), with signs made continuous frame to frame.
+
+    source_range=(start, stop) analyzes only source frames [start, stop) (stop
+    None = end of dump); the first frame of the range defines the molecules.
+    frame_offsets may supply frame_parallel.frame_offsets for the dump.
+
+    on_topology_change=None (default) keeps the fixed-membership behavior.
+    "record" or "truncate" checks every source frame for a change of molecular
+    topology (any bond between two reference molecules, or a molecule split),
+    with the same bond rule. A change counts once it persists for
+    topology_persistence consecutive source frames: every component that
+    changed at its first frame must stay inside a changed component (a new
+    product that also touches a neighbor briefly still persists; a contact that
+    separates again does not). Its first frame is the event. "record" lists events in topology_events and continues;
+    "truncate" stops there and keeps only frames before the event, recording it
+    as topology_event. analyze_segments chains truncated segments.
     """
     if pair_backend not in {"cached", "reference"}:
         raise ValueError("pair_backend must be 'cached' or 'reference'")
+    if on_topology_change not in {None, "record", "truncate"}:
+        raise ValueError("on_topology_change must be None, 'record' or 'truncate'")
+    if isinstance(topology_persistence, bool) or not isinstance(topology_persistence, int) or topology_persistence < 1:
+        raise ValueError("topology_persistence must be a positive integer")
+    range_start, range_stop = (0, None) if source_range is None else source_range
+    if (isinstance(range_start, bool) or not isinstance(range_start, (int, np.integer)) or range_start < 0
+            or (range_stop is not None and range_stop <= range_start)):
+        raise ValueError("source_range must be (start, stop) with 0 <= start < stop, or (start, None)")
     for name, value in (("pair_workers", pair_workers), ("pair_batch_size", pair_batch_size)):
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise ValueError(f"{name} must be a positive integer")
@@ -165,19 +199,35 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
         raise ValueError("Timestep missing from input: supply timestep_ps from the original run/restart settings")
     mappings = list(settings["dump_elements"].values())
     mapping = type_symbols if type_symbols is not None else (mappings[0] if mappings and all(m == mappings[0] for m in mappings) else None)
-    from .frame_parallel import analysis_frames, prepare_frame
+    from .frame_parallel import analysis_frames, frame_offsets as index_frames, prepare_frame
     preparation = {}
     reader_options = dict(units="metal", input_datafile=files["data"], type_symbols=mapping)
-    frames = (analysis_frames(files["dump"], reader_options, preparation,
-                             workers=pair_workers, batch_size=pair_batch_size,
-                             max_frames=max_frames, progress=progress)
-              if pair_workers > 1 else iter_lammps_frames(files["dump"], **reader_options))
+    offsets = frame_offsets
+    if range_start or range_stop is not None:
+        offsets = index_frames(files["dump"]) if offsets is None else offsets
+        if range_start >= len(offsets) - 1:
+            raise ValueError(f"source_range starts at frame {range_start}; the dump has {len(offsets)-1} frames")
+    if pair_workers > 1:
+        frames = analysis_frames(files["dump"], reader_options, preparation, workers=pair_workers,
+                                 batch_size=pair_batch_size, max_frames=max_frames, progress=progress,
+                                 source_range=(range_start, range_stop), offsets=offsets)
+    elif offsets is not None and (range_start or range_stop is not None):
+        end = len(offsets) - 1 if range_stop is None else min(range_stop, len(offsets) - 1)
+        frames = iter_lammps_frames(files["dump"], byte_range=(int(offsets[range_start]), int(offsets[end])),
+                                    frame_offset=range_start, **reader_options)
+    else:
+        frames = iter_lammps_frames(files["dump"], **reader_options)
     rows, coms, velocities, forces, pairs_by_frame = [], [], [], [], []
     pair_shifts_by_frame = []
     wrapped_coms, box_lengths, cells = [], [], []
+    origins, nonaffine_coms, axes_by_frame = [], [], []
     max_step_fraction = 0.
     notices = ["Molecular membership fixed from first-frame bond graph; species grouped by formula.",
-               "No potential energy or pressure computed from atomic forces; thermo logs are not parsed."]
+               "No potential energy or pressure computed from atomic forces; read thermo logs with "
+               "MartiniFuncs.thermo."]
+    previous_cell = previous_origin = running_nonaffine = previous_axes = None
+    topology_events, topology_event = [], None
+    pending_change, pending_start, pending_count, recorded_change = (), None, 0, ()
     diffusion_reason = None
     first = None
     previous_com = running_com = None
@@ -252,7 +302,9 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
                     compute_pairs=compute_pairs, pair_criteria=pair_criteria,
                     frame_stride=frame_stride, bond_scale=bond_scale,
                     degrees_of_freedom=degrees_of_freedom,
-                    reaction_atom_counts=reaction_atom_counts)
+                    reaction_atom_counts=reaction_atom_counts,
+                    molecule_sizes=np.bincount(groups), check_topology=on_topology_change is not None,
+                    orientations=bool(orientations))
             prepared = getattr(frame, "prepared", None)
             if prepared is None:
                 prepared = prepare_frame(frame, preparation)
@@ -269,12 +321,43 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
                 wrapped = in_cell - center
                 if previous_com is None:
                     running_com = wrapped.copy()
+                    running_nonaffine = wrapped.copy()
                 else:
                     step = md.minimum_image(in_cell-previous_com, cell)
                     running_com += step
                     fraction = np.abs(np.linalg.solve(cell.T, step.reshape(-1, 3).T)).max()
                     max_step_fraction = max(max_step_fraction, float(fraction))
-                previous_com = in_cell
+                    running_nonaffine += step - md.affine_step(previous_com, step, previous_cell, cell,
+                                                               previous_origin, prepared.origin)
+                previous_com, previous_cell, previous_origin = in_cell, cell, prepared.origin
+            axes = prepared.axes
+            if axes is not None:
+                if previous_axes is not None:
+                    # Eigenvector signs are arbitrary: keep each axis continuous in time.
+                    axes = np.where((np.sum(axes * previous_axes, axis=-1) < 0)[..., None], -axes, axes)
+                previous_axes = axes
+            if on_topology_change is not None:
+                change = prepared.topology
+                if not change:
+                    pending_change, pending_count, recorded_change = (), 0, ()
+                else:
+                    if not _persists(pending_change, change):
+                        # A new change starts; a change persists while every component that
+                        # changed at its first frame stays inside a changed component (extra
+                        # transient contacts with neighbors do not reset it).
+                        pending_change, pending_start, pending_count = change, (frame.index, frame.timestep), 0
+                        recorded_change = ()
+                    pending_count += 1
+                    if pending_count >= topology_persistence and not recorded_change:
+                        recorded_change = pending_change
+                        event = dict(frame=int(pending_start[0]), timestep=int(pending_start[1]),
+                                     persistence_frames=int(topology_persistence),
+                                     changed_components=[list(c) for c in pending_change],
+                                     formulas=[_formula(first, lookup, c) for c in pending_change])
+                        topology_events.append(event)
+                        if on_topology_change == "truncate":
+                            topology_event = event
+                            break
             if frame.index % frame_stride:
                 continue
             row = {"frame": frame.index, "timestep": frame.timestep, "time_ps": frame.timestep*settings["timestep"],
@@ -291,9 +374,23 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
             wrapped_coms.append(wrapped.copy() if diffusion_reason is None else np.full_like(com,np.nan))
             box_lengths.append(cell.diagonal().copy())
             cells.append(cell.copy())
+            origins.append(np.asarray(prepared.origin, dtype=float).copy())
+            nonaffine_coms.append(running_nonaffine.copy() if diffusion_reason is None else np.full_like(com, np.nan))
+            if axes is not None:
+                axes_by_frame.append(axes)
             coms.append(running_com.copy() if diffusion_reason is None else np.full_like(com,np.nan))
             if progress is not None and (len(rows)==1 or len(rows)%100==0):
                 progress(f"Processed {frames_read} frames; retained {len(rows)}; time {row['time_ps']:g} ps")
+    if topology_event is not None:
+        keep = sum(1 for row in rows if row["frame"] < topology_event["frame"])
+        for values in (rows, velocities, forces, pairs_by_frame, pair_shifts_by_frame, wrapped_coms,
+                       box_lengths, cells, coms, origins, nonaffine_coms, axes_by_frame):
+            del values[keep:]
+        notices.append(f"Topology changed at source frame {topology_event['frame']} "
+                       f"(persisting {topology_persistence} frames); analysis truncated before it.")
+    elif topology_events:
+        notices.append(f"{len(topology_events)} topology change(s) recorded; fixed-membership statistics "
+                       "after them mix reactants and products.")
     if len(rows)<2:
         raise ValueError("Need at least two retained frames")
     times = np.array([row["time_ps"] for row in rows])
@@ -306,7 +403,14 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
                        "is ambiguous at 0.5. Save frames more often.")
     if not diffusion_reason and len(cells) and not all(md._is_diagonal(c) for c in cells):
         notices.append("Non-orthorhombic cell: COM displacements are lab-frame and include any imposed shear flow.")
+    range_end = topology_event["frame"] if topology_event is not None else range_start + frames_read
     return {"files":files,"settings":settings,"frames":rows,"frames_read":frames_read,
+            "source_range":[int(range_start), int(range_end)],
+            "cell_origin_angstrom":np.asarray(origins),
+            "com_nonaffine_angstrom":None if diffusion_reason else np.asarray(nonaffine_coms),
+            "orientation_axes":np.asarray(axes_by_frame) if orientations else None,
+            "topology_events":topology_events if on_topology_change is not None else None,
+            "topology_event":topology_event,
             "reaction_screen": {"reactant_atom_counts": list(reaction_atom_counts),
                                 "bond_scale": bond_scale, "frames_checked": frames_read} if reaction_atom_counts is not None else None,
             "source_frame_limit":max_frames,"species":np.array(species),
@@ -324,6 +428,53 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
             "notices":notices}
 
 
+def _persists(pending, current):
+    """True if every pending changed component lies inside some current changed component."""
+    if not pending:
+        return False
+    current = [set(c) for c in current]
+    return all(any(set(p) <= c for c in current) for p in pending)
+
+
+def _formula(atoms, lookup, atom_ids):
+    """Chemical formula of a set of persistent atom IDs in the reference frame."""
+    return atoms[[lookup[int(i)] for i in atom_ids]].get_chemical_formula()
+
+
+def analyze_segments(directory, *, topology_persistence=5, progress=None, **options):
+    """Analyze a reactive trajectory as consecutive fixed-topology segments.
+
+    Runs analyze_run(on_topology_change="truncate") from source frame 0; when a
+    persistent topology change ends a segment at frame f, the next segment
+    starts at f with molecules re-derived from frame f, so products become new
+    species (grouped by formula) and every fixed-membership statistic applies
+    within each segment. Returns {"segments": [result, ...], "events": [...]},
+    where each event also records the segment that it ends. options are passed
+    to analyze_run (units, timestep_ps, compute_pairs, frame_stride, ...).
+    TOR and lag statistics never cross a segment boundary.
+    """
+    if "source_range" in options or "on_topology_change" in options:
+        raise ValueError("analyze_segments sets source_range and on_topology_change itself")
+    from .frame_parallel import frame_offsets
+    files = resolve_run_files(directory, input_file=options.get("input_file"), dump_file=options.get("dump_file"),
+                              data_file=options.get("data_file"), require_input=False)
+    offsets = frame_offsets(files["dump"])
+    segments, events, start = [], [], 0
+    while start < len(offsets) - 1:
+        if progress:
+            progress(f"Segment {len(segments)}: source frames from {start}")
+        result = analyze_run(directory, source_range=(start, None), on_topology_change="truncate",
+                             topology_persistence=topology_persistence, frame_offsets=offsets,
+                             progress=progress, **options)
+        segments.append(result)
+        event = result["topology_event"]
+        if event is None:
+            break
+        events.append(dict(event, segment=len(segments) - 1))
+        start = event["frame"]
+    return {"segments": segments, "events": events}
+
+
 def select_frame_window(result, *, startframe=0, endframe=None):
     """Return a retained-frame mask for source frames in [startframe, endframe).
 
@@ -336,7 +487,8 @@ def select_frame_window(result, *, startframe=0, endframe=None):
     frames = np.asarray([r["frame"] for r in result["frames"]])
     if frames.ndim != 1 or not len(frames) or frames.dtype.kind not in "iu" or np.any(np.diff(frames) <= 0):
         raise ValueError("Require increasing integer source frame indices")
-    total = result.get("frames_read", int(frames[-1]) + 1)
+    source_range = result.get("source_range")
+    total = source_range[1] if source_range else result.get("frames_read", int(frames[-1]) + 1)
     endframe = total if endframe is None else endframe
     for name, value in (("startframe", startframe), ("endframe", endframe)):
         if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)) or value < 0:
@@ -404,5 +556,6 @@ def molecular_window_statistics(result, *, startframe=0, endframe=None, max_lag_
                 progress(f'{name}: {option} complete ({nlag} lags)')
         statistics[name] = entry
     return {"time_window_ps":[float(selected_times[0]),float(selected_times[-1])],
-            "frame_window":[int(startframe), int(endframe if endframe is not None else result.get("frames_read", result["frames"][-1]["frame"]+1))],
+            "frame_window":[int(startframe), int(endframe if endframe is not None else
+                            (result.get("source_range") or [0, result.get("frames_read", result["frames"][-1]["frame"]+1)])[1])],
             "frame_mask":keep,"species":statistics}
