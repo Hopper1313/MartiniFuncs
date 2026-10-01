@@ -21,6 +21,7 @@ convert persistent IDs to local ASE indices explicitly.
 from __future__ import annotations
 
 from collections import OrderedDict, defaultdict, deque
+from contextlib import contextmanager
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TypeAlias
@@ -39,6 +40,25 @@ BondGraph: TypeAlias = dict[AtomID, list[tuple[AtomID, Shift]]]
 
 # id(ID array) -> (ID values, {ID: local row}); see get_index_maps.
 _INDEX_MAP_CACHE: OrderedDict = OrderedDict()
+# Active only inside frame_cache(); see unwrap_component.
+_UNWRAP_MEMO: dict | None = None
+
+
+@contextmanager
+def frame_cache():
+    """Memoize unwrap_component within one frame whose atoms and graph do not change.
+
+    Inside the block, repeated unwraps of the same component (pair placement,
+    geometry, shells, site COMs) are computed once. Leave the block before
+    moving to another frame or mutating positions/graph: object ids can be
+    reused, so the memo must never outlive the frame it was built for.
+    """
+    global _UNWRAP_MEMO
+    previous, _UNWRAP_MEMO = _UNWRAP_MEMO, {}
+    try:
+        yield
+    finally:
+        _UNWRAP_MEMO = previous
 
 
 # -----------------------------------------------------------------------------
@@ -478,7 +498,16 @@ def unwrap_component(
     component = [int(i) for i in component]
     if not component:
         return {}, np.empty((0, 3), dtype=float)
+    if _UNWRAP_MEMO is not None:
+        key = (id(atoms), id(graph), tuple(component), index_array, strict)
+        if key not in _UNWRAP_MEMO:
+            _UNWRAP_MEMO[key] = _unwrap_component(atoms, graph, component, index_array, strict)
+        shifts, unwrapped = _UNWRAP_MEMO[key]
+        return dict(shifts), unwrapped.copy()
+    return _unwrap_component(atoms, graph, component, index_array, strict)
 
+
+def _unwrap_component(atoms, graph, component, index_array, strict):
     component_set = set(component)
     if len(component_set) != len(component):
         raise ValueError("component contains duplicate atom IDs.")

@@ -566,46 +566,50 @@ def _export_frame_chunk(task):
     from .geom_utils import (get_pair_positions_and_forces, get_pair_shell_clusters,
                              get_cluster_positions_and_forces, pair_data_to_extxyz)
     from .lammpsio import iter_lammps_frames
-    from .pair_selection import PairCriteria, assess_prereactive_pairs
+    from .pair_selection import PairCriteria, assess_prereactive_pairs, site_cache
     path, reader_options, ranges, selected, shell_radius, scale, count = task
     pair_stream, index_stream = StringIO(), StringIO()
     cluster_stream = StringIO() if shell_radius is not None else None
     frame_counts = []
     frames = (frame for index, lower, upper in ranges
               for frame in iter_lammps_frames(path, byte_range=(lower, upper), frame_offset=index, **reader_options))
-    for frame in frames:
-        row, pairs, shifts = selected[frame.index]
-        frame_counts.append(dict(frame=frame.index, timestep=frame.timestep,
-            time_ps=row["time_ps"], pair_count=len(pairs), first_structure_index=count))
-        if not pairs:
-            continue
-        if "lammps_forces" not in frame.atoms.arrays:
-            raise ValueError("Pair structure export requires source force columns")
-        bonded = graph.build_bond_graph(frame.atoms, scale=scale)
-        components = graph.connected_components(bonded, atom_ids=graph.atom_ids(frame.atoms))
-        memberships = {frozenset(c) for c in components}
-        if any(frozenset(c) not in memberships for pair in pairs for c in pair):
-            raise ValueError(f"Frame {frame.index}: cached pair membership differs from current graph; use reference analysis")
-        records = get_pair_positions_and_forces(frame.atoms, frame, pairs, shifts, bond_scale=scale, graph=bonded)
-        _export_identity(records, frame, count, row["time_ps"])
-        buffer = StringIO()
-        pair_data_to_extxyz(records, buffer)
-        pair_stream.write(buffer.getvalue())
-        assessments = assess_prereactive_pairs(frame.atoms, pairs, shifts, criteria=PairCriteria(), scale=scale, graph=bonded)
-        if cluster_stream is not None:
-            clusters = get_pair_shell_clusters(frame.atoms, pairs, shifts, shell_radius=shell_radius,
-                                               scale=scale, graph=bonded, components=components)
-            buffer = StringIO()
-            cluster_records = get_cluster_positions_and_forces(frame.atoms, frame, clusters)
-            _export_identity(cluster_records, frame, count, row["time_ps"])
-            pair_data_to_extxyz(cluster_records, buffer)
-            cluster_stream.write(buffer.getvalue())
-        for candidate, (pair, shift, assessment) in enumerate(zip(pairs, shifts, assessments)):
-            record = dict(structure_index=count, frame=frame.index, timestep=frame.timestep,
-                          time_ps=row["time_ps"], candidate=candidate, pair_atom_ids=pair,
-                          cpd_shift=shift, geometry=asdict(assessment.geometry) if assessment.geometry else None,
-                          geometry_errors=assessment.reasons)
-            index_stream.write(json.dumps(_plain(record), allow_nan=False) + "\n")
-            count += 1
+    # Reactive sites are reused while molecules are unchanged; unwraps are
+    # memoized within each frame only.
+    with site_cache():
+        for frame in frames:
+            with graph.frame_cache():
+                row, pairs, shifts = selected[frame.index]
+                frame_counts.append(dict(frame=frame.index, timestep=frame.timestep,
+                    time_ps=row["time_ps"], pair_count=len(pairs), first_structure_index=count))
+                if not pairs:
+                    continue
+                if "lammps_forces" not in frame.atoms.arrays:
+                    raise ValueError("Pair structure export requires source force columns")
+                bonded = graph.build_bond_graph(frame.atoms, scale=scale)
+                components = graph.connected_components(bonded, atom_ids=graph.atom_ids(frame.atoms))
+                memberships = {frozenset(c) for c in components}
+                if any(frozenset(c) not in memberships for pair in pairs for c in pair):
+                    raise ValueError(f"Frame {frame.index}: cached pair membership differs from current graph; use reference analysis")
+                records = get_pair_positions_and_forces(frame.atoms, frame, pairs, shifts, bond_scale=scale, graph=bonded)
+                _export_identity(records, frame, count, row["time_ps"])
+                buffer = StringIO()
+                pair_data_to_extxyz(records, buffer)
+                pair_stream.write(buffer.getvalue())
+                assessments = assess_prereactive_pairs(frame.atoms, pairs, shifts, criteria=PairCriteria(), scale=scale, graph=bonded)
+                if cluster_stream is not None:
+                    clusters = get_pair_shell_clusters(frame.atoms, pairs, shifts, shell_radius=shell_radius,
+                                                       scale=scale, graph=bonded, components=components)
+                    buffer = StringIO()
+                    cluster_records = get_cluster_positions_and_forces(frame.atoms, frame, clusters)
+                    _export_identity(cluster_records, frame, count, row["time_ps"])
+                    pair_data_to_extxyz(cluster_records, buffer)
+                    cluster_stream.write(buffer.getvalue())
+                for candidate, (pair, shift, assessment) in enumerate(zip(pairs, shifts, assessments)):
+                    record = dict(structure_index=count, frame=frame.index, timestep=frame.timestep,
+                                  time_ps=row["time_ps"], candidate=candidate, pair_atom_ids=pair,
+                                  cpd_shift=shift, geometry=asdict(assessment.geometry) if assessment.geometry else None,
+                                  geometry_errors=assessment.reasons)
+                    index_stream.write(json.dumps(_plain(record), allow_nan=False) + "\n")
+                    count += 1
     return (pair_stream.getvalue(), cluster_stream.getvalue() if cluster_stream is not None else None,
             index_stream.getvalue(), frame_counts, count)

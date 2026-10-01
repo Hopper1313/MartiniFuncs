@@ -494,3 +494,52 @@ no-evaluator option.
 
 **Baseline comparison:** the only differences are the added `box_bounds` keys and the corrected flags
 in the `wrap=True` fixture.
+
+## Phase B: performance
+
+### B.1 Export
+**Changed:**
+- **`pair_data_to_extxyz`** formats each row with one `%` operation (`"%.17g"` for floats, `"%s"`
+  otherwise) instead of one `format` call per value.
+- **`graph.frame_cache()`** memoizes `unwrap_component` within one frame, so each molecule is
+  unwrapped once per frame instead of up to three times (pair record, geometry, shell). The memo is
+  dropped after each frame, because object ids can be reused.
+- **`pair_selection.site_cache()`** reuses the reactive-site search across frames. It is keyed by the
+  molecule's atom IDs, its elements and its exact intramolecular bond list, so any bond change misses
+  the cache.
+- `_export_frame_chunk` uses both.
+
+**Verified:**
+- The export of 200 frames (`pairs.extxyz`, `clusters.extxyz`, `index.jsonl`) is byte-identical
+  before and after.
+- Capture comparison against phase A: 0 differences.
+- New tests in `tests/test_export_caches.py`: the caches don't change geometry or shells, both are
+  released on exit, and the site cache misses when a bond is removed.
+
+| | before | after |
+|---|---|---|
+| export, per frame | 53.5 ms | 38.4 ms (1.4×) |
+| CLI `run` (400 frames, with export) | 22.3 s | 17.3 s |
+| CLI `extract` | 11.8 s | 9.1 s |
+
+**Honest note:** the 3–5× suggested earlier was not reached. Most of the remaining export time is
+per-atom shell bookkeeping in Python (`get_shell_contacts`, `place_shell_components`), plus a bond-graph
+rebuild per frame. That rebuild is kept on purpose, as an independent check that molecule membership
+hasn't changed.
+
+### B.2 Reaction screen
+**Changed:** for orthorhombic periodic cells, the screen finds bonded candidates with a single periodic
+KD-tree (SciPy `boxsize`): no ghost images, shifts or sorting, which connectivity doesn't need. Other
+cells keep the general `periodic_pairs` path. The screen stays generic: any A+B-sized component
+anywhere, as before.
+
+**Verified:** connected components are identical to the bond-graph rule on 21 frames, including a copy
+shifted so molecules straddle every face.
+
+| per frame | before | after |
+|---|---|---|
+| orthorhombic | 3.0 ms | 1.9 ms |
+| triclinic | 3.0 ms | 3.0 ms (unchanged path) |
+
+The sub-1 ms figure suggested earlier needs a chemistry-specific screen (reactive sites only), which
+would miss other reactions. It was not done.

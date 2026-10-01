@@ -6,6 +6,7 @@ never independent minimum images for the two forming bonds.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, fields
 import numpy as np
 
@@ -104,9 +105,48 @@ def _dienophile_sites(graph, elements, mal):
     return next(iter(sites)), next(iter(planes))
 
 
+# Active only inside site_cache(); see _molecule_sites.
+_SITE_MEMO: dict | None = None
+
+
+@contextmanager
+def site_cache():
+    """Reuse reactive-site identification across frames with unchanged molecules.
+
+    A molecule's sites depend only on its atom IDs, elements and intramolecular
+    bonds, so results are keyed by exactly those; any bond change misses the
+    cache. Failures (ValueError) are cached and re-raised the same way.
+    """
+    global _SITE_MEMO
+    previous, _SITE_MEMO = _SITE_MEMO, {}
+    try:
+        yield
+    finally:
+        _SITE_MEMO = previous
+
+
+def _molecule_sites(function, graph, elements, ids):
+    if _SITE_MEMO is None:
+        return function(graph, elements, ids)
+    members = set(ids)
+    bonds = tuple(sorted((i, j, tuple(int(x) for x in s)) for i in members for j, s in graph.get(i, [])
+                         if j in members and i < j))
+    key = (function.__name__, tuple(ids), tuple(elements[i] for i in ids), bonds)
+    if key not in _SITE_MEMO:
+        try:
+            _SITE_MEMO[key] = function(graph, elements, ids)
+        except ValueError as exc:
+            _SITE_MEMO[key] = exc
+    value = _SITE_MEMO[key]
+    if isinstance(value, ValueError):
+        raise ValueError(*value.args)
+    return value
+
+
 def _sites(atoms, graph, cpd, mal):
     elements = dict(zip(mfg.atom_ids(atoms), atoms.get_chemical_symbols()))
-    return (*_cpd_sites(graph, elements, cpd), *_dienophile_sites(graph, elements, mal))
+    return (*_molecule_sites(_cpd_sites, graph, elements, cpd),
+            *_molecule_sites(_dienophile_sites, graph, elements, mal))
 
 
 def _normal(points):

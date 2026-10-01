@@ -23,6 +23,29 @@ class PossibleReactionError(ValueError):
         return type(self), (self.candidates,)
 
 
+def _bonded_candidates(atoms, cutoff):
+    """Atom pairs (i, j, minimum-image distance) closer than cutoff, for connectivity only.
+
+    Orthorhombic periodic cells with cutoff below half the shortest side use one
+    periodic KD-tree (no ghost images, shifts or sorting): connectivity needs only
+    whether some image is bonded, and the minimum image decides that. Other cells
+    use graph.periodic_pairs. Both give the same connected components.
+    """
+    from scipy.spatial import cKDTree
+    cell = atoms.cell.array
+    lengths = np.diagonal(cell)
+    if (atoms.pbc.all() and np.array_equal(cell, np.diag(lengths)) and np.all(lengths > 0)
+            and cutoff < lengths.min() / 2):
+        inside = np.mod(atoms.positions - np.asarray(atoms.get_celldisp()).ravel(), lengths)
+        inside[inside >= lengths] = 0.0   # mod can return L for tiny negative values
+        pairs = cKDTree(inside, boxsize=lengths).query_pairs(cutoff, output_type="ndarray")
+        delta = inside[pairs[:, 1]] - inside[pairs[:, 0]]
+        delta -= lengths * np.rint(delta / lengths)
+        return pairs[:, 0], pairs[:, 1], np.linalg.norm(delta, axis=1)
+    i, j, _, d = graph.periodic_pairs(atoms.positions, cell, atoms.pbc, cutoff)
+    return i, j, d
+
+
 def find_possible_products(atoms, *, reactant_atom_counts, bond_scale=1.3):
     """Find components with size sum(reactant_atom_counts) in one current frame.
 
@@ -49,7 +72,7 @@ def find_possible_products(atoms, *, reactant_atom_counts, bond_scale=1.3):
     # Same bond rule as graph.build_bond_graph, without building the ID-keyed
     # adjacency dictionary: only component sizes and members are needed here.
     radii = bond_scale * covalent_radii[atoms.numbers]
-    i, j, _, d = graph.periodic_pairs(atoms.positions, atoms.cell.array, atoms.pbc, 2*float(radii.max()))
+    i, j, d = _bonded_candidates(atoms, 2*float(radii.max()))
     bonded = (j > i) & (d < radii[i] + radii[j])
     count, labels = connected_components(coo_matrix((np.ones(bonded.sum()), (i[bonded], j[bonded])),
                                                     shape=(len(atoms), len(atoms))), directed=False)

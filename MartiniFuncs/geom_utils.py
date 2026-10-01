@@ -875,13 +875,15 @@ def pair_data_to_extxyz(data, filename):
             columns = list(arrays)
             comment, _, _, _ = output_column_format(cluster, columns, arrays)
             stream.write(f"{len(cluster)}\n{comment}\n")
-            for row in range(len(cluster)):
-                values = []
-                for name in columns:
-                    array = arrays[name]
-                    for value in np.asarray(array[row]).reshape(-1):
-                        values.append(format(float(value), ".17g") if array.dtype.kind in "fd" else str(value))
-                stream.write(" ".join(values) + "\n")
+            # One %-format per row ("%.17g" % x == format(x, ".17g"); "%s" == str).
+            blocks, tokens = [], []
+            for name in columns:
+                array = np.asarray(arrays[name])
+                block = array.reshape(len(cluster), -1)
+                tokens += ["%.17g" if array.dtype.kind in "fd" else "%s"] * block.shape[1]
+                blocks.append(block.tolist())
+            line = " ".join(tokens) + "\n"
+            stream.write("".join(line % tuple(v for part in row for v in part) for row in zip(*blocks)))
 
 
 
