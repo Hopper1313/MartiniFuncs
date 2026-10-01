@@ -1,33 +1,18 @@
-"""Optional CPD/dienophile encounter diagnostics, not TS predictions.
+"""CPD + N4T reactive sites and pair geometry (the measurements behind CpdN4tModel).
 
-All angles are unsigned acute angles (0--90 degrees). Thresholds are research
+Encounter diagnostics, not TS predictions. All angles are unsigned acute
+angles (0--90 degrees). Thresholds (model.CpdN4tCriteria) are research
 choices: none are imposed by default. Distances use the jointly placed pair,
 never independent minimum images for the two forming bonds.
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 import numpy as np
 
+from MartiniFuncs.pairs.assessment import assess_pairs, measure_pair
+from MartiniFuncs.pairs.model import get_pair_model, model_sites
 from MartiniFuncs.structure import graph as mfg
-
-
-@dataclass(frozen=True)
-class PairCriteria:
-    max_forming_distance: float | None = None
-    max_distance_imbalance: float | None = None
-    max_axis_angle: float | None = None
-    max_plane_angle: float | None = None
-    max_approach_angle: float | None = None
-
-    def __post_init__(self):
-        for field in fields(self):
-            value = getattr(self, field.name)
-            if value is not None and (not np.isfinite(value) or value < 0):
-                raise ValueError(f"{field.name} must be finite and nonnegative")
-            if value is not None and "angle" in field.name and value > 90:
-                raise ValueError(f"{field.name} must be at most 90 degrees")
 
 
 @dataclass(frozen=True)
@@ -52,17 +37,6 @@ class PairGeometry:
         """Return |d_1-d_2| in Angstrom for the chosen forming_distances.
         """
         return abs(self.forming_distances[0] - self.forming_distances[1])
-
-
-@dataclass(frozen=True)
-class PairAssessment:
-    pair_index: int
-    geometry: PairGeometry | None
-    reasons: tuple[str, ...]
-
-    @property
-    def accepted(self):
-        return not self.reasons
 
 
 def _subgraph(graph, ids):
@@ -105,48 +79,11 @@ def _dienophile_sites(graph, elements, mal):
     return next(iter(sites)), next(iter(planes))
 
 
-# Active only inside site_cache(); see _molecule_sites.
-_SITE_MEMO: dict | None = None
-
-
-@contextmanager
-def site_cache():
-    """Reuse reactive-site identification across frames with unchanged molecules.
-
-    A molecule's sites depend only on its atom IDs, elements and intramolecular
-    bonds, so results are keyed by exactly those; any bond change misses the
-    cache. Failures (ValueError) are cached and re-raised the same way.
-    """
-    global _SITE_MEMO
-    previous, _SITE_MEMO = _SITE_MEMO, {}
-    try:
-        yield
-    finally:
-        _SITE_MEMO = previous
-
-
-def _molecule_sites(function, graph, elements, ids):
-    if _SITE_MEMO is None:
-        return function(graph, elements, ids)
-    members = set(ids)
-    bonds = tuple(sorted((i, j, tuple(int(x) for x in s)) for i in members for j, s in graph.get(i, [])
-                         if j in members and i < j))
-    key = (function.__name__, tuple(ids), tuple(elements[i] for i in ids), bonds)
-    if key not in _SITE_MEMO:
-        try:
-            _SITE_MEMO[key] = function(graph, elements, ids)
-        except ValueError as exc:
-            _SITE_MEMO[key] = exc
-    value = _SITE_MEMO[key]
-    if isinstance(value, ValueError):
-        raise ValueError(*value.args)
-    return value
-
-
 def _sites(atoms, graph, cpd, mal):
+    """(termini, diene carbons, C=C, dienophile plane carbons) of one pair, memoized in site_cache()."""
+    model = get_pair_model("cpd_n4t")
     elements = dict(zip(mfg.atom_ids(atoms), atoms.get_chemical_symbols()))
-    return (*_molecule_sites(_cpd_sites, graph, elements, cpd),
-            *_molecule_sites(_dienophile_sites, graph, elements, mal))
+    return (*model_sites(model, graph, elements, cpd, 0), *model_sites(model, graph, elements, mal, 1))
 
 
 def _normal(points):
@@ -191,12 +128,7 @@ def measure_pair_geometry(atoms, pair, shift, *, scale=1.3, graph=None):
     """
     if graph is None:
         graph = mfg.build_bond_graph(atoms, scale=scale)
-    cpd, mal = pair
-    ends, diene, cc, mal_plane = _sites(atoms, graph, cpd, mal)
-    ci, cx, _ = mfg.place_component(atoms, graph, cpd, image_shift=shift, strict=True)
-    mi, mx, _ = mfg.place_component(atoms, graph, mal, strict=True)
-    frame_rows = {int(atom_id): row for row, atom_id in enumerate(mfg.atom_ids(atoms))}
-    return _measure_placed_pair(ci, cx, mi, mx, (ends, diene, cc, mal_plane), frame_rows)
+    return measure_pair(atoms, pair, shift, "cpd_n4t", graph=graph)
 
 
 def _measure_placed_pair(ci, cx, mi, mx, sites, frame_rows):
@@ -233,40 +165,8 @@ def assess_prereactive_pairs(atoms, pairs, shifts, *, criteria=None, scale=1.3, 
     """Return diagnostics/rejection reasons for every candidate in input order.
 
     Reject when max(d_1,d_2), |d_1-d_2|, or a measured acute angle
-    exceeds its corresponding non-None threshold. Equality passes. Distances
-    are Angstrom, angles degrees; invalid geometry is always rejected.
+    exceeds its corresponding non-None CpdN4tCriteria threshold. Equality passes.
+    Distances are Angstrom, angles degrees; invalid geometry is always rejected.
     An optional graph is reused and must describe this same frame and bond scale.
     """
-    if len(pairs) != len(shifts):
-        raise ValueError("pairs and shifts must have the same length")
-    criteria = PairCriteria() if criteria is None else criteria
-    if graph is None:
-        graph = mfg.build_bond_graph(atoms, scale=scale)
-    results = []
-    for index, (pair, shift) in enumerate(zip(pairs, shifts)):
-        try:
-            geometry = measure_pair_geometry(atoms, pair, shift, graph=graph)
-        except ValueError as exc:
-            results.append(PairAssessment(index, None, (str(exc),)))
-            continue
-        reasons = _rejection_reasons(geometry, criteria)
-        results.append(PairAssessment(index, geometry, reasons))
-    return results
-
-
-def _rejection_reasons(geometry, criteria):
-    """Reject measurements strictly above non-None PairCriteria thresholds.
-
-    Compare max(d1,d2), abs(d1-d2), and the three acute angles; equality passes.
-    """
-    values = {
-        "max_forming_distance": max(geometry.forming_distances),
-        "max_distance_imbalance": geometry.distance_imbalance,
-        "max_axis_angle": geometry.axis_angle,
-        "max_plane_angle": geometry.plane_angle,
-        "max_approach_angle": geometry.approach_angle,
-    }
-    reasons = tuple(f"{name}: {value:.6g} > {getattr(criteria, name):.6g}"
-                    for name, value in values.items()
-                    if getattr(criteria, name) is not None and value > getattr(criteria, name))
-    return reasons
+    return assess_pairs(atoms, pairs, shifts, "cpd_n4t", criteria=criteria, scale=scale, graph=graph)

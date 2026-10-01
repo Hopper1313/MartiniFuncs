@@ -11,7 +11,8 @@ from MartiniFuncs.structure import graph
 from MartiniFuncs.pairs import lifetimes
 from MartiniFuncs.chemistry.cpd_n4t.pairs import get_all_prereactive_pairs
 from MartiniFuncs.io.lammps import iter_lammps_frames, read_lammps_frame
-from MartiniFuncs.chemistry.cpd_n4t.selection import PairCriteria, assess_prereactive_pairs
+from MartiniFuncs.chemistry.cpd_n4t import CpdN4tCriteria
+from MartiniFuncs.chemistry.cpd_n4t.selection import assess_prereactive_pairs
 from MartiniFuncs.trajectory.analysis import analyze_run
 from MartiniFuncs.pairs.topology import FixedPairTopology
 
@@ -41,7 +42,7 @@ class TrajectoryPairTests(unittest.TestCase):
         topology = FixedPairTopology.from_frame(atoms, bonded, components)
         whole = whole_positions(atoms, bonded, components)
         reference_pairs, reference_shifts = get_all_prereactive_pairs(atoms, reactive_radius=radius)
-        for criteria in (None, PairCriteria(), PairCriteria(max_axis_angle=45, max_plane_angle=5)):
+        for criteria in (None, CpdN4tCriteria(), CpdN4tCriteria(max_axis_angle=45, max_plane_angle=5)):
             pairs, shifts, reports = topology.evaluate(whole, atoms.cell.array, atoms.pbc,
                                                       criteria=criteria, reactive_radius=radius)
             if criteria is None:
@@ -91,7 +92,7 @@ class TrajectoryPairTests(unittest.TestCase):
             if topology is None:
                 topology = FixedPairTopology.from_frame(atoms, bonded, components)
             whole = whole_positions(atoms, bonded, components)
-            pairs, shifts, reports = topology.evaluate(whole, atoms.cell.array, atoms.pbc, criteria=PairCriteria())
+            pairs, shifts, reports = topology.evaluate(whole, atoms.cell.array, atoms.pbc, criteria=CpdN4tCriteria())
             rp, rs = get_all_prereactive_pairs(atoms)
             reference = assess_prereactive_pairs(atoms, rp, rs)
             self.assertEqual(len(reports), len(reference))
@@ -115,7 +116,7 @@ class TrajectoryPairTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             shutil.copyfile(FIXTURES / "multiple_frames.lammpstrj", Path(directory) / "trajectory.lammpstrj")
             options = dict(units="metal", timestep_ps=.0005, compute_pairs=True,
-                           pair_criteria=PairCriteria(max_axis_angle=60), frame_stride=2)
+                           pair_criteria=CpdN4tCriteria(max_axis_angle=60), frame_stride=2)
             reference = analyze_run(directory, pair_backend="reference", **options)
             for workers, backend in ((1, 'cached'), (2, 'cached'), (2, 'reference')):
                 result = analyze_run(directory, pair_workers=workers, pair_backend=backend, pair_batch_size=2, **options)

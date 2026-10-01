@@ -8,7 +8,7 @@ from time import perf_counter
 
 import numpy as np
 
-from MartiniFuncs.chemistry.cpd_n4t.selection import PairCriteria
+from MartiniFuncs.chemistry.cpd_n4t import CpdN4tCriteria
 from MartiniFuncs.trajectory.analysis import analyze_run
 from MartiniFuncs.pairs.lifetimes import get_pair_lifetime
 
@@ -36,7 +36,7 @@ def main():
         start = perf_counter()
         result = analyze_run(args.directory, units=args.units, timestep_ps=args.timestep_ps,
                              input_file=args.input_file, dump_file=args.dump_file, data_file=args.data_file,
-                             max_frames=args.max_frames, compute_pairs=True, pair_criteria=PairCriteria(),
+                             max_frames=args.max_frames, compute_pairs=True, pair_criteria=CpdN4tCriteria(),
                              pair_backend=backend, pair_workers=workers, pair_batch_size=args.batch_size)
         elapsed = perf_counter() - start
         times = [r["time_ps"] for r in result["frames"]]

@@ -6,8 +6,9 @@ io          file formats (LAMMPS, ORCA, Psience)
 structure   bond graphs, periodic cells, alignment, packing
 trajectory  streaming analysis, parallel frames, reaction events
 statistics  MD observables, lag statistics, dynamics and diffusion diagnostics
-pairs       chemistry-independent pair candidates, selection, lifetimes, structures
-chemistry   chemistry-specific pair models (cpd_n4t)
+pairs       chemistry-independent pair machinery: pair models, screening,
+            candidates, selection, lifetimes, structures
+chemistry   pair models for specific chemistry (cpd_n4t)
 workflows   CLI, cache/report/export, force validation
 legacy      superseded helpers kept for reference
 
@@ -23,7 +24,9 @@ _API = {
     "write_report": "workflows.postprocess", "export_pairs": "workflows.postprocess",
     "select_pairs": "pairs.candidates", "candidate_table": "pairs.candidates",
     "get_pair_lifetime": "pairs.lifetimes",
-    "PairCriteria": "chemistry.cpd_n4t.selection",
+    "PairModel": "pairs.model", "PairCriteria": "pairs.model", "get_pair_model": "pairs.model",
+    "register_pair_model": "pairs.model",
+    "CpdN4tCriteria": "chemistry.cpd_n4t.model", "CpdN4tModel": "chemistry.cpd_n4t.model",
 }
 
 __all__ = sorted(_API)

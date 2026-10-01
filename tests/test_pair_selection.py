@@ -6,8 +6,8 @@ from numpy.testing import assert_allclose
 
 from MartiniFuncs.io.lammps import read_lammps_frame
 from MartiniFuncs.chemistry.cpd_n4t.pairs import get_all_prereactive_pairs
-from MartiniFuncs.chemistry.cpd_n4t.selection import (PairCriteria, assess_prereactive_pairs,
-                                                      measure_pair_geometry)
+from MartiniFuncs.chemistry.cpd_n4t import CpdN4tCriteria
+from MartiniFuncs.chemistry.cpd_n4t.selection import assess_prereactive_pairs, measure_pair_geometry
 
 
 class PairSelectionTests(unittest.TestCase):
@@ -21,7 +21,7 @@ class PairSelectionTests(unittest.TestCase):
     def test_no_default_orientation_rejection_and_opt_in_reasons(self):
         reports = assess_prereactive_pairs(self.atoms, self.pairs, self.shifts)
         self.assertTrue(all(r.accepted for r in reports))
-        criteria = PairCriteria(max_axis_angle=45)
+        criteria = CpdN4tCriteria(max_axis_angle=45)
         filtered = assess_prereactive_pairs(self.atoms, self.pairs, self.shifts, criteria=criteria)
         self.assertEqual([r.accepted for r in filtered], [False, True])
         self.assertIn("max_axis_angle", filtered[0].reasons[0])
@@ -49,7 +49,7 @@ class PairSelectionTests(unittest.TestCase):
             assert_allclose(geometry.forming_distances, expected)
         # Tight distance screening rejects both despite passing the COM cutoff.
         reports = assess_prereactive_pairs(self.atoms, self.pairs, self.shifts,
-                                           criteria=PairCriteria(max_forming_distance=3.25))
+                                           criteria=CpdN4tCriteria(max_forming_distance=3.25))
         self.assertTrue(all(not r.accepted for r in reports))
 
     def test_reordering_rotation_and_lattice_translation_invariance(self):
@@ -80,7 +80,7 @@ class PairSelectionTests(unittest.TestCase):
         for kwargs in ({"max_axis_angle": 91}, {"max_forming_distance": -1},
                        {"max_plane_angle": float("nan")}):
             with self.assertRaises(ValueError):
-                PairCriteria(**kwargs)
+                CpdN4tCriteria(**kwargs)
         with self.assertRaises(ValueError):
             assess_prereactive_pairs(self.atoms, self.pairs, [])
 

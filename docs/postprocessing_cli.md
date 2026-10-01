@@ -87,8 +87,10 @@ Use `--input-file`, `--dump-file`, or `--data-file` when several files match.
 Units and timestep are mandatory; temperature DOF is explicit and optional.
 `--type-symbols types.json` supplies mappings when required by the dump format.
 
-### Choosing pairs after the analysis: reactive radius and PairCriteria
+### Choosing pairs after the analysis: reactive radius and CpdN4tCriteria
 
+The pair chemistry comes from a pair model (`--pair-model`, default `cpd_n4t`;
+see [pair models](pair_models.md)). The `--max-*` flags are the model's criteria.
 The analysis caches every CPD/dienophile candidate inside `--reactive-radius`.
 The screen distance is CPD COM to dienophile C=C COM, minimum image (default
 3.25 Angstrom). Each candidate is stored with its measured geometry: max forming
@@ -170,7 +172,7 @@ By default, this command:
 
 1. Streams all frames, computes molecular arrays/scalars, and identifies accepted
    CPD/dienophile pairs using the existing 3.25 Angstrom center-distance screen.
-   `PairCriteria()` checks valid site geometry but imposes no angle thresholds.
+   `CpdN4tCriteria()` checks valid site geometry but imposes no angle thresholds.
 2. Saves a reusable molecular-data cache.
 3. Reports the entire cached trajectory, up to 100 ps lag.
 4. Re-reads the trajectory once to export **all cached accepted pair encounters**,
@@ -180,8 +182,9 @@ By default, this command:
 `--max-axis-angle 45`, `--max-plane-angle`, `--max-approach-angle`,
 `--max-forming-distance`, and `--max-distance-imbalance` enable optional thresholds.
 Angles are degrees; distances are Angstrom. These are screening choices, not TS
-predictions. Automatic pair chemistry is specific to CPD/the supported dienophile;
-use **`--no-pairs`** for generic molecular statistics on other systems.
+predictions. Pair chemistry comes from `--pair-model` (only `cpd_n4t` is built
+in; [pair models](pair_models.md) explains how to add one). Use **`--no-pairs`**
+for generic molecular statistics on other systems.
 
 Add `--shell-radius 3.0` to also export whole-molecule environments around each
 pair. This is an atom-to-pair cutoff; completed molecules can extend beyond it.

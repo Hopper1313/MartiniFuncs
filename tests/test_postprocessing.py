@@ -159,7 +159,7 @@ class PostprocessingTests(unittest.TestCase):
         self.assertEqual(status, 0, message)
         self.assertTrue((self.output / "reports/default/pair_lifetimes.csv").exists())
         result, _ = load_analysis_cache(self.output / "cache")
-        self.assertEqual(result["pair_analysis"], {"backend": "cached", "workers": 2, "batch_size": 2})
+        self.assertEqual(result["pair_analysis"], {"model": "cpd_n4t", "backend": "cached", "workers": 2, "batch_size": 2})
         export_pairs(self.output / "cache", self.output / "late_pairs", startframe=6, endframe=9, progress=None)
         lines = (self.output / "late_pairs/index.jsonl").read_text().splitlines()
         self.assertTrue(all(3 <= json.loads(line)["time_ps"] <= 4 for line in lines))

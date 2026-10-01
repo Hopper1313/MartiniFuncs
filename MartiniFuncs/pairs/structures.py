@@ -318,7 +318,7 @@ def get_cluster_positions_and_forces(atoms: Atoms, mylammpsread, clusters):
     return data
 
 
-def pair_data_to_extxyz(data, filename):
+def pair_data_to_extxyz(data, filename, *, role_labels=None):
     """Write pair/cluster records as an ASE Extended XYZ trajectory.
 
     Each extracted cluster is converted to an :class:`ase.Atoms` object and
@@ -338,8 +338,9 @@ def pair_data_to_extxyz(data, filename):
         Zero-based row in the source ASE frame / original LAMMPS atom ID.
 
     ``pair_role``
-        ``"CPD"`` for the CPD reactant, ``"MAL"`` for the dienophile, and
-        ``"shell"`` for atoms belonging only to the surrounding shell.
+        role_labels[0] for the first pair member, role_labels[1] for the
+        second (default: the default pair model's labels, cpd_n4t: ``"CPD"``
+        and ``"MAL"``), and ``"shell"`` for atoms only in the surrounding shell.
 
     ``lammps_forces`` / ``velocities``
         Three-component vectors from the record's forces/velocities fields.
@@ -354,6 +355,9 @@ def pair_data_to_extxyz(data, filename):
     record has eV/Angstrom forces and ASE internal velocities; legacy tuples
     retain raw source units. The stored velocities array is not ASE momenta.
     """
+    if role_labels is None:
+        from MartiniFuncs.pairs.model import get_pair_model
+        role_labels = get_pair_model().role_labels
     from contextlib import nullcontext
     from ase.io.extxyz import output_column_format
 
@@ -440,9 +444,9 @@ def pair_data_to_extxyz(data, filename):
                 f"Cluster {i}: CPD and MAL local-index sets overlap."
             )
 
-        pair_role = np.full(natoms, "shell", dtype="U5")
-        pair_role[cpd_local] = "CPD"
-        pair_role[mal_local] = "MAL"
+        pair_role = np.full(natoms, "shell", dtype=f"U{max(5, *map(len, role_labels))}")
+        pair_role[cpd_local] = role_labels[0]
+        pair_role[mal_local] = role_labels[1]
         cluster.new_array("pair_role", pair_role)
 
         # ------------------------------------------------------------------

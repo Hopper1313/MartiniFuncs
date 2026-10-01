@@ -8,11 +8,11 @@ implementation in `chemistry.cpd_n4t.pairs` and `chemistry.cpd_n4t.selection`.
 
 ```python
 from MartiniFuncs.trajectory.analysis import analyze_run
-from MartiniFuncs.chemistry.cpd_n4t.selection import PairCriteria
+from MartiniFuncs.chemistry.cpd_n4t import CpdN4tCriteria
 
 result = analyze_run(
     RUN_DIR, units="metal", timestep_ps=0.0005,
-    compute_pairs=True, pair_criteria=PairCriteria(),
+    compute_pairs=True, pair_criteria=CpdN4tCriteria(),
     pair_backend="cached", pair_workers=1, pair_batch_size=32,
 )
 ```
@@ -66,7 +66,7 @@ Use filename overrides if discovery is ambiguous. For longer scaling runs,
 `--skip-reference` compares cached worker counts only; it is not an independent
 check against dynamic topology rebuilding.
 
-On 100 frames of the 1,360-atom `continued_run` example, with `PairCriteria()`:
+On 100 frames of the 1,360-atom `continued_run` example, with `CpdN4tCriteria()`:
 reference 23.07 s; cached serial 1.31 s; cached two-process 3.15 s. This includes
 reading and process startup. These are local measurements, not guaranteed speedups.
 

@@ -1,82 +1,84 @@
-"""Cached fixed-topology pair analysis.
+"""Cached fixed-topology pair analysis for any pair model.
 
-Used by trajectory.analysis; standalone, changing-topology frame extraction stays
-in chemistry.cpd_n4t.pairs. This module never unwraps time series or loads a force
-calculator. Parallel evaluation runs through trajectory.parallel (indexed frame chunks).
+Used by trajectory.analysis: roles, screen atoms and reactive sites are found
+once from the first frame's bond graph, then every frame only computes centers
+and measures screened pairs. The per-frame reference path (rebuilding the bond
+graph) is pairs.assessment.screen_frame. This module never unwraps time series
+or loads a force calculator. Parallel evaluation runs through trajectory.parallel
+(indexed frame chunks).
 """
 from dataclasses import dataclass
 
 import numpy as np
 
-from MartiniFuncs.pairs.screening import _pairs_from_centers
-from MartiniFuncs.chemistry.cpd_n4t.pairs import get_mal_CC
-from MartiniFuncs.chemistry.cpd_n4t.selection import (PairAssessment, _cpd_sites, _dienophile_sites,
-                                                      _subgraph, _measure_placed_pair, _rejection_reasons)
+from MartiniFuncs.pairs.assessment import PairAssessment
+from MartiniFuncs.pairs.model import get_pair_model
+from MartiniFuncs.pairs.screening import pairs_from_centers
 
 
 @dataclass
 class FixedPairTopology:
-    """Atom identity, masses and reactive sites cached from the initial graph.
+    """Atom identity, masses, roles and reactive sites cached from the initial graph.
 
     Coordinates supplied to evaluate must follow the initial Atoms row order and
     be whole molecules rooted at each component's first atom. The caller checks
     IDs, elements, masses and fixed-bond reconstruction on every source frame.
     New bonds are not detected here; this is a nonreactive-trajectory analysis.
+    first/second hold the components of the model's two roles.
     """
 
-    cpd: list
-    mal: list
+    model: object
+    first: list
+    second: list
     rows: dict
     masses: np.ndarray
-    cpd_rows: list
-    mal_rows: list
-    screen_rows: list
-    cpd_sites: list
-    mal_sites: list
-    cpd_molecules: list = None   # indices of cpd/mal in the components list (molecule_atom_ids)
-    mal_molecules: list = None
+    first_rows: list
+    second_rows: list
+    screen_rows: tuple        # per role: row arrays of the screen atoms
+    first_sites: list         # sites, or the error message for molecules without them
+    second_sites: list
+    first_molecules: list     # indices of first/second in the components list (molecule_atom_ids)
+    second_molecules: list
 
     @classmethod
-    def from_frame(cls, atoms, graph, components):
-        """Identify each molecule's reactive atoms once; do not cache coordinates."""
+    def from_frame(cls, atoms, graph, components, model=None):
+        """Identify each molecule's role, screen atoms and sites once; do not cache coordinates."""
+        model = get_pair_model(model)
         ids = atoms.arrays["global_index"]
         rows = {int(i): row for row, i in enumerate(ids)}
         elements = dict(zip(map(int, ids), atoms.get_chemical_symbols()))
-        cpd = [list(c) for c in components if len(c) == 11]
-        mal = [list(c) for c in components if len(c) == 23]
-        if len(cpd) + len(mal) != len(components):
-            raise ValueError("Cached pair analysis requires CPD/dienophile components")
+        roles = model.classify([list(c) for c in components], elements)
+        if any(role is None for role in roles):
+            raise ValueError(f"Cached pair analysis requires every molecule to be a {model.name} pair member")
+        members = [[list(c) for c, r in zip(components, roles) if r == role] for role in (0, 1)]
+        indices = [[k for k, r in enumerate(roles) if r == role] for role in (0, 1)]
 
-        def sites(function, component):
+        def sites(component, role):
             try:
-                return function(graph, elements, component)
+                return model.sites(graph, elements, component, role)
             except ValueError as exc:
                 return str(exc)  # Reject candidates containing this molecule.
 
-        screen_rows = []
-        for component in mal:
-            cc = get_mal_CC(_subgraph(graph, component), elements)
-            if len(cc) != 2:
-                raise ValueError("Could not identify MAL reactive C=C")
-            screen_rows.append(np.array([rows[i] for i in cc]))
-        return cls(cpd, mal, rows, atoms.get_masses().copy(),
-                   [np.array([rows[i] for i in c]) for c in cpd],
-                   [np.array([rows[i] for i in c]) for c in mal], screen_rows,
-                   [sites(_cpd_sites, c) for c in cpd],
-                   [sites(_dienophile_sites, c) for c in mal],
-                   [k for k, c in enumerate(components) if len(c) == 11],
-                   [k for k, c in enumerate(components) if len(c) == 23])
+        screen_rows = tuple(
+            [np.array([rows[i] for i in (c if site is None else site)])
+             for c, site in ((c, model.screen_atoms(graph, elements, c, role)) for c in members[role])]
+            for role in (0, 1))
+        return cls(model, members[0], members[1], rows, atoms.get_masses().copy(),
+                   [np.array([rows[i] for i in c]) for c in members[0]],
+                   [np.array([rows[i] for i in c]) for c in members[1]], screen_rows,
+                   [sites(c, 0) for c in members[0]], [sites(c, 1) for c in members[1]],
+                   indices[0], indices[1])
 
     def evaluate(self, whole, cell, pbc, *, criteria=None, reactive_radius=3.25, candidates=False):
         """Return selected pairs, shifts and candidate assessments for one frame.
 
-        COMs are sum(m_i*r_i)/sum(m_i) from whole (Angstrom). Screen whole-CPD
-        COM to C=C COM with the same image search as get_all_prereactive_pairs.
-        With criteria, use _measure_placed_pair: distance=|r_i-r_j| and acute
-        angle=degrees(arccos(|a dot b|/(|a||b|))). Assessments precede filtering;
+        Screen centers are sum(m_i*r_i)/sum(m_i) over each molecule's screen atoms
+        in whole (Angstrom), with the same image search as screen_frame. With
+        criteria, the model measures each screened pair and the criteria reject
+        metrics above their thresholds; assessments precede filtering.
         criteria=None skips geometry checks and returns an empty assessment list.
         candidates=True also measures every screened pair and returns a fourth
-        value: rows (cpd_molecule, mal_molecule, shift, metrics) for
+        value: rows (first_molecule, second_molecule, shift, metrics) for
         pairs.candidates.frame_candidates, independent of criteria.
         """
         if not np.isfinite(reactive_radius) or reactive_radius <= 0:
@@ -84,33 +86,32 @@ class FixedPairTopology:
         whole = np.asarray(whole, dtype=float)
         if whole.shape != (len(self.masses), 3) or not np.isfinite(whole).all():
             raise ValueError("whole must be finite coordinates in initial atom-row order")
-        cpd_centers = [np.average(whole[r], axis=0, weights=self.masses[r]) for r in self.cpd_rows]
-        mal_centers = [np.average(whole[r], axis=0, weights=self.masses[r]) for r in self.screen_rows]
-        pairs, shifts, distances = _pairs_from_centers(
-            np.asarray(cpd_centers), np.asarray(mal_centers), self.cpd, self.mal,
+        centers = [np.asarray([np.average(whole[r], axis=0, weights=self.masses[r]) for r in rows])
+                   for rows in self.screen_rows]
+        pairs, shifts, distances = pairs_from_centers(
+            centers[0], centers[1], self.first, self.second,
             np.asarray(cell), pbc, reactive_radius, return_distances=True)
         if criteria is None and not candidates:
             return pairs, shifts, []
-        from MartiniFuncs.pairs.candidates import metric_row
-        from MartiniFuncs.chemistry.cpd_n4t.selection import PairCriteria
-        measure = criteria if criteria is not None else PairCriteria()
-        cpd_index = {tuple(c): i for i, c in enumerate(self.cpd)}
-        mal_index = {tuple(c): i for i, c in enumerate(self.mal)}
+        model = self.model
+        measure = criteria if criteria is not None else model.criteria_class()
+        first_index = {tuple(c): i for i, c in enumerate(self.first)}
+        second_index = {tuple(c): i for i, c in enumerate(self.second)}
         assessments, rows = [], []
-        for index, ((cpd, mal), shift) in enumerate(zip(pairs, shifts)):
-            c, m = cpd_index[tuple(cpd)], mal_index[tuple(mal)]
+        for index, ((first, second), shift) in enumerate(zip(pairs, shifts)):
+            a, b = first_index[tuple(first)], second_index[tuple(second)]
             try:
-                cs, ms = self.cpd_sites[c], self.mal_sites[m]
-                if isinstance(cs, str) or isinstance(ms, str):
-                    raise ValueError(cs if isinstance(cs, str) else ms)
-                geometry = _measure_placed_pair(
-                    cpd, whole[self.cpd_rows[c]] + np.asarray(shift) @ cell,
-                    mal, whole[self.mal_rows[m]], (*cs, *ms), self.rows)
-                reasons = _rejection_reasons(geometry, measure)
+                fs, ss = self.first_sites[a], self.second_sites[b]
+                if isinstance(fs, str) or isinstance(ss, str):
+                    raise ValueError(fs if isinstance(fs, str) else ss)
+                geometry = model.measure(first, whole[self.first_rows[a]] + np.asarray(shift) @ cell,
+                                         second, whole[self.second_rows[b]], fs, ss, self.rows)
+                reasons = measure.rejection_reasons(model.metrics(geometry))
             except ValueError as exc:
                 geometry, reasons = None, (str(exc),)
             assessments.append(PairAssessment(index, geometry, reasons))
-            rows.append((self.cpd_molecules[c], self.mal_molecules[m], shift, metric_row(distances[index], geometry)))
+            rows.append((self.first_molecules[a], self.second_molecules[b], shift,
+                         model.metric_row(distances[index], geometry)))
         if criteria is None:
             kept_pairs, kept_shifts = pairs, shifts
         else:

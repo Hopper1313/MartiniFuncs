@@ -25,8 +25,10 @@ modules; `export_pairs` streams source frames through the extraction modules.
 | `structure.packing.MoleculeSpec`, `pack_molecules` | Whole ASE templates/counts + orthorhombic cell + seed/cutoff → packed Atoms | Random rigid insertion; periodic rejection; bounded failure, not minimization |
 | `structure.packing.write_initial_data` | Packed Atoms + filename/type ordering → data file + JSON metadata | Atomic style cannot store molecule IDs, so sidecar retains them; no automatic sidecar reload by dump reader |
 | `io.lammps_inputs.render_lammps_input` | Ensemble, physical settings, type order, external force source → input text | No UMA weights or launcher guessed; `run` is last; no simulation executes |
+| `pairs.model.PairModel`, `PairCriteria`, `get_pair_model`, `register_pair_model` | Chemistry definition (roles, screen atoms, sites, metrics, criteria) → registered model | Model name is recorded in caches; see [pair models](pair_models.md) |
+| `pairs.assessment.screen_frame`, `assess_pairs` | Frame + model + radius/criteria → pairs, shifts, candidates/assessments | Generic per-frame screen and measurement (rebuilds the bond graph) |
 | `chemistry.cpd_n4t.pairs.get_all_prereactive_pairs` | Frame + cutoff → pair ID lists and shifts | CPD/dienophile screen; not a reaction prediction |
-| `chemistry.cpd_n4t.selection.assess_prereactive_pairs` | Frame + pairs/shifts + optional PairCriteria → PairAssessment list | Reports geometry and reasons; `accepted` means chosen checks passed |
+| `chemistry.cpd_n4t.selection.assess_prereactive_pairs` | Frame + pairs/shifts + optional CpdN4tCriteria → PairAssessment list | Reports geometry and reasons; `accepted` means chosen checks passed |
 | `pairs.structures.get_pair_shell_clusters` | Frame + complete pair IDs/shifts + radius → cluster records | Whole touched molecules retained; finite coordinates assembled as first molecule, second, shell |
 | `get_cluster_positions_and_forces`, `pair_data_to_extxyz` | Cluster records + original frame → Extended XYZ | Preserves persistent IDs, roles, row-aligned vectors and source metadata |
 | `structure.alignment.align_geometry` | Finite mobile/reference structures → aligned copy, RMSD, transform | ID correspondence; rotates force/velocity vectors, never translates them |

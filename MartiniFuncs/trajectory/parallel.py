@@ -208,21 +208,23 @@ def prepare_frame(frame, context):
     pairs = shifts = None
     candidates = None
     if context['compute_pairs'] and frame.index % context['frame_stride'] == 0:
-        from MartiniFuncs.pairs.candidates import frame_candidates, metric_row
+        from MartiniFuncs.pairs.candidates import frame_candidates
+        from MartiniFuncs.pairs.model import get_pair_model
+        model = get_pair_model(context.get('pair_model'))
         radius = context.get('reactive_radius', 3.25)
         if context['topology'] is not None:
             pairs, shifts, _, rows = context['topology'].evaluate(
                 whole, atoms.cell.array, atoms.pbc, criteria=context['pair_criteria'],
                 reactive_radius=radius, candidates=True)
         else:
-            from MartiniFuncs.chemistry.cpd_n4t.pairs import get_all_prereactive_pairs
-            pairs, shifts, found = get_all_prereactive_pairs(
-                atoms, scale=context['bond_scale'], criteria=context['pair_criteria'],
+            from MartiniFuncs.pairs.assessment import screen_frame
+            pairs, shifts, found = screen_frame(
+                atoms, model, scale=context['bond_scale'], criteria=context['pair_criteria'],
                 reactive_radius=radius, return_candidates=True)
             index = context['molecule_index']
-            rows = [(index.get(frozenset(map(int, cpd)), -1), index.get(frozenset(map(int, mal)), -1), shift,
-                     metric_row(distance, geometry)) for (cpd, mal), shift, distance, geometry in found]
-        candidates = frame_candidates(rows)
+            rows = [(index.get(frozenset(map(int, first)), -1), index.get(frozenset(map(int, second)), -1), shift,
+                     model.metric_row(distance, geometry)) for (first, second), shift, distance, geometry in found]
+        candidates = frame_candidates(rows, model)
     scalars = dict(density_g_cm3=md.get_frame_density(atoms), volume_angstrom3=atoms.get_volume())
     velocity = force = None
     if context['has_velocities']:

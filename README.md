@@ -12,13 +12,14 @@ barrier validation are future pipeline stages.
 | `MartiniFuncs.structure` | `graph` (bond graphs, periodic neighbours), `periodic` (minimum image, TOR COM unwrapping), `molecules`, `alignment`, `packing` |
 | `MartiniFuncs.trajectory` | `analysis` (`analyze_run`, `analyze_segments`), `parallel` (indexed frame chunks), `reactions` (topology-change events) |
 | `MartiniFuncs.statistics` | `md` (molecular observables, FFT lag MSD/correlations), `dynamics`, `diffusion`, `stability` |
-| `MartiniFuncs.pairs` | chemistry-independent pair machinery: `candidates` (cached candidates, `select_pairs`), `lifetimes`, `screening`, `structures` (pair/shell clusters, Extended XYZ), `topology` |
-| `MartiniFuncs.chemistry.cpd_n4t` | the CPD + N4T Diels-Alder model: `pairs` (molecule classes, pair screen), `selection` (reactive sites, `PairCriteria`), `visualization` |
+| `MartiniFuncs.pairs` | chemistry-independent pair machinery: `model` (`PairModel`, `PairCriteria`, registry), `assessment` (per-frame screen/measurement), `candidates` (cached candidates, `select_pairs`), `lifetimes`, `screening`, `structures` (pair/shell clusters, Extended XYZ), `topology` (cached fixed-topology evaluator) |
+| `MartiniFuncs.chemistry.cpd_n4t` | the CPD + N4T Diels-Alder model: `model` (`CpdN4tModel`, `CpdN4tCriteria`), `pairs` (molecule classes, pair screen), `selection` (reactive sites and geometry), `visualization` |
 | `MartiniFuncs.workflows` | `cli` (`python -m MartiniFuncs`), `postprocess` (cache/report/export), `progress`, `force_validation` |
 | `MartiniFuncs.legacy` | superseded helpers kept for reference only |
 
+Pair chemistry is a pluggable [pair model](docs/pair_models.md) (default `cpd_n4t`).
 Common entry points are also importable lazily from the top level, e.g.
-`from MartiniFuncs import analyze_run, select_pairs, PairCriteria`.
+`from MartiniFuncs import analyze_run, select_pairs, CpdN4tCriteria`.
 
 ## Post-simulation CLI and Slurm
 
@@ -148,12 +149,13 @@ Model, task, charge, and spin are not inferred from comments.
 from MartiniFuncs.chemistry.cpd_n4t.pairs import get_all_prereactive_pairs
 from MartiniFuncs.pairs.structures import (get_pair_shell_clusters, get_cluster_positions_and_forces,
                                            pair_data_to_extxyz)
-from MartiniFuncs.chemistry.cpd_n4t.selection import PairCriteria, assess_prereactive_pairs
+from MartiniFuncs.chemistry.cpd_n4t import CpdN4tCriteria
+from MartiniFuncs.chemistry.cpd_n4t.selection import assess_prereactive_pairs
 
 pairs, shifts = get_all_prereactive_pairs(frame.atoms, scale=1.3)
 reports = assess_prereactive_pairs(frame.atoms, pairs, shifts, scale=1.3)
 # Inspect reports before choosing thresholds.
-criteria = PairCriteria(max_axis_angle=45, max_forming_distance=3.5)
+criteria = CpdN4tCriteria(max_axis_angle=45, max_forming_distance=3.5)
 reports = assess_prereactive_pairs(frame.atoms, pairs, shifts,
                                   criteria=criteria, scale=1.3)
 keep = [r.pair_index for r in reports if r.accepted]

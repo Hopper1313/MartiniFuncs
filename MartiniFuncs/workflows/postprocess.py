@@ -21,7 +21,7 @@ import numpy as np
 from MartiniFuncs.pairs import lifetimes
 from MartiniFuncs.statistics import md
 from MartiniFuncs.structure import periodic
-from MartiniFuncs.chemistry.cpd_n4t.selection import PairCriteria
+from MartiniFuncs.pairs.model import get_pair_model
 from MartiniFuncs.trajectory.analysis import (analyze_run, molecular_window_statistics, resolve_run_files,
                                               select_frame_window)
 
@@ -167,6 +167,9 @@ def cache_analysis(directory, cache_dir, *, units, timestep_ps, pair_criteria=No
                                                      "pair_candidates"}}
     metadata["pair_storage"] = pair_storage
     metadata["pair_candidates_radius"] = None if candidates is None else candidates["reactive_radius"]
+    if candidates is not None:
+        metadata["pair_candidates_model"] = candidates["model"]
+        metadata["pair_candidates_metrics"] = candidates["metric_names"]
     _json(cache_dir / "analysis.json", metadata)
     _csv(cache_dir / "frames.csv", result["frames"])
     _json(cache_dir / "molecules.json", [
@@ -279,11 +282,16 @@ def load_analysis_cache(cache_dir):
             values = [columns[name].tolist() for name in names]
         result["frames"] = [dict(zip(names, row)) for row in zip(*values)]
         radius = result.pop("pair_candidates_radius", None)
+        # Caches made before pair models were all cpd_n4t (the default model).
+        model = result.pop("pair_candidates_model", None)
+        names = result.pop("pair_candidates_metrics", None)
         result["pair_candidates"] = None
         if radius is not None:
             result["pair_candidates"] = {key: np.load(cache_dir / f"candidate_{key}.npy", allow_pickle=False)
                                          for key in ("offsets", "molecules", "shifts", "metrics")}
-            result["pair_candidates"]["reactive_radius"] = float(radius)
+            model = get_pair_model(model)
+            result["pair_candidates"].update(reactive_radius=float(radius), model=model.name,
+                                             metric_names=list(names or model.metric_names))
         storage = result.pop("pair_storage", None)
         if storage == "molecule_index":
             offsets = np.load(cache_dir / "pair_frame_offsets.npy", allow_pickle=False)
@@ -434,8 +442,7 @@ def write_report(cache_dir, output_dir, *, startframe=0, endframe=None,
         mask = in_window & candidate_mask(candidates, reactive_radius=reactive_radius, criteria=pair_criteria)
         if not selection and result["pairs_by_frame"] is not None:
             # No report selection: describe the analysis's own accepted pairs.
-            mask = in_window & candidate_mask(candidates, criteria=source["configuration"].get("pair_criteria")
-                                              and PairCriteria(**source["configuration"]["pair_criteria"]))
+            mask = in_window & candidate_mask(candidates, criteria=_analysis_criteria(result, source))
         _csv(output / "pair_metric_histograms.csv", metric_histograms(candidates, mask),
              fields=["metric", "bin_low", "bin_high", "count"])
     if pair_lifetimes and result["pairs_by_frame"] is not None:
@@ -589,7 +596,7 @@ def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endf
                         ranges = [(i, int(offsets[i]), int(offsets[i+1])) for i in batch]
                         subset = {i: selected[i] for i in batch}
                         yield (result["files"]["dump"], reader_options, ranges, subset, shell_radius, scale,
-                               first_structure)
+                               first_structure, _pair_model(result).name)
                         first_structure += sum(len(selected[i][1]) for i in batch)
 
                 for pair_text, cluster_text, index_text, counts, count, chunk_flagged in ordered_tasks(
@@ -619,6 +626,24 @@ def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endf
     return output
 
 
+def cache_pair_model(cache_dir):
+    """The PairModel that produced a completed analysis cache (reads analysis.json only)."""
+    _manifest(Path(cache_dir))
+    metadata = json.loads((Path(cache_dir) / "analysis.json").read_text(encoding="utf-8"))
+    return _pair_model(metadata)
+
+
+def _pair_model(result):
+    """The pair model of an analysis (caches made before pair models: the default, cpd_n4t)."""
+    return get_pair_model((result.get("pair_analysis") or {}).get("model"))
+
+
+def _analysis_criteria(result, source):
+    """The analysis's own pair criteria (the model's PairCriteria), or None."""
+    criteria = source["configuration"].get("pair_criteria")
+    return None if criteria is None else _pair_model(result).criteria_class(**criteria)
+
+
 def _export_frame_chunk(task):
     """Parse, validate, build shells and serialize one independent source chunk.
 
@@ -630,8 +655,10 @@ def _export_frame_chunk(task):
     from MartiniFuncs.pairs.structures import (get_pair_positions_and_forces, get_pair_shell_clusters,
                                                get_cluster_positions_and_forces, pair_data_to_extxyz)
     from MartiniFuncs.io.lammps import iter_lammps_frames
-    from MartiniFuncs.chemistry.cpd_n4t.selection import PairCriteria, assess_prereactive_pairs, site_cache
-    path, reader_options, ranges, selected, shell_radius, scale, count = task
+    from MartiniFuncs.pairs.assessment import assess_pairs
+    from MartiniFuncs.pairs.model import site_cache
+    path, reader_options, ranges, selected, shell_radius, scale, count, model = task
+    model = get_pair_model(model)
     pair_stream, index_stream = StringIO(), StringIO()
     cluster_stream = StringIO() if shell_radius is not None else None
     frame_counts, flagged = [], 0
@@ -659,21 +686,21 @@ def _export_frame_chunk(task):
                 records = get_pair_positions_and_forces(frame.atoms, frame, pairs, shifts, bond_scale=scale, graph=bonded)
                 _export_identity(records, frame, count, row["time_ps"])
                 buffer = StringIO()
-                pair_data_to_extxyz(records, buffer)
+                pair_data_to_extxyz(records, buffer, role_labels=model.role_labels)
                 pair_stream.write(buffer.getvalue())
-                assessments = assess_prereactive_pairs(frame.atoms, pairs, shifts, criteria=PairCriteria(), scale=scale, graph=bonded)
+                assessments = assess_pairs(frame.atoms, pairs, shifts, model, scale=scale, graph=bonded)
                 if cluster_stream is not None:
                     clusters = get_pair_shell_clusters(frame.atoms, pairs, shifts, shell_radius=shell_radius,
                                                        scale=scale, graph=bonded, components=components)
                     buffer = StringIO()
                     cluster_records = get_cluster_positions_and_forces(frame.atoms, frame, clusters)
                     _export_identity(cluster_records, frame, count, row["time_ps"])
-                    pair_data_to_extxyz(cluster_records, buffer)
+                    pair_data_to_extxyz(cluster_records, buffer, role_labels=model.role_labels)
                     cluster_stream.write(buffer.getvalue())
                 for candidate, (pair, shift, assessment) in enumerate(zip(pairs, shifts, assessments)):
                     record = dict(structure_index=count, frame=frame.index, timestep=frame.timestep,
                                   time_ps=row["time_ps"], candidate=candidate, pair_atom_ids=pair,
-                                  cpd_shift=shift, geometry=asdict(assessment.geometry) if assessment.geometry else None,
+                                  **{f"{model.roles[0]}_shift": shift}, geometry=asdict(assessment.geometry) if assessment.geometry else None,
                                   geometry_errors=assessment.reasons, membership_changed=changed[candidate])
                     index_stream.write(json.dumps(_plain(record), allow_nan=False) + "\n")
                     count += 1

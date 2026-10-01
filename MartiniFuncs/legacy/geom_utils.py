@@ -7,8 +7,8 @@ import numpy as np
 from ase import Atoms
 from ase.geometry import get_distances
 from MartiniFuncs.structure import graph as mfg
-from MartiniFuncs.chemistry.cpd_n4t.pairs import _mal_site_centers, _reaction_components
-from MartiniFuncs.structure.molecules import _subset, add_global_index, get_element_map
+from MartiniFuncs.chemistry.cpd_n4t.pairs import get_mal_CC
+from MartiniFuncs.structure.molecules import _site_center_of_mass, _subset, add_global_index, get_element_map
 
 
 @add_global_index
@@ -183,3 +183,38 @@ def get_pairs_distance_distribution(atoms: Atoms, scale: float = 1.3):
         pbc=atoms.pbc,
     )
     return distances.ravel()
+
+
+def _mal_site_centers(atoms: Atoms, graph, mal_components, elements) -> np.ndarray:
+    """Reactive C=C COM of each dienophile, in its unwrapped molecular frame.
+
+    Sites come from the molecule's induced subgraph of the frame bond graph,
+    which equals a bond graph rebuilt on the isolated molecule.
+    """
+    centers = []
+    for comp in mal_components:
+        mal_cc = get_mal_CC(mfg.induced_subgraph(graph, comp), elements)
+        if len(mal_cc) != 2:
+            raise ValueError(
+                f"Could not identify MAL reactive C=C for component {comp[:5]}..."
+            )
+        centers.append(_site_center_of_mass(atoms, graph, comp, mal_cc))
+    return np.asarray(centers)
+
+
+def _reaction_components(atoms: Atoms, scale: float):
+    graph = mfg.build_bond_graph(
+        atoms,
+        scale=scale,
+        index_array="global_index",
+    )
+    components = mfg.connected_components(
+        graph,
+        atom_ids=mfg.atom_ids(atoms),
+    )
+
+    cpd = [c for c in components if len(c) == 11]
+    mal = [c for c in components if len(c) == 23]
+    product = [c for c in components if len(c) == 34]
+    other = [c for c in components if len(c) not in (11, 23, 34)]
+    return graph, components, cpd, mal, product, other

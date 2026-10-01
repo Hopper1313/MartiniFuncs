@@ -713,3 +713,57 @@ replaceable (a general pair model follows in the next step) and make modules eas
 - the CLI: serial and 4-worker outputs identical (116 files);
 - notebooks 02 and 04 run end to end;
 - an old-vs-new benchmark: identical timings.
+
+## Generic pair models (2026-10-01)
+
+**Why:** the pair machinery hard-coded CPD + N4T:
+- molecule sizes 11/23/34 and the species check;
+- C=C site finding;
+- the five `PairCriteria` thresholds and the candidate columns built from them;
+- the CLI flags.
+
+Other pair chemistry, or more criteria, would have meant editing generic code.
+
+**Changed:**
+- **`pairs/model.py`:**
+  - `PairModel` (abstract) declares roles, screen atoms, sites, `measure`, metrics, the criteria class,
+    export labels and the expected species. Models are registered by name, built-ins load lazily, and
+    the default is `cpd_n4t`.
+  - `PairCriteria` is now the base class. Each field is a `threshold(metric, ...)`, and validation and
+    rejection reasons are generic.
+  - The site memo (`site_cache`, `model_sites`) moved here.
+- **`pairs/assessment.py`:** `screen_frame`, `assess_pairs` and `measure_pair` are the generic
+  per-frame (reference-backend) engine.
+- **Model-driven modules:**
+  - `pairs/topology.FixedPairTopology`;
+  - `pairs/candidates`: columns `screen_distance`, the model metrics, `geometry_ok`; role-named
+    molecule columns; histogram ranges from the model;
+  - `trajectory.parallel`;
+  - `workflows.postprocess`: export `pair_role` labels, the `<role>_shift` index field, and criteria
+    rebuilt with the cache's model.
+- **`chemistry/cpd_n4t/model.py`:**
+  - `CpdN4tModel` and `CpdN4tCriteria` (the former `PairCriteria`, with the same fields);
+  - `get_all_prereactive_pairs` and `assess_prereactive_pairs` are now thin wrappers;
+  - `_mal_site_centers` and `_reaction_components` (used only by legacy code) moved to `legacy`.
+- **API:**
+  - `analyze_run(pair_model=...)`, which checks that `pair_criteria` is the model's class;
+  - `pair_analysis.model`, `pair_candidates.model` and `metric_names` are recorded in results and
+    caches;
+  - older caches load as `cpd_n4t`.
+- **CLI:**
+  - `--pair-model` (run/collect, default `cpd_n4t`);
+  - the threshold flags are generated from the registered models' criteria;
+  - report/extract use the cache's model and refuse another model's flags.
+- **Docs:** `docs/pair_models.md` explains how to add a model.
+
+**Verified:**
+- 180 tests pass (1 skipped). They include `tests/test_pair_models.py`, where a toy model with a
+  different screen, metric, roles and criteria runs:
+  - through both backends and 2 workers, which give identical candidates;
+  - through selection, which equals a fresh analysis;
+  - through the CLI run/report.
+- Capture against the reorganization output: identical apart from the three new metadata fields in
+  `analysis.json`.
+- CLI serial vs 4 workers: 116 files identical.
+- Notebooks 02 and 04 run.
+- A cache from before this change loads, re-selects and reports as cpd_n4t.

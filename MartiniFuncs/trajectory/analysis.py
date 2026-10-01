@@ -58,7 +58,7 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
                 units=None, timestep_ps=None, units_style=None, type_symbols=None, progress=None,
                 reaction_atom_counts=None, orientations=False, source_range=None,
                 on_topology_change=None, topology_persistence=1, frame_offsets=None,
-                reactive_radius=3.25):
+                reactive_radius=3.25, pair_model=None):
     """Stream a text dump; retain scalar histories and all molecular COM vectors.
 
     max_frames caps source frames read, not retained frames. Molecules are the
@@ -109,11 +109,17 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
     candidate. This costs an additional graph calculation per source frame. None
     skips screening; fixed-connectivity analysis then assumes no new products.
 
-    reactive_radius (Angstrom, default 3.25) is the pair screen: CPD COM to
-    dienophile C=C COM, minimum image. With compute_pairs, pair_candidates holds
-    every candidate inside it with its measured geometry, so
-    pairs.candidates.select_pairs can later apply any smaller radius or other PairCriteria
-    without rereading the dump; cache with a generous radius to explore.
+    pair_model (a registered name or a PairModel; default 'cpd_n4t', see
+    pairs.model) supplies the chemistry: which molecules pair, their screen
+    centers, reactive sites and geometry metrics. pair_criteria is that model's
+    PairCriteria (for cpd_n4t, CpdN4tCriteria).
+
+    reactive_radius (Angstrom, default 3.25) is the pair screen between the
+    model's screen centers (cpd_n4t: CPD COM to dienophile C=C COM), minimum
+    image. With compute_pairs, pair_candidates holds every candidate inside it
+    with its measured metrics, so pairs.candidates.select_pairs can later apply
+    any smaller radius or other criteria without rereading the dump; cache with
+    a generous radius to explore.
 
     When compute_pairs=True, pair_backend='cached' reuses initial molecule/site
     identities and the whole coordinates already reconstructed above. It assumes
@@ -158,6 +164,12 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
         raise ValueError("pair_backend must be 'cached' or 'reference'")
     if not np.isfinite(reactive_radius) or reactive_radius <= 0:
         raise ValueError("reactive_radius must be positive and finite")
+    if compute_pairs:
+        from MartiniFuncs.pairs.model import get_pair_model
+        pair_model = get_pair_model(pair_model)
+        if pair_criteria is not None and not isinstance(pair_criteria, pair_model.criteria_class):
+            raise ValueError(f"pair_criteria must be {pair_model.criteria_class.__name__} for pair model "
+                             f"{pair_model.name!r}")
     if on_topology_change not in {None, "record", "truncate"}:
         raise ValueError("on_topology_change must be None, 'record' or 'truncate'")
     if isinstance(topology_persistence, bool) or not isinstance(topology_persistence, int) or topology_persistence < 1:
@@ -291,11 +303,10 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
                 molecular_masses = np.bincount(groups, weights=masses)
                 topology = None
                 if compute_pairs:
-                    if set(species) != {"C5H6", "C11H9NO2"}:
-                        raise ValueError("Pair lifetime screening is currently specific to the CPD/dienophile mixture")
+                    pair_model.check_species(species)
                     if pair_backend == "cached":
                         from MartiniFuncs.pairs.topology import FixedPairTopology
-                        topology = FixedPairTopology.from_frame(atoms, bonded, components)
+                        topology = FixedPairTopology.from_frame(atoms, bonded, components, pair_model)
                         notices.append("Pair sites/topology cached from the first frame. The optional product-size "
                                        "screen does not track all new bonds. Use pair_backend='reference' "
                                        "to rebuild pair topology each retained frame.")
@@ -312,6 +323,7 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
                     levels=levels, edges=edges, cutoffs=cutoffs, groups=groups,
                     molecular_masses=molecular_masses, topology=topology,
                     compute_pairs=compute_pairs, pair_criteria=pair_criteria,
+                    pair_model=pair_model.name if compute_pairs else None,
                     frame_stride=frame_stride, bond_scale=bond_scale,
                     degrees_of_freedom=degrees_of_freedom,
                     reaction_atom_counts=reaction_atom_counts,
@@ -437,10 +449,10 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
             "com_velocity_angstrom_ps":np.asarray(velocities) if has_velocities else None,
             "net_force_eV_angstrom":np.asarray(forces) if has_forces else None,
             "pairs_by_frame":pairs_by_frame if compute_pairs else None,
-            "pair_candidates":(_candidates.concatenate(candidates_by_frame, reactive_radius)
+            "pair_candidates":(_candidates.concatenate(candidates_by_frame, reactive_radius, pair_model)
                                if compute_pairs else None),
             "pair_shifts_by_frame":pair_shifts_by_frame if compute_pairs else None,
-            "pair_analysis": {"backend": pair_backend, "workers": pair_workers,
+            "pair_analysis": {"model": pair_model.name, "backend": pair_backend, "workers": pair_workers,
                               "batch_size": pair_batch_size} if compute_pairs else None,
             "notices":notices}
 

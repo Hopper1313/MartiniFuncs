@@ -11,7 +11,7 @@ from pathlib import Path
 from MartiniFuncs.pairs import lifetimes
 from MartiniFuncs.workflows.cli import main
 from MartiniFuncs.pairs.candidates import candidate_table, select_pairs
-from MartiniFuncs.chemistry.cpd_n4t.selection import PairCriteria
+from MartiniFuncs.chemistry.cpd_n4t import CpdN4tCriteria
 from MartiniFuncs.workflows.postprocess import cache_analysis, load_analysis_cache
 from MartiniFuncs.trajectory.analysis import analyze_run
 
@@ -26,7 +26,7 @@ class PairReselectionTests(unittest.TestCase):
         cls.run_dir = Path(cls.temp.name) / "sim"
         cls.run_dir.mkdir()
         shutil.copy(FIXTURES / "multiple_frames.lammpstrj", cls.run_dir)
-        cls.wide = analyze_run(cls.run_dir, reactive_radius=5.0, pair_criteria=PairCriteria(), **OPTIONS)
+        cls.wide = analyze_run(cls.run_dir, reactive_radius=5.0, pair_criteria=CpdN4tCriteria(), **OPTIONS)
 
     @classmethod
     def tearDownClass(cls):
@@ -44,20 +44,20 @@ class PairReselectionTests(unittest.TestCase):
 
     def test_smaller_radius_equals_fresh_analysis(self):
         for radius in (2.5, 3.25, 4.0):
-            fresh = analyze_run(self.run_dir, reactive_radius=radius, pair_criteria=PairCriteria(), **OPTIONS)
-            self.assertSamePairs(select_pairs(self.wide, reactive_radius=radius, criteria=PairCriteria()), fresh)
+            fresh = analyze_run(self.run_dir, reactive_radius=radius, pair_criteria=CpdN4tCriteria(), **OPTIONS)
+            self.assertSamePairs(select_pairs(self.wide, reactive_radius=radius, criteria=CpdN4tCriteria()), fresh)
             loose = analyze_run(self.run_dir, reactive_radius=radius, **OPTIONS)        # no geometry requirement
             self.assertSamePairs(select_pairs(self.wide, reactive_radius=radius), loose)
 
     def test_criteria_equal_fresh_analysis(self):
-        for criteria in (PairCriteria(max_axis_angle=30), PairCriteria(max_forming_distance=4.5, max_plane_angle=40)):
+        for criteria in (CpdN4tCriteria(max_axis_angle=30), CpdN4tCriteria(max_forming_distance=4.5, max_plane_angle=40)):
             fresh = analyze_run(self.run_dir, reactive_radius=5.0, pair_criteria=criteria, **OPTIONS)
             self.assertSamePairs(select_pairs(self.wide, criteria=criteria), fresh)
             both = analyze_run(self.run_dir, reactive_radius=3.25, pair_criteria=criteria, **OPTIONS)
             self.assertSamePairs(select_pairs(self.wide, reactive_radius=3.25, criteria=criteria), both)
 
     def test_reference_backend_candidates_match_cached_backend(self):
-        reference = analyze_run(self.run_dir, reactive_radius=5.0, pair_criteria=PairCriteria(),
+        reference = analyze_run(self.run_dir, reactive_radius=5.0, pair_criteria=CpdN4tCriteria(),
                                 pair_backend="reference", **OPTIONS)
         a, b = candidate_table(self.wide), candidate_table(reference)
         self.assertEqual(len(a), len(b))
@@ -81,7 +81,7 @@ class PairReselectionTests(unittest.TestCase):
             cached, _ = load_analysis_cache(out / "cache")
             self.assertEqual(cached["pair_candidates"]["reactive_radius"], 5.0)
             del cached   # release memory-mapped arrays (Windows cannot delete open files)
-            fresh = analyze_run(self.run_dir, reactive_radius=3.0, pair_criteria=PairCriteria(max_axis_angle=45), **OPTIONS)
+            fresh = analyze_run(self.run_dir, reactive_radius=3.0, pair_criteria=CpdN4tCriteria(max_axis_angle=45), **OPTIONS)
             selection = ["--reactive-radius", "3", "--max-axis-angle", "45"]
             for command, target in (("report", out / "r3"), ("extract", out / "e3")):
                 extra = ["--max-lag-ps", ".002"] if command == "report" else []

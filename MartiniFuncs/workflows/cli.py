@@ -51,8 +51,9 @@ Units and resources
 -------------------
 Trajectory selection uses frames; lag and diffusion-fit intervals remain in ps.
 --timestep-ps is ps per MD integration step, not per dump frame. Temperature
-requires explicit --temperature-dof. Pair screening is CPD/dienophile-specific;
---no-pairs enables generic molecular statistics. Frame workers are local processes
+requires explicit --temperature-dof. Pair screening uses a pair model
+(--pair-model, default cpd_n4t: CPD + N4T dienophile); the pair-threshold flags
+are that model's criteria. --no-pairs enables generic molecular statistics. Frame workers are local processes
 inside one Slurm task, not MPI ranks; no GPU/model inference occurs here.
 --workers N and --batch-size B pass through cache_analysis to analyze_run's
 indexed frame process pool (B source frames per analysis task). Both pair backends
@@ -77,8 +78,8 @@ import os
 from pathlib import Path
 import sys
 
-from MartiniFuncs.chemistry.cpd_n4t.selection import PairCriteria
-from MartiniFuncs.workflows.postprocess import cache_analysis, export_pairs, write_report
+from MartiniFuncs.pairs.model import DEFAULT_PAIR_MODEL, get_pair_model, pair_model_names
+from MartiniFuncs.workflows.postprocess import cache_analysis, cache_pair_model, export_pairs, write_report
 from MartiniFuncs.workflows.progress import log, run_stage
 
 
@@ -115,23 +116,50 @@ def _report_options(parser):
     parser.add_argument("--rdf-bins", type=int, help="include molecular COM RDFs with this many radial bins")
 
 
-def _selection_options(parser):
-    """Pair selection from cached candidates (report/extract): radius and PairCriteria."""
-    parser.add_argument("--reactive-radius", type=float,
-                        help="select pairs with CPD COM to C=C COM below this radius (Angstrom, at most the "
-                             "cached radius); default: the analysis's own pairs")
-    for field in fields(PairCriteria):
+def _criteria_fields():
+    """Threshold fields of every pair model's PairCriteria, deduplicated: (field, models)."""
+    found = {}
+    for name in pair_model_names():
+        for field in fields(get_pair_model(name).criteria_class):
+            found.setdefault(field.name, (field, []))[1].append(name)
+    return list(found.values())
+
+
+def _criteria_options(parser, verb):
+    for field, models in _criteria_fields():
+        meta = field.metadata
+        detail = ", ".join(x for x in (meta.get("help"), meta.get("unit")) if x)
         parser.add_argument("--" + field.name.replace("_", "-"), type=float,
-                            help="select pairs at or below this threshold (distances Angstrom; acute angles degrees)")
+                            help=f"{verb} at or below this threshold ({detail}; pair model "
+                                 f"{'/'.join(models)})")
+
+
+def _criteria(args, model):
+    """The model's PairCriteria from the threshold flags; flags of other models are an error."""
+    own = {f.name for f in fields(model.criteria_class)}
+    given = {f.name: getattr(args, f.name) for f, _ in _criteria_fields() if getattr(args, f.name) is not None}
+    foreign = sorted(set(given) - own)
+    if foreign:
+        raise ValueError(f"pair model {model.name!r} has no threshold "
+                         + ", ".join("--" + f.replace("_", "-") for f in foreign))
+    return model.criteria_class(**given)
+
+
+def _selection_options(parser):
+    """Pair selection from cached candidates (report/extract): radius and the model's criteria."""
+    parser.add_argument("--reactive-radius", type=float,
+                        help="select pairs with screen distance below this radius (Angstrom, at most the "
+                             "cached radius; cpd_n4t: CPD COM to C=C COM); default: the analysis's own pairs")
+    _criteria_options(parser, "select pairs")
     parser.add_argument("--geometry-required", action="store_true",
                         help="select only pairs whose geometry could be measured (implied by any threshold)")
 
 
 def _selection_kwargs(args):
-    thresholds = {f.name: getattr(args, f.name) for f in fields(PairCriteria)}
-    use_criteria = args.geometry_required or any(v is not None for v in thresholds.values())
-    return dict(reactive_radius=args.reactive_radius,
-                pair_criteria=PairCriteria(**thresholds) if use_criteria else None)
+    model = cache_pair_model(args.cache)
+    criteria = _criteria(args, model)
+    use_criteria = args.geometry_required or bool(criteria.active())
+    return dict(reactive_radius=args.reactive_radius, pair_criteria=criteria if use_criteria else None)
 
 
 def _report_kwargs(args):
@@ -175,17 +203,17 @@ def _analysis_options(parser):
                              "(prefer --reaction-events)")
     screen.add_argument("--no-reaction-screen", dest="reaction_atom_counts", action="store_const", const=None,
                         help="disable the legacy A+B abort screen")
+    parser.add_argument("--pair-model", choices=pair_model_names(), default=DEFAULT_PAIR_MODEL,
+                        help=f"pair chemistry (default {DEFAULT_PAIR_MODEL}: CPD + N4T dienophile)")
     parser.add_argument("--pair-backend", choices=["cached", "reference"], default="cached")
     parser.add_argument("--reactive-radius", type=float, default=3.25,
-                        help="pair screen radius cached by the analysis, CPD COM to C=C COM in Angstrom "
-                             "(default 3.25); report/extract can later select any radius up to it")
+                        help="pair screen radius cached by the analysis in Angstrom (cpd_n4t: CPD COM to "
+                             "C=C COM; default 3.25); report/extract can later select any radius up to it")
     parser.add_argument("--orientations", action="store_true",
                         help="also cache each molecule's long axis and plane normal per frame (rotational dynamics)")
     parser.add_argument("--workers", type=int, default=1, help="local frame-processing and export processes, not MPI ranks (default: 1)")
     parser.add_argument("--batch-size", type=int, default=32, help="source frames per analysis chunk; retained frames per export chunk (default: 32)")
-    for field in fields(PairCriteria):
-        parser.add_argument("--" + field.name.replace("_", "-"), type=float,
-                         help="optional pair threshold (distances Angstrom; acute angles degrees)")
+    _criteria_options(parser, "keep pairs")
     parser.add_argument("--quiet", action="store_true")
 
 
@@ -275,7 +303,7 @@ def main(argv=None):
             dof = args.temperature_dof
             if dof is not None and dof != "3N-3":
                 dof = float(dof)
-            criteria = PairCriteria(**{f.name: getattr(args, f.name) for f in fields(PairCriteria)})
+            criteria = _criteria(args, get_pair_model(args.pair_model))
             args.output.mkdir(parents=True, exist_ok=True)
             cache = args.output / "cache"
             # The in-memory result is reused by the report and export stages.
@@ -288,6 +316,7 @@ def main(argv=None):
                               {"on_topology_change": {"record": "record", "stop": "truncate"}[args.reaction_events],
                                "topology_persistence": args.reaction_persistence}),
                            pair_criteria=criteria, pair_backend=args.pair_backend, pair_workers=args.workers,
+                           **({} if args.pair_model == DEFAULT_PAIR_MODEL else {"pair_model": args.pair_model}),
                            **({} if args.reactive_radius == 3.25 else {"reactive_radius": args.reactive_radius}),
                            **({"orientations": True} if args.orientations else {}),
                            pair_batch_size=args.batch_size)

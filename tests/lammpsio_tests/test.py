@@ -11,7 +11,8 @@ from MartiniFuncs.io.lammps import read_lammps_frame, read_lammps_input_settings
 from MartiniFuncs.chemistry.cpd_n4t.pairs import get_all_prereactive_pairs
 from MartiniFuncs.pairs.structures import (get_pair_shell_clusters, get_cluster_positions_and_forces,
                                            pair_data_to_extxyz)
-from MartiniFuncs.chemistry.cpd_n4t.selection import PairCriteria, assess_prereactive_pairs
+from MartiniFuncs.chemistry.cpd_n4t import CpdN4tCriteria
+from MartiniFuncs.chemistry.cpd_n4t.selection import assess_prereactive_pairs
 
 
 def main():
@@ -28,7 +29,7 @@ def main():
     settings = read_lammps_input_settings(args.input)
     frame = read_lammps_frame(args.dump, index=args.index, units=settings["units"])
     pairs, shifts = get_all_prereactive_pairs(frame.atoms, scale=args.scale)
-    criteria = PairCriteria(max_axis_angle=args.max_axis_angle,
+    criteria = CpdN4tCriteria(max_axis_angle=args.max_axis_angle,
                             max_forming_distance=args.max_forming_distance)
     assessments = assess_prereactive_pairs(frame.atoms, pairs, shifts,
                                            criteria=criteria, scale=args.scale)

@@ -1,66 +1,67 @@
 """Cached pair candidates and selection with any reactive radius / PairCriteria after the fact.
 
-analyze_run(compute_pairs=True) stores every CPD/dienophile candidate inside its
-reactive_radius (the screen: CPD COM to dienophile C=C COM, minimum image), with
-its measured geometry. select_pairs then applies a smaller radius and/or any
-PairCriteria thresholds to those candidates, so pair counts, distributions and
-lifetimes can be recomputed without rereading the dump.
+analyze_run(compute_pairs=True) stores every pair candidate inside its
+reactive_radius (the pair model's center-distance screen, minimum image), with
+the model's measured geometry metrics. select_pairs then applies a smaller
+radius and/or any of the model's PairCriteria thresholds to those candidates,
+so pair counts, distributions and lifetimes can be recomputed without
+rereading the dump.
 
 Candidate arrays (one row per candidate, frames delimited by offsets):
-  offsets (frames+1), molecules (n, 2) [CPD, dienophile] indices into
+  offsets (frames+1), molecules (n, 2) [first, second member] indices into
   molecule_atom_ids (-1 if the molecule is not an initial molecule), shifts
-  (n, 3) CPD periodic image shift, and metrics (n, 7) with columns METRICS.
+  (n, 3) first-member periodic image shift, and metrics (n, k) with columns
+  metric_columns(candidates): screen_distance, the model's metric_names, geometry_ok.
+The dict also records reactive_radius and the pair model name.
 """
-from dataclasses import fields
-
 import numpy as np
 
-METRICS = ("screen_distance", "max_forming_distance", "distance_imbalance",
-           "axis_angle", "plane_angle", "approach_angle", "geometry_ok")
-# PairCriteria field -> metric column it thresholds
-CRITERIA_COLUMNS = {"max_forming_distance": "max_forming_distance",
-                    "max_distance_imbalance": "distance_imbalance",
-                    "max_axis_angle": "axis_angle", "max_plane_angle": "plane_angle",
-                    "max_approach_angle": "approach_angle"}
+from MartiniFuncs.pairs.model import get_pair_model
 
 
-def metric_row(distance, geometry):
-    """One metrics row from a screen distance and a PairGeometry (or None)."""
-    if geometry is None:
-        return [float(distance)] + [np.nan] * 5 + [0.]
-    return [float(distance), max(geometry.forming_distances), geometry.distance_imbalance,
-            geometry.axis_angle, geometry.plane_angle, geometry.approach_angle, 1.]
+def metric_columns(candidates_or_model):
+    """Metric column names of a candidate set (or a model): screen_distance, metrics, geometry_ok."""
+    if isinstance(candidates_or_model, dict):
+        names = candidates_or_model.get("metric_names")
+        if names is None:
+            names = get_pair_model(candidates_or_model.get("model")).metric_names
+    else:
+        names = get_pair_model(candidates_or_model).metric_names
+    return ("screen_distance", *names, "geometry_ok")
 
 
-def frame_candidates(rows):
-    """Pack a frame's candidate rows [(cpd_mol, mal_mol, shift, metrics), ...] into arrays."""
+def frame_candidates(rows, model=None):
+    """Pack a frame's candidate rows [(first_mol, second_mol, shift, metrics), ...] into arrays."""
+    width = len(metric_columns(model))
     molecules = np.array([r[:2] for r in rows], dtype=np.int32).reshape(-1, 2)
     shifts = np.array([r[2] for r in rows], dtype=np.int32).reshape(-1, 3)
-    metrics = np.array([r[3] for r in rows], dtype=float).reshape(-1, len(METRICS))
+    metrics = np.array([r[3] for r in rows], dtype=float).reshape(-1, width)
     return {"molecules": molecules, "shifts": shifts, "metrics": metrics}
 
 
-def concatenate(per_frame, radius):
+def concatenate(per_frame, radius, model=None):
     """Join per-frame candidate dicts into the stored (offsets, molecules, shifts, metrics) form."""
+    model = get_pair_model(model)
     counts = [len(c["molecules"]) for c in per_frame]
-    empty = frame_candidates([])
+    empty = frame_candidates([], model)
     return {"offsets": np.concatenate(([0], np.cumsum(counts))).astype(np.int64),
             "molecules": np.concatenate([c["molecules"] for c in per_frame] or [empty["molecules"]]),
             "shifts": np.concatenate([c["shifts"] for c in per_frame] or [empty["shifts"]]),
             "metrics": np.concatenate([c["metrics"] for c in per_frame] or [empty["metrics"]]),
-            "reactive_radius": float(radius)}
+            "reactive_radius": float(radius), "model": model.name,
+            "metric_names": list(model.metric_names)}
 
 
 def candidate_mask(candidates, *, reactive_radius=None, criteria=None):
     """Boolean mask over all candidate rows for a selection.
 
     screen_distance < reactive_radius (strict, as in the screen). With criteria
-    (a PairCriteria, possibly all None): the geometry must have been measured,
-    and each non-None threshold rejects values strictly above it (equality
-    passes), exactly as chemistry.cpd_n4t.selection._rejection_reasons.
+    (the model's PairCriteria, possibly all None): the geometry must have been
+    measured, and each non-None threshold rejects values strictly above it
+    (equality passes), exactly as PairCriteria.rejection_reasons.
     """
     metrics = np.asarray(candidates["metrics"])
-    column = {name: metrics[:, i] for i, name in enumerate(METRICS)}
+    column = {name: metrics[:, i] for i, name in enumerate(metric_columns(candidates))}
     keep = np.ones(len(metrics), dtype=bool)
     if reactive_radius is not None:
         cached = candidates["reactive_radius"]
@@ -69,10 +70,11 @@ def candidate_mask(candidates, *, reactive_radius=None, criteria=None):
         keep &= column["screen_distance"] < reactive_radius
     if criteria is not None:
         keep &= column["geometry_ok"] > 0
-        for field in fields(criteria):
-            threshold = getattr(criteria, field.name)
-            if threshold is not None:
-                keep &= ~(column[CRITERIA_COLUMNS[field.name]] > threshold)
+        for metric, threshold in criteria.active().items():
+            if metric not in column:
+                raise ValueError(f"{type(criteria).__name__} thresholds metric {metric!r}, "
+                                 f"which these candidates do not have")
+            keep &= ~(column[metric] > threshold)
     return keep
 
 
@@ -107,37 +109,44 @@ def select_pairs(result, *, reactive_radius=None, criteria=None):
 def candidate_table(result, *, reactive_radius=None, criteria=None):
     """All cached candidates (optionally only a selection) as a pandas DataFrame.
 
-    Columns: frame, time_ps, cpd_molecule, dienophile_molecule, shift_x/y/z and
-    METRICS. Use it for distributions (e.g. histogram screen_distance).
+    Columns: frame, time_ps, <role>_molecule for the model's two roles (for
+    cpd_n4t: cpd_molecule, dienophile_molecule), shift_x/y/z and the metric
+    columns. Use it for distributions (e.g. histogram screen_distance).
     """
     import pandas as pd
     candidates = result.get("pair_candidates")
     if candidates is None:
         raise ValueError("This cache has no pair candidates")
+    roles = get_pair_model(candidates.get("model")).roles
     offsets = candidates["offsets"]
     frame_of_row = np.repeat(np.arange(len(offsets) - 1), np.diff(offsets))
     frames = np.asarray([r["frame"] for r in result["frames"]])
     times = np.asarray([r["time_ps"] for r in result["frames"]])
     table = pd.DataFrame({"frame": frames[frame_of_row], "time_ps": times[frame_of_row],
-                          "cpd_molecule": candidates["molecules"][:, 0],
-                          "dienophile_molecule": candidates["molecules"][:, 1],
+                          f"{roles[0]}_molecule": candidates["molecules"][:, 0],
+                          f"{roles[1]}_molecule": candidates["molecules"][:, 1],
                           "shift_x": candidates["shifts"][:, 0], "shift_y": candidates["shifts"][:, 1],
                           "shift_z": candidates["shifts"][:, 2],
-                          **{name: candidates["metrics"][:, i] for i, name in enumerate(METRICS)}})
+                          **{name: candidates["metrics"][:, i]
+                             for i, name in enumerate(metric_columns(candidates))}})
     if reactive_radius is not None or criteria is not None:
         table = table[candidate_mask(candidates, reactive_radius=reactive_radius, criteria=criteria)]
     return table.reset_index(drop=True)
 
 
 def metric_histograms(candidates, mask, *, bins=50):
-    """Histogram rows (metric, bin_low, bin_high, count) of the selected candidates."""
+    """Histogram rows (metric, bin_low, bin_high, count) of the selected candidates.
+
+    Ranges: screen_distance (0, cached radius); metrics from the model's
+    metric_ranges, else the range of the selected values.
+    """
     metrics = np.asarray(candidates["metrics"])[mask]
-    ranges = {"screen_distance": (0, candidates["reactive_radius"]), "max_forming_distance": (0, 8),
-              "distance_imbalance": (0, 4), "axis_angle": (0, 90), "plane_angle": (0, 90), "approach_angle": (0, 90)}
+    ranges = dict(get_pair_model(candidates.get("model")).metric_ranges,
+                  screen_distance=(0, candidates["reactive_radius"]))
     rows = []
-    for i, name in enumerate(METRICS[:-1]):
+    for i, name in enumerate(metric_columns(candidates)[:-1]):
         values = metrics[:, i][np.isfinite(metrics[:, i])]
-        counts, edges = np.histogram(values, bins=bins, range=ranges[name])
+        counts, edges = np.histogram(values, bins=bins, range=ranges.get(name))
         rows += [dict(metric=name, bin_low=float(lo), bin_high=float(hi), count=int(n))
                  for lo, hi, n in zip(edges[:-1], edges[1:], counts)]
     return rows
