@@ -386,6 +386,16 @@ def write_report(cache_dir, output_dir, *, startframe=0, endframe=None,
         species_files[name] = {"file": filename, "n_molecules": entry["n_molecules"]}
     if fits:
         _csv(output / "diffusion.csv", fits)
+    events = result.get("topology_events") or []
+    if events:
+        dt = result["settings"]["timestep"]
+        _csv(output / "topology_events.csv",
+             [dict(frame=e["frame"], timestep=e["timestep"], time_ps=e["timestep"] * dt,
+                   persistence_frames=e["persistence_frames"], formulas=" + ".join(e["formulas"]),
+                   changed_components=e["changed_components"]) for e in events],
+             fields=["frame", "timestep", "time_ps", "persistence_frames", "formulas", "changed_components"])
+        if progress:
+            progress(f"Wrote {len(events)} topology (reaction) events")
     if pair_lifetimes and result["pairs_by_frame"] is not None:
         if progress:
             progress(f'Computing pair lifetimes over {len(rows)} frames')
@@ -434,7 +444,7 @@ def write_report(cache_dir, output_dir, *, startframe=0, endframe=None,
         _json(output / "rdf_species.json", rdf_files)
     _json(output / "manifest.json", {"schema_version": SCHEMA_VERSION, "configuration": config,
                                      "time_window_ps": window["time_window_ps"], "frame_window": window["frame_window"],
-                                     "species": species_files,
+                                     "species": species_files, "topology_events": len(events),
                                      "notices": result["notices"]})
     if progress:
         progress(f'Report complete: {output}')
@@ -476,6 +486,9 @@ def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endf
     global_index, lammps_id, frame_local_index and pair_role. structure_index
     links pairs.extxyz, clusters.extxyz and index.jsonl in identical order.
     frames.csv includes selected frames with zero accepted pairs.
+    Pairs whose molecules are no longer separate components in a frame (e.g.
+    after a reaction) are exported with membership_changed=true in index.jsonl
+    and counted in the manifest; they never abort the export.
     Only selected frames are parsed (each from its own byte range), using
     frame offsets saved in the cache after the first export.
     preloaded=(result, manifest) skips reading the cache again.
@@ -504,7 +517,7 @@ def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endf
     if mapping is not None:
         mapping = {int(k): v for k, v in mapping.items()}
     scale = options.get("bond_scale", 1.3)
-    count = 0
+    count = flagged = 0
     frame_counts = []
     with (output / "pairs.extxyz").open("w", encoding="utf-8") as pair_stream, \
          (output / "index.jsonl").open("w", encoding="utf-8") as index_stream:
@@ -531,8 +544,9 @@ def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endf
                                first_structure)
                         first_structure += sum(len(selected[i][1]) for i in batch)
 
-                for pair_text, cluster_text, index_text, counts, count in ordered_tasks(
+                for pair_text, cluster_text, index_text, counts, count, chunk_flagged in ordered_tasks(
                         _export_frame_chunk, tasks(), workers):
+                    flagged += chunk_flagged
                     pair_stream.write(pair_text)
                     index_stream.write(index_text)
                     if cluster_stream is not None:
@@ -547,7 +561,8 @@ def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endf
     _csv(output / "frames.csv", frame_counts,
          fields=["frame", "timestep", "time_ps", "pair_count", "first_structure_index"])
     _json(output / "manifest.json", {"schema_version": SCHEMA_VERSION, "configuration": config,
-                                     "structures": count, "pair_file": "pairs.extxyz",
+                                     "structures": count, "structures_with_changed_membership": flagged,
+                                     "pair_file": "pairs.extxyz",
                                      "cluster_file": "clusters.extxyz" if shell_radius is not None else None,
                                      "index": "index.jsonl", "frames": "frames.csv",
                                      "frames_processed": len(frame_counts),
@@ -571,7 +586,7 @@ def _export_frame_chunk(task):
     path, reader_options, ranges, selected, shell_radius, scale, count = task
     pair_stream, index_stream = StringIO(), StringIO()
     cluster_stream = StringIO() if shell_radius is not None else None
-    frame_counts = []
+    frame_counts, flagged = [], 0
     frames = (frame for index, lower, upper in ranges
               for frame in iter_lammps_frames(path, byte_range=(lower, upper), frame_offset=index, **reader_options))
     # Reactive sites are reused while molecules are unchanged; unwraps are
@@ -588,9 +603,11 @@ def _export_frame_chunk(task):
                     raise ValueError("Pair structure export requires source force columns")
                 bonded = graph.build_bond_graph(frame.atoms, scale=scale)
                 components = graph.connected_components(bonded, atom_ids=graph.atom_ids(frame.atoms))
+                # A pair whose molecules are no longer separate components (e.g. they
+                # have reacted) is still exported, flagged, so rare events never abort.
                 memberships = {frozenset(c) for c in components}
-                if any(frozenset(c) not in memberships for pair in pairs for c in pair):
-                    raise ValueError(f"Frame {frame.index}: cached pair membership differs from current graph; use reference analysis")
+                changed = [any(frozenset(c) not in memberships for c in pair) for pair in pairs]
+                flagged += sum(changed)
                 records = get_pair_positions_and_forces(frame.atoms, frame, pairs, shifts, bond_scale=scale, graph=bonded)
                 _export_identity(records, frame, count, row["time_ps"])
                 buffer = StringIO()
@@ -609,8 +626,8 @@ def _export_frame_chunk(task):
                     record = dict(structure_index=count, frame=frame.index, timestep=frame.timestep,
                                   time_ps=row["time_ps"], candidate=candidate, pair_atom_ids=pair,
                                   cpd_shift=shift, geometry=asdict(assessment.geometry) if assessment.geometry else None,
-                                  geometry_errors=assessment.reasons)
+                                  geometry_errors=assessment.reasons, membership_changed=changed[candidate])
                     index_stream.write(json.dumps(_plain(record), allow_nan=False) + "\n")
                     count += 1
     return (pair_stream.getvalue(), cluster_stream.getvalue() if cluster_stream is not None else None,
-            index_stream.getvalue(), frame_counts, count)
+            index_stream.getvalue(), frame_counts, count, flagged)

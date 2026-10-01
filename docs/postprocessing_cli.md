@@ -23,8 +23,8 @@ martini-postprocess run ./ --output ./postprocess --units metal --timestep-ps 0.
 
 This processes the entire trajectory, writes frame summaries and pair lifetimes,
 and exports pairs and shells. It skips MSD, VACF and force-correlation calculations
-entirely, not just their CSV files. Add `--reaction-atom-counts 11 23` to enable
-the possible-product screen in `run`. The shell radius is your physical choice.
+entirely, not just their CSV files. Reaction events are recorded without stopping
+the job (see below). The shell radius is your physical choice.
 
 Report choices are independent:
 
@@ -87,11 +87,33 @@ Use `--input-file`, `--dump-file`, or `--data-file` when several files match.
 Units and timestep are mandatory; temperature DOF is explicit and optional.
 `--type-symbols types.json` supplies mappings when required by the dump format.
 
-For CPD/MAL reaction screening add `--reaction-atom-counts 11 23`. This rebuilds
-connectivity on every source frame, before striding, and stops on a 34-atom
-connected component rather than continuing fixed-species statistics. It is an
-optional, distance-based possible-product screen, not proof of reaction. It runs
-inside the frame workers when parallel processing is enabled.
+### Reaction events (default: recorded, never fatal)
+
+`run` and `collect` check every source frame, before striding and inside the frame
+workers, for a change of molecular topology. A change is a bond (distance-based,
+`--bond-scale`) joining two of the first frame's molecules, or a molecule
+splitting. A change becomes an **event** once it persists for
+`--reaction-persistence` consecutive source frames (default 5). A product that also
+touches a neighbor briefly still persists; a contact that separates again is
+ignored.
+
+- `--reaction-events record` (default): events are stored in the cache
+  (`topology_events` in `analysis.json`) and written to
+  `reports/<name>/topology_events.csv` (frame, timestep, time, formulas, atom
+  IDs). The analysis continues with the first frame's molecules, so statistics
+  of molecules after their event mix reactant and product. Exported pairs whose
+  molecules are no longer separate components get `"membership_changed": true`
+  in `index.jsonl`; the export manifest counts them. Nothing aborts.
+- `--reaction-events stop`: ends the analysis cleanly before the first event
+  (exit status 0); later frames are not cached.
+- `--reaction-events off`: no check (the fixed-topology bond-stretch check then
+  stops the job if a molecule falls apart).
+- For statistics that respect the new species, use
+  `trajectory_analysis.analyze_segments` (Python API). It splits the run at each
+  event into fixed-topology segments.
+
+`--reaction-atom-counts 11 23` is the older possible-product screen. It aborts with
+an error at the first 34-atom component; keep it only when that is what you want.
 Notebook 08 requires a cache with this screen (or a fresh raw-data analysis).
 See [reaction screening and diffusion](diffusion_assessment.md#possible-reactions).
 

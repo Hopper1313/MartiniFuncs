@@ -195,8 +195,11 @@ class PostprocessingTests(unittest.TestCase):
         status, errors = self.call(args)
         self.assertEqual(status, 0, errors)
         self.assertFalse((self.output/"reports").exists())
-        result, _ = load_analysis_cache(self.output/"cache")
-        self.assertEqual(result["reaction_screen"]["frames_checked"], 9)
+        result, manifest = load_analysis_cache(self.output/"cache")
+        # collect records reaction (topology) events by default instead of aborting on them
+        self.assertIsNone(result["reaction_screen"])
+        self.assertEqual(manifest["configuration"]["on_topology_change"], "record")
+        self.assertEqual(result["topology_events"], [])
         self.assertEqual(result["pair_analysis"]["workers"], 2)
         pairs = read(self.output/"pairs/pairs.extxyz", index=":")
         clusters = read(self.output/"pairs/clusters.extxyz", index=":")

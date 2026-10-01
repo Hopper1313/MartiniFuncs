@@ -9,9 +9,9 @@ Usage (also available as the installed martini-postprocess command)::
 
 collect uses the same indexed parallel frame processing as run, and writes both
 pairs.extxyz and clusters.extxyz without generating statistical reports.
---shell-radius is required. Default stride is 1 (all source frames); default
-reaction screening stops on an inferred 11+23 atom product before fixed-species
-collection can silently mix reactants and products. All pairs means all accepted
+--shell-radius is required. Default stride is 1 (all source frames). Reaction
+(topology) events are recorded by default and never stop run or collect: see
+--reaction-events and --reaction-persistence. All pairs means all accepted
 CPD/MAL candidates under the existing 3.25 Angstrom screen and optional criteria,
 not every possible Cartesian combination of molecules.
 
@@ -144,12 +144,18 @@ def _analysis_options(parser):
     parser.add_argument("--frame-stride", type=int, default=1, help="retain every Nth source frame, anchored at frame 0; reading/unwrapping still uses every frame")
     parser.add_argument("--max-frames", type=int, help="preview only: cap source frames read")
     parser.add_argument("--bond-scale", type=float, default=1.3)
+    parser.add_argument("--reaction-events", choices=["record", "stop", "off"], default="record",
+                        help="topology changes (bonds forming between molecules, or molecules splitting), checked "
+                             "on every source frame: record = log them and keep going (default); stop = end the "
+                             "analysis cleanly before the first one; off = do not check")
+    parser.add_argument("--reaction-persistence", type=int, default=5,
+                        help="source frames a topology change must last to count as an event (default: 5)")
     screen = parser.add_mutually_exclusive_group()
     screen.add_argument("--reaction-atom-counts", type=int, nargs=2, metavar=("A", "B"),
-                        help="check every source frame for an A+B atom component; stop on a possible product "
-                             "(CPD/MAL: 11 23; collect's default)")
+                        help="legacy screen: abort with an error at the first A+B-atom component "
+                             "(prefer --reaction-events)")
     screen.add_argument("--no-reaction-screen", dest="reaction_atom_counts", action="store_const", const=None,
-                        help="skip the possible-product screen (collect enables it by default)")
+                        help="disable the legacy A+B abort screen")
     parser.add_argument("--pair-backend", choices=["cached", "reference"], default="cached")
     parser.add_argument("--orientations", action="store_true",
                         help="also cache each molecule's long axis and plane normal per frame (rotational dynamics)")
@@ -186,7 +192,7 @@ def build_parser():
     collect.add_argument("--shell-radius", type=float, required=True,
                          help="atom-to-pair shell cutoff in Angstrom; retain whole neighboring molecules")
     collect.set_defaults(no_pairs=False, no_export_pairs=False, temperature_dof=None,
-                         report_name=None, reaction_atom_counts=[11, 23])
+                         report_name=None)
 
     report = commands.add_parser("report", help="regenerate statistics from cache without reading simulation files")
     report.add_argument("cache", type=Path, help="the output/cache directory from run")
@@ -229,6 +235,8 @@ def main(argv=None):
         if hasattr(args, "workers"):
             if args.workers < 1 or args.batch_size < 1:
                 raise ValueError("workers and batch-size must be positive")
+            if getattr(args, "reaction_persistence", 1) < 1:
+                raise ValueError("--reaction-persistence must be a positive number of frames")
             allocated = os.environ.get("SLURM_CPUS_PER_TASK")
             if allocated is not None and args.workers > int(allocated):
                 raise ValueError("--workers exceeds SLURM_CPUS_PER_TASK; request more CPUs or reduce workers")
@@ -252,6 +260,9 @@ def main(argv=None):
                            frame_stride=args.frame_stride, max_frames=args.max_frames, bond_scale=args.bond_scale,
                            type_symbols=mapping, degrees_of_freedom=dof, compute_pairs=not args.no_pairs,
                            reaction_atom_counts=args.reaction_atom_counts,
+                           **({} if args.reaction_events == "off" else
+                              {"on_topology_change": {"record": "record", "stop": "truncate"}[args.reaction_events],
+                               "topology_persistence": args.reaction_persistence}),
                            pair_criteria=criteria, pair_backend=args.pair_backend, pair_workers=args.workers,
                            **({"orientations": True} if args.orientations else {}),
                            pair_batch_size=args.batch_size)

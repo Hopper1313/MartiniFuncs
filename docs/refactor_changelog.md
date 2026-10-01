@@ -615,3 +615,32 @@ physical for this state point, not evidence of a pressure bug.
   index held 56 CRLF, 55 LF and 15 mixed-ending text files; now every text file is LF.
 
 **Verified:** 165 tests pass after each commit (168 minus the 3 removed with `shell.py`).
+
+## Reaction events never terminate the CLI (2026-10-01)
+
+**Why:** reaction events are rare but wanted, and they must not end a long job. Previously:
+- `collect` enabled the abort-on-34-atom screen by default;
+- the export raised "cached pair membership differs" as soon as two molecules had bonded;
+- `run` without the screen raised when a molecule fell apart.
+
+**Changed:**
+- **New CLI options** for `run` and `collect`: `--reaction-events {record,stop,off}` (default `record`)
+  and `--reaction-persistence N` (default 5 source frames). These use `analyze_run`'s
+  topology-change detection.
+- **Report:** writes `topology_events.csv`; the manifest has a `topology_events` count.
+- **Export:** flags pairs whose molecules are no longer separate components (`membership_changed` in
+  `index.jsonl`, `structures_with_changed_membership` in the manifest) instead of aborting.
+- **`collect`** no longer forces the legacy screen. `--reaction-atom-counts` remains available as an
+  explicit opt-in abort.
+
+**Verified:** `tests/test_reaction_cli.py` runs the CLI on a synthetic reacting trajectory (a CPD bonded
+to a dienophile from frame 4, with a one-frame contact at frame 2):
+
+| command | result |
+|---|---|
+| `run` with 2 workers | exit 0, one event at frame 4 (C16H15NO2), the frame-2 contact ignored, all 9 frames analyzed and exported, at least one structure flagged |
+| `run --reaction-events stop` | exit 0, frames 0–3 only |
+| `collect` (default) | exit 0, the event recorded |
+| legacy screen | still aborts (exit 2) |
+
+All 168 tests pass.
