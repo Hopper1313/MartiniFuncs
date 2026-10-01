@@ -597,3 +597,21 @@ corrected notice: thermo logs *are* parsed, by `MartiniFuncs.thermo`.
 (`tests/lammpsio_tests/infile.in`) compresses the system to 2.5 GPa on purpose, and the new diagnostics
 (caging, an elastic shear response of about 1 GPa) are consistent with that state. The slow dynamics are
 physical for this state point, not evidence of a pressure bug.
+
+## Phase D: repository hygiene
+
+- **Removed:**
+  - `MartiniFuncs/shell.py`, deprecated in round 1, together with its three legacy tests in
+    `tests/test_consistency.py`;
+  - the empty `MartiniFuncs/gaussianio.py`.
+- **Untracked:** the 14 `__pycache__/*.pyc` files. They were already in `.gitignore`; your local copies
+  are kept.
+- **Added `.gitattributes`:**
+  - text is stored as LF and checked out with the platform ending;
+  - `.lammpstrj` and `.data` fixtures are kept byte-exact;
+  - binary outputs are marked binary.
+
+  One renormalization commit changed only line endings (no content change ignoring CR). Before it the
+  index held 56 CRLF, 55 LF and 15 mixed-ending text files; now every text file is LF.
+
+**Verified:** 165 tests pass after each commit (168 minus the 3 removed with `shell.py`).
