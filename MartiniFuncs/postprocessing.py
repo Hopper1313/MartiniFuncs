@@ -6,6 +6,7 @@ cache_analysis forwards pair_workers and pair_batch_size to indexed frame worker
 Frame parsing, reconstruction and screening run in workers; export_pairs can also
 parallelize parsing and shell construction. TOR and final writes remain ordered.
 """
+from collections.abc import Sequence
 import csv
 from dataclasses import asdict
 import hashlib
@@ -23,7 +24,8 @@ from .trajectory_analysis import analyze_run, molecular_window_statistics, resol
 
 ARRAY_KEYS = ("species", "com_angstrom", "wrapped_com_angstrom", "box_lengths_angstrom", "cell_angstrom",
               "com_velocity_angstrom_ps", "net_force_eV_angstrom")
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+SUPPORTED_SCHEMAS = {1, 2}
 
 
 def _plain(value):
@@ -88,6 +90,17 @@ def _fingerprints(files):
     return fingerprints
 
 
+def _manifest(cache_dir):
+    """Read a completed cache manifest without loading any analysis data."""
+    path = Path(cache_dir) / "manifest.json"
+    if not path.is_file():
+        raise ValueError(f"Incomplete or missing analysis cache: {cache_dir}; use a fresh output directory")
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    if manifest.get("schema_version") not in SUPPORTED_SCHEMAS or not set(manifest["arrays"]) <= set(ARRAY_KEYS):
+        raise ValueError("Unsupported analysis cache schema")
+    return manifest
+
+
 def cache_analysis(directory, cache_dir, *, units, timestep_ps, pair_criteria=None,
                    compute_pairs=True, pair_workers=1, pair_batch_size=32,
                    progress=print, **options):
@@ -97,6 +110,7 @@ def cache_analysis(directory, cache_dir, *, units, timestep_ps, pair_criteria=No
     recorded. Changing worker/batch count permits reuse; changing selection,
     source size/mtime/path, or package source code requires a new cache directory.
     Initial metadata is fixed; partial directories never count as completed.
+    On reuse only manifest.json is read before deciding; data load afterwards.
 
     pair_workers > 1 processes contiguous indexed chunks in spawned workers.
     pair_batch_size is source frames per task. Temporal unwrapping stays ordered
@@ -104,6 +118,8 @@ def cache_analysis(directory, cache_dir, *, units, timestep_ps, pair_criteria=No
     workers/batch_size arguments. For Python scripts,
     call this function inside an if __name__ == "__main__" guard when using workers.
     A reused cache records the worker settings of its original computation.
+    The returned (result, manifest) can be passed to write_report/export_pairs
+    as preloaded=... to avoid reading the cache again.
     """
     cache_dir = Path(cache_dir).expanduser().resolve()
     files = resolve_run_files(directory, input_file=options.get("input_file"),
@@ -117,13 +133,13 @@ def cache_analysis(directory, cache_dir, *, units, timestep_ps, pair_criteria=No
     software = _software()
     fingerprints = _fingerprints(files)
     if cache_dir.exists():
-        result, manifest = load_analysis_cache(cache_dir)
+        manifest = _manifest(cache_dir)
         if (manifest["configuration"] != config or manifest["sources"] != fingerprints
                 or manifest["software"]["source_sha256"] != software["source_sha256"]):
             raise ValueError("Cache does not match source files, analysis settings, or package code; use a new --output directory")
         if progress:
             progress(f"Reusing completed cache: {cache_dir}")
-        return result, manifest
+        return load_analysis_cache(cache_dir)
     result = analyze_run(directory, units=units, timestep_ps=timestep_ps, compute_pairs=compute_pairs,
                          pair_criteria=pair_criteria, pair_workers=pair_workers,
                          pair_batch_size=pair_batch_size, progress=progress, **options)
@@ -135,7 +151,11 @@ def cache_analysis(directory, cache_dir, *, units, timestep_ps, pair_criteria=No
         if result[key] is not None:
             np.save(cache_dir / f"{key}.npy", result[key], allow_pickle=False)
             arrays.append(key)
-    metadata = {k: v for k, v in result.items() if k not in ARRAY_KEYS}
+    np.savez(cache_dir / "frames.npz", **_frame_columns(result["frames"]))
+    pair_storage = _save_pairs(cache_dir, result)
+    metadata = {k: v for k, v in result.items()
+                if k not in ARRAY_KEYS and k not in {"frames", "pairs_by_frame", "pair_shifts_by_frame"}}
+    metadata["pair_storage"] = pair_storage
     _json(cache_dir / "analysis.json", metadata)
     _csv(cache_dir / "frames.csv", result["frames"])
     _json(cache_dir / "molecules.json", [
@@ -149,22 +169,136 @@ def cache_analysis(directory, cache_dir, *, units, timestep_ps, pair_criteria=No
     return result, manifest
 
 
+def _frame_columns(rows):
+    """Per-frame records as one numeric array per key."""
+    keys = list(dict.fromkeys(k for row in rows for k in row))
+    columns = {}
+    for key in keys:
+        values = np.asarray([row[key] for row in rows])
+        if values.dtype.kind not in "iufb":
+            raise ValueError(f"Frame column {key} is not numeric; cannot store it compactly")
+        columns[key] = values
+    return columns
+
+
+def _save_pairs(cache_dir, result):
+    """Store pairs as molecule indices: frame offsets, (CPD, dienophile) index, shift.
+
+    Every cached pair molecule is one of molecule_atom_ids (fixed membership),
+    so 34 atom IDs per pair reduce to two indices. If a pair molecule is not an
+    initial molecule (possible with the reference backend after a reaction),
+    pairs are kept as compact JSON instead. Returns the storage label.
+    """
+    pairs, shifts = result.get("pairs_by_frame"), result.get("pair_shifts_by_frame")
+    if pairs is None:
+        return None
+    lookup = {frozenset(map(int, m)): i for i, m in enumerate(result["molecule_atom_ids"])}
+    counts = np.array([len(p) for p in pairs], dtype=np.int64)
+    molecules = np.empty((int(counts.sum()), 2), dtype=np.int32)
+    images = np.empty((int(counts.sum()), 3), dtype=np.int32)
+    k = 0
+    try:
+        for frame_pairs, frame_shifts in zip(pairs, shifts):
+            for (first, second), shift in zip(frame_pairs, frame_shifts):
+                molecules[k] = lookup[frozenset(map(int, first))], lookup[frozenset(map(int, second))]
+                images[k] = np.asarray(shift, dtype=int).ravel()
+                k += 1
+    except KeyError:
+        text = json.dumps(_plain({"pairs_by_frame": pairs, "pair_shifts_by_frame": shifts}),
+                          separators=(",", ":"), allow_nan=False)
+        (cache_dir / "pairs.json").write_text(text + "\n", encoding="utf-8")
+        return "json"
+    np.save(cache_dir / "pair_frame_offsets.npy", np.concatenate(([0], np.cumsum(counts))))
+    np.save(cache_dir / "pair_molecules.npy", molecules)
+    np.save(cache_dir / "pair_shifts.npy", images)
+    return "molecule_index"
+
+
+class _CachedPairFrames(Sequence):
+    """Read-only per-frame view of compactly cached pairs.
+
+    Item f is that frame's list of [CPD atom IDs, dienophile atom IDs] pairs
+    (atom order of molecule_atom_ids), or of [sx, sy, sz] shifts when
+    shifts=True. Rows are materialized on access; nothing is held per frame.
+    """
+
+    def __init__(self, offsets, molecules, images, molecule_atom_ids, *, shifts=False):
+        self._offsets, self._molecules, self._images = offsets, molecules, images
+        self._ids, self._shifts = [list(map(int, m)) for m in molecule_atom_ids], shifts
+
+    def __len__(self):
+        return len(self._offsets) - 1
+
+    def _frame(self, index):
+        lo, hi = int(self._offsets[index]), int(self._offsets[index + 1])
+        if self._shifts:
+            return self._images[lo:hi].tolist()
+        return [[self._ids[a], self._ids[b]] for a, b in self._molecules[lo:hi].tolist()]
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self._frame(i) for i in range(*index.indices(len(self)))]
+        if index < 0:
+            index += len(self)
+        if not 0 <= index < len(self):
+            raise IndexError(index)
+        return self._frame(index)
+
+    def __iter__(self):
+        return (self._frame(i) for i in range(len(self)))
+
+
 def load_analysis_cache(cache_dir):
     """Load metadata and memory-map molecular NPY arrays; never unpickle objects.
 
     Returned result follows analyze_run's dictionary API, except paths are JSON
     strings and arrays are read-only memory maps. The source dump is not opened.
+    Schema 2 caches return pairs_by_frame / pair_shifts_by_frame as read-only
+    sequences materialized per frame; schema 1 caches (one large analysis.json)
+    still load unchanged.
     """
     cache_dir = Path(cache_dir).expanduser().resolve()
-    if not (cache_dir / "manifest.json").is_file():
-        raise ValueError(f"Incomplete or missing analysis cache: {cache_dir}; use a fresh output directory")
-    manifest = json.loads((cache_dir / "manifest.json").read_text(encoding="utf-8"))
-    if manifest.get("schema_version") != SCHEMA_VERSION or not set(manifest["arrays"]) <= set(ARRAY_KEYS):
-        raise ValueError("Unsupported analysis cache schema")
+    manifest = _manifest(cache_dir)
     result = json.loads((cache_dir / "analysis.json").read_text(encoding="utf-8"))
     for key in ARRAY_KEYS:
         result[key] = np.load(cache_dir / f"{key}.npy", mmap_mode="r", allow_pickle=False) if key in manifest["arrays"] else None
+    if manifest["schema_version"] >= 2:
+        with np.load(cache_dir / "frames.npz", allow_pickle=False) as columns:
+            names = list(columns.files)
+            values = [columns[name].tolist() for name in names]
+        result["frames"] = [dict(zip(names, row)) for row in zip(*values)]
+        storage = result.pop("pair_storage", None)
+        if storage == "molecule_index":
+            offsets = np.load(cache_dir / "pair_frame_offsets.npy", allow_pickle=False)
+            # Small (14 bytes per pair); read fully so no file handle stays open.
+            molecules = np.load(cache_dir / "pair_molecules.npy", allow_pickle=False)
+            images = np.load(cache_dir / "pair_shifts.npy", allow_pickle=False)
+            result["pairs_by_frame"] = _CachedPairFrames(offsets, molecules, images, result["molecule_atom_ids"])
+            result["pair_shifts_by_frame"] = _CachedPairFrames(offsets, molecules, images, result["molecule_atom_ids"],
+                                                               shifts=True)
+        elif storage == "json":
+            result.update(json.loads((cache_dir / "pairs.json").read_text(encoding="utf-8")))
+        else:
+            result["pairs_by_frame"] = result["pair_shifts_by_frame"] = None
     return result, manifest
+
+
+def cached_frame_offsets(cache_dir, result):
+    """Dump frame byte offsets, computed once and saved in the cache.
+
+    frame_offsets.npy is valid for the dump fingerprint recorded in the
+    manifest; callers already refuse to export when the dump has changed.
+    The file is written atomically, so a partial write is never used.
+    """
+    from .frame_parallel import frame_offsets
+    path = Path(cache_dir) / "frame_offsets.npy"
+    if path.is_file():
+        return np.load(path, allow_pickle=False)
+    offsets = frame_offsets(result["files"]["dump"])
+    temporary = path.with_name("frame_offsets.tmp.npy")
+    np.save(temporary, offsets, allow_pickle=False)
+    temporary.replace(path)
+    return offsets
 
 
 def _begin_product(directory, configuration):
@@ -182,7 +316,7 @@ def _begin_product(directory, configuration):
 def write_report(cache_dir, output_dir, *, startframe=0, endframe=None,
                  max_lag_ps=100., fit_interval_ps=None, max_gap_frames=0,
                  stability=False, rdf_bins=None, lag_statistics=None,
-                 pair_lifetimes=True, frame_summary=True, progress=None):
+                 pair_lifetimes=True, frame_summary=True, progress=None, preloaded=None):
     """Compute a source-frame-window report from cached molecular data.
 
     startframe is inclusive and endframe exclusive, both zero-based source dump
@@ -197,15 +331,17 @@ def write_report(cache_dir, output_dir, *, startframe=0, endframe=None,
     lag_statistics=() skips all lag calculations. Otherwise select msd, vacf,
     force-acf (None means all). pair_lifetimes and frame_summary independently
     control their files. These options change reports, not the underlying cache.
+    preloaded=(result, manifest) from cache_analysis/load_analysis_cache for this
+    cache_dir skips reading it again.
     """
     requested = ['msd', 'vacf', 'force-acf'] if lag_statistics is None else sorted(set(lag_statistics))
     if set(requested) - {'msd', 'vacf', 'force-acf'}:
         raise ValueError('Unknown lag statistic')
     if fit_interval_ps is not None and 'msd' not in requested:
         raise ValueError('Diffusion fitting requires msd in lag_statistics')
-    if progress:
+    if progress and preloaded is None:
         progress('Loading report cache')
-    result, source = load_analysis_cache(cache_dir)
+    result, source = preloaded if preloaded is not None else load_analysis_cache(cache_dir)
     if isinstance(max_gap_frames, bool) or not isinstance(max_gap_frames, int) or max_gap_frames < 0:
         raise ValueError("max_gap_frames must be a nonnegative integer")
     if rdf_bins is not None and (isinstance(rdf_bins, bool) or not isinstance(rdf_bins, int) or rdf_bins < 1):
@@ -322,7 +458,7 @@ def _export_identity(records, frame, first_structure, time_ps):
 
 
 def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endframe=None, progress=print,
-                 workers=1, batch_size=32):
+                 workers=1, batch_size=32, preloaded=None):
     """Stream selected cached encounters into pair/shell Extended XYZ and an index.
 
     Select source frames in [startframe, endframe), defaulting to the entire
@@ -339,11 +475,14 @@ def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endf
     global_index, lammps_id, frame_local_index and pair_role. structure_index
     links pairs.extxyz, clusters.extxyz and index.jsonl in identical order.
     frames.csv includes selected frames with zero accepted pairs.
+    Only selected frames are parsed (each from its own byte range), using
+    frame offsets saved in the cache after the first export.
+    preloaded=(result, manifest) skips reading the cache again.
     """
     for name, value in (("workers", workers), ("batch_size", batch_size)):
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise ValueError(f"{name} must be a positive integer")
-    result, source = load_analysis_cache(cache_dir)
+    result, source = preloaded if preloaded is not None else load_analysis_cache(cache_dir)
     if result["pairs_by_frame"] is None:
         raise ValueError("Cache contains no pair analysis; rerun analysis with pairs enabled")
     if _fingerprints(result["files"]) != source["sources"]:
@@ -371,11 +510,11 @@ def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endf
         from contextlib import ExitStack
         with ExitStack() as stack:
             cluster_stream = stack.enter_context((output / "clusters.extxyz").open("w", encoding="utf-8")) if shell_radius is not None else None
-            from .frame_parallel import frame_offsets, ordered_tasks
+            from .frame_parallel import ordered_tasks
             if selected:
                 if progress:
-                    progress("Indexing source frame byte offsets for parallel export...")
-                offsets = frame_offsets(result["files"]["dump"])
+                    progress("Loading (or indexing once) source frame byte offsets for export...")
+                offsets = cached_frame_offsets(cache_dir, result)
                 reader_options = dict(units=options["units"], input_datafile=result["files"]["data"], type_symbols=mapping)
 
                 def tasks():
@@ -383,12 +522,12 @@ def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endf
                     indices = list(selected)
                     for offset in range(0, len(indices), batch_size):
                         batch = indices[offset:offset+batch_size]
-                        start, stop = batch[0], batch[-1]+1
-                        if stop >= len(offsets):
+                        if batch[-1]+1 >= len(offsets):
                             raise ValueError("Source dump ended before every selected frame was exported")
+                        ranges = [(i, int(offsets[i]), int(offsets[i+1])) for i in batch]
                         subset = {i: selected[i] for i in batch}
-                        yield (result["files"]["dump"], reader_options, int(offsets[start]), int(offsets[stop]),
-                               start, subset, shell_radius, scale, first_structure)
+                        yield (result["files"]["dump"], reader_options, ranges, subset, shell_radius, scale,
+                               first_structure)
                         first_structure += sum(len(selected[i][1]) for i in batch)
 
                 for pair_text, cluster_text, index_text, counts, count in ordered_tasks(
@@ -428,13 +567,13 @@ def _export_frame_chunk(task):
                              get_cluster_positions_and_forces, pair_data_to_extxyz)
     from .lammpsio import iter_lammps_frames
     from .pair_selection import PairCriteria, assess_prereactive_pairs
-    path, reader_options, lower, upper, first_frame, selected, shell_radius, scale, count = task
+    path, reader_options, ranges, selected, shell_radius, scale, count = task
     pair_stream, index_stream = StringIO(), StringIO()
     cluster_stream = StringIO() if shell_radius is not None else None
     frame_counts = []
-    for frame in iter_lammps_frames(path, byte_range=(lower, upper), frame_offset=first_frame, **reader_options):
-        if frame.index not in selected:
-            continue
+    frames = (frame for index, lower, upper in ranges
+              for frame in iter_lammps_frames(path, byte_range=(lower, upper), frame_offset=index, **reader_options))
+    for frame in frames:
         row, pairs, shifts = selected[frame.index]
         frame_counts.append(dict(frame=frame.index, timestep=frame.timestep,
             time_ps=row["time_ps"], pair_count=len(pairs), first_structure_index=count))

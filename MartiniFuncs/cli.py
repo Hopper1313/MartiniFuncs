@@ -240,7 +240,8 @@ def main(argv=None):
             criteria = PairCriteria(**{f.name: getattr(args, f.name) for f in fields(PairCriteria)})
             args.output.mkdir(parents=True, exist_ok=True)
             cache = args.output / "cache"
-            stage('Cache analysis/write', cache_analysis, args.directory, cache, units=args.units, timestep_ps=args.timestep_ps,
+            # The in-memory result is reused by the report and export stages.
+            cached = stage('Cache analysis/write', cache_analysis, args.directory, cache, units=args.units, timestep_ps=args.timestep_ps,
                            input_file=args.input_file, dump_file=args.dump_file, data_file=args.data_file,
                            frame_stride=args.frame_stride, max_frames=args.max_frames, bond_scale=args.bond_scale,
                            type_symbols=mapping, degrees_of_freedom=dof, compute_pairs=not args.no_pairs,
@@ -249,13 +250,14 @@ def main(argv=None):
                            pair_batch_size=args.batch_size)
             report = None
             if args.command == "run":
-                report = stage('Statistical report', write_report, cache, args.output / "reports" / args.report_name, **_report_kwargs(args))
+                report = stage('Statistical report', write_report, cache, args.output / "reports" / args.report_name,
+                               preloaded=cached, **_report_kwargs(args))
             if not args.no_pairs and not args.no_export_pairs:
                 # Separate explicitly selected exports from the full-cache product.
                 pair_folder = "pairs" if args.startframe == 0 and args.endframe is None else f"pairs_frames_{args.startframe}_{args.endframe if args.endframe is not None else 'end'}"
                 stage('Pair/shell export', export_pairs, cache, args.output / pair_folder, shell_radius=args.shell_radius,
                              startframe=args.startframe, endframe=args.endframe,
-                             workers=args.workers, batch_size=args.batch_size)
+                             workers=args.workers, batch_size=args.batch_size, preloaded=cached)
             print(f"Cache: {cache.resolve()}")
             if report is not None:
                 print(f"Report: {report}")

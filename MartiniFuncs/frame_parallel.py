@@ -56,25 +56,46 @@ def _require_equal(actual, expected, label, frame, *, approximate=False):
                          "split the trajectory or rerun with matching files")
 
 
+_SCAN_BLOCK = 1 << 26   # bytes per frame_offsets read
+
+
 def frame_offsets(path):
     """Return uint64 frame starts plus EOF; scan bytes without parsing atoms.
 
     Memory is eight bytes per frame boundary. Offsets refer to the original
     uncompressed file, so workers do not copy the trajectory or scan its prefix.
     """
+    marker = b'ITEM: TIMESTEP'
+    pattern = b'\n' + marker
     offsets = array('Q')
     with open(path, 'rb') as handle:
-        position = 0
+        head = handle.read(1 << 16)
+        body = head.lstrip(b'\r\n')
+        if not body.strip():
+            raise ValueError(f'{path}: no frames')
+        if not (body.startswith(marker) and body[len(marker):len(marker)+1] in (b'\n', b'\r', b'')):
+            raise ValueError(f'{path}: expected ITEM: TIMESTEP')
+        if len(body) == len(head):
+            offsets.append(0)   # later markers (and one after blank lines) follow a newline
+        handle.seek(0)
+        # bytes.find over 64 MiB blocks (C speed). A match starting at i is only
+        # accepted once the byte after the marker is available; later starts are
+        # carried into the next block, so no boundary match is lost or repeated.
+        base, data = 0, b''
         while True:
-            line = handle.readline()
-            if not line:
+            block = handle.read(_SCAN_BLOCK)
+            eof = not block
+            data += block
+            limit = len(data) if eof else len(data) - len(pattern)
+            hit = data.find(pattern)
+            while 0 <= hit < limit:
+                if data[hit+len(pattern):hit+len(pattern)+1] in (b'\n', b'\r', b''):
+                    offsets.append(base + hit + 1)
+                hit = data.find(pattern, hit + 1)
+            if eof:
                 break
-            if line.strip() == b'ITEM: TIMESTEP':
-                offsets.append(position)
-            elif not offsets and line.strip():
-                raise ValueError(f'{path}: expected ITEM: TIMESTEP')
-            position += len(line)
-        offsets.append(position)
+            base, data = base + limit, data[limit:]
+        offsets.append(base + len(data))
     if len(offsets) < 2:
         raise ValueError(f'{path}: no frames')
     return np.asarray(offsets, dtype=np.uint64)
