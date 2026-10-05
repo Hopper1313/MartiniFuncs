@@ -10,9 +10,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 import numpy as np
 
+from MartiniFuncs.chemistry.cpd_n4t.model import CPD_SIZE, DIENOPHILE_SIZE
 from MartiniFuncs.pairs.assessment import assess_pairs, measure_pair
 from MartiniFuncs.pairs.model import get_pair_model, model_sites
 from MartiniFuncs.structure import graph as mfg
+
+_SIZE_ERROR = f"Expected an {CPD_SIZE}-atom CPD and a {DIENOPHILE_SIZE}-atom dienophile"
 
 
 @dataclass(frozen=True)
@@ -39,15 +42,22 @@ class PairGeometry:
         return abs(self.forming_distances[0] - self.forming_distances[1])
 
 
-def _subgraph(graph, ids):
-    return mfg.induced_subgraph(graph, ids)
+def dienophile_cc_candidates(graph, elements):
+    """O=C-C=C-C=O element paths whose middle C-C pair is the middle of an H-C=C-H path.
+
+    graph should already be restricted to one molecule. Atoms 2 and 3 of each
+    returned path are the reactive C=C and atoms 1..4 its four ring carbons.
+    Used by both the screen center (model.screen_atoms) and the sites.
+    """
+    hcch = {frozenset(p[1:3]) for p in mfg.find_element_chains(graph, elements, "HCCH")}
+    return [p for p in mfg.find_element_chains(graph, elements, "OCCCCO") if frozenset(p[2:4]) in hcch]
 
 
 def _cpd_sites(graph, elements, cpd):
     """Identify ordered termini and four diene carbons from one CPD graph."""
-    if len(cpd) != 11:
-        raise ValueError("Expected an 11-atom CPD and a 23-atom dienophile")
-    cg = _subgraph(graph, cpd)
+    if len(cpd) != CPD_SIZE:
+        raise ValueError(_SIZE_ERROR)
+    cg = mfg.induced_subgraph(graph, cpd)
     if sorted(elements[i] for i in cpd) != sorted("C" * 5 + "H" * 6):
         raise ValueError("CPD component does not have formula C5H6")
     bridges = {chain[1] for chain in mfg.find_element_chains(cg, elements, "HCH")}
@@ -66,12 +76,9 @@ def _cpd_sites(graph, elements, cpd):
 
 def _dienophile_sites(graph, elements, mal):
     """Identify reactive C=C and four plane carbons from one dienophile graph."""
-    if len(mal) != 23:
-        raise ValueError("Expected an 11-atom CPD and a 23-atom dienophile")
-    mg = _subgraph(graph, mal)
-    hcch = {frozenset(p[1:3]) for p in mfg.find_element_chains(mg, elements, "HCCH")}
-    candidates = [p for p in mfg.find_element_chains(mg, elements, "OCCCCO")
-                  if frozenset(p[2:4]) in hcch]
+    if len(mal) != DIENOPHILE_SIZE:
+        raise ValueError(_SIZE_ERROR)
+    candidates = dienophile_cc_candidates(mfg.induced_subgraph(graph, mal), elements)
     sites = {tuple(sorted(p[2:4])) for p in candidates}
     planes = {tuple(sorted(p[1:5])) for p in candidates}
     if len(sites) != 1 or len(planes) != 1:
@@ -146,8 +153,7 @@ def _measure_placed_pair(ci, cx, mi, mx, sites, frame_rows):
         distances = tuple(float(np.linalg.norm(xyz[i] - xyz[j])) for i, j in bonds)
         options.append((max(distances), sum(distances), bonds, distances))
     _, _, bonds, distances = min(options)
-    id_to_local = frame_rows
-    frame_bonds = tuple((id_to_local[i], id_to_local[j]) for i, j in bonds)
+    frame_bonds = tuple((frame_rows[i], frame_rows[j]) for i, j in bonds)
     pair_rows = {int(atom_id): row for row, atom_id in enumerate(np.concatenate((ci, mi)))}
     local_bonds = tuple((pair_rows[i], pair_rows[j]) for i, j in bonds)
     diene_normal = _normal(np.array([xyz[i] for i in diene]))

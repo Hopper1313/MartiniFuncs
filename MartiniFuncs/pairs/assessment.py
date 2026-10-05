@@ -1,8 +1,13 @@
 """Model-driven pair screening and measurement on one frame (rebuilding the bond graph).
 
 This is the per-frame reference path: molecules, roles and sites are found
-from the frame's own bond graph. The cached path for fixed-topology
-trajectories is pairs.topology.FixedPairTopology; both use the same equations.
+from the frame's own bond graph, and molecules are made whole along that
+graph's stored bond shifts (structure.graph.unwrap_component). The cached path
+for fixed-topology trajectories is pairs.topology.FixedPairTopology, fed by
+trajectory.parallel.prepare_frame, which makes molecules whole by minimum-image
+bond vectors along the first frame's spanning tree. Both give the same whole
+molecules whenever every bond is shorter than half the smallest cell spacing,
+and the screen and the model's measurements then use the same equations.
 """
 from __future__ import annotations
 
@@ -10,10 +15,10 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from MartiniFuncs.pairs.model import get_pair_model, model_sites
+from MartiniFuncs.pairs.model import DEFAULT_REACTIVE_RADIUS, get_pair_model, model_sites
 from MartiniFuncs.pairs.screening import pairs_from_centers
 from MartiniFuncs.structure import graph as mfg
-from MartiniFuncs.structure.molecules import _site_center_of_mass, add_global_index, get_element_map
+from MartiniFuncs.structure.molecules import get_element_map
 
 
 @dataclass(frozen=True)
@@ -75,13 +80,11 @@ def assess_pairs(atoms, pairs, shifts, model=None, *, criteria=None, scale=1.3, 
 
 def _screen_center(atoms, graph, elements, model, component, role):
     site = model.screen_atoms(graph, elements, component, role)
-    if site is None:
-        return mfg.component_center_of_mass(atoms, graph, component)
-    return _site_center_of_mass(atoms, graph, component, site)
+    return mfg.component_center_of_mass(atoms, graph, component, subset=site)
 
 
-@add_global_index
-def screen_frame(atoms, model=None, *, scale=1.3, reactive_radius=3.25, criteria=None, return_candidates=False):
+def screen_frame(atoms, model=None, *, scale=1.3, reactive_radius=DEFAULT_REACTIVE_RADIUS, criteria=None,
+                 return_candidates=False):
     """All pairs whose screen centers are closer than reactive_radius (Angstrom), nearest image.
 
     Screen points are mass-weighted centers of the model's screen atoms (or

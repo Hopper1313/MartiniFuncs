@@ -14,9 +14,9 @@ import shlex
 import warnings
 
 import numpy as np
-import periodictable as pt
 from ase import Atoms
 from ase.calculators.lammps import convert
+from ase.data import atomic_masses, atomic_numbers, chemical_symbols
 from ase.io.lammpsdata import read_lammps_data
 from ase.io.lammpsrun import construct_cell
 
@@ -78,13 +78,13 @@ def type_symbol_list(type_symbols):
 def mass_to_symbol(target_mass):
     """Nearest elemental mass; prefer explicit mappings for nonstandard masses.
 
-    Choose Z minimizing |element_mass[Z]-target_mass|, with masses in amu.
-    This nearest-mass heuristic is not reliable for isotope or coarse-grain mapping.
+    Choose the real element Z >= 1 minimizing |ase.data.atomic_masses[Z]-target_mass|,
+    with masses in amu (the dummy element X is never returned). This nearest-mass
+    heuristic is not reliable for isotope or coarse-grain mapping.
     """
     if not np.isfinite(target_mass) or target_mass <= 0:
         raise ValueError("Atomic mass must be positive and finite")
-    return min((e for e in pt.elements if e.mass is not None),
-               key=lambda e: abs(e.mass - target_mass)).symbol
+    return chemical_symbols[1 + int(np.argmin(np.abs(atomic_masses[1:] - target_mass)))]
 
 
 _FRAME_MARKER = b"ITEM: TIMESTEP"
@@ -406,13 +406,14 @@ def iter_lammps_frames(path, *, units, input_datafile=None, type_symbols=None,
         raise TypeError("id_offset must be an integer")
     type_symbols = normalize_type_symbols(type_symbols)
     data = read_input_datafile(input_datafile, units=units)[-1] if input_datafile is not None else None
+    data_ids = None if data is None else np.asarray(sorted(data), dtype=np.int64)
     for index, text in enumerate(_iter_blocks(path, byte_range), start=frame_offset):
         try:
             timestep, columns, bounds, declared = _parse_block(text)
             if declared is not None and declared != units:
                 raise ValueError(f"Dump declares units {declared!r}, requested {units!r}")
             ids = columns["id"]
-            if data is not None and set(ids) != set(data):
+            if data is not None and not np.array_equal(ids, data_ids):   # ids are sorted
                 raise ValueError("Dump/data-file atom ID sets differ")
             symbols = columns.get("element")
             if type_symbols is not None:
@@ -527,7 +528,6 @@ def read_lammps_input_settings(path):
                     raise ValueError(f"{path}:{line_number}: changing {command}; provide frame-specific settings")
                 result[command] = value
             elif command == "dump_modify" and "element" in args:
-                from ase.data import atomic_numbers
                 start = args.index("element") + 1
                 symbols = []
                 for token in args[start:]:
@@ -563,9 +563,11 @@ def my_readlammps(lammps_dump, id_offset=1, *, index=-1):
 
 
 def read_input_datafile(filename, *, units="metal", atom_style=None):
-    """Legacy six-item result using ASE's data-file parser and mass inference.
+    """Six-item data-file summary using ASE's data-file parser and mass inference.
 
-    Coordinates/masses use ASE units. Type metadata covers populated types.
+    This is the data-file path behind iter_lammps_frames(input_datafile=...).
+    units should name the data file's LAMMPS units; "metal" is only a default
+    for historical callers. Coordinates/masses use ASE units. Type metadata covers populated types.
     Prefer explicit species mappings for nonstandard masses.
 
     ASE converts positions/masses to Angstrom/amu. For restricted triclinic

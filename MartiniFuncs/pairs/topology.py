@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from MartiniFuncs.pairs.assessment import PairAssessment
-from MartiniFuncs.pairs.model import get_pair_model
+from MartiniFuncs.pairs.model import DEFAULT_REACTIVE_RADIUS, get_pair_model
 from MartiniFuncs.pairs.screening import pairs_from_centers
 
 
@@ -69,7 +69,7 @@ class FixedPairTopology:
                    [sites(c, 0) for c in members[0]], [sites(c, 1) for c in members[1]],
                    indices[0], indices[1])
 
-    def evaluate(self, whole, cell, pbc, *, criteria=None, reactive_radius=3.25, candidates=False):
+    def evaluate(self, whole, cell, pbc, *, criteria=None, reactive_radius=DEFAULT_REACTIVE_RADIUS, candidates=False):
         """Return selected pairs, shifts and candidate assessments for one frame.
 
         Screen centers are sum(m_i*r_i)/sum(m_i) over each molecule's screen atoms

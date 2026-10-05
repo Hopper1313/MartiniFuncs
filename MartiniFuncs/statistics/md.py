@@ -8,6 +8,8 @@ alignment, drift subtraction, or species averaging is performed.
 import numpy as np
 from ase import units
 
+from MartiniFuncs.structure.alignment import kabsch_rotation
+
 
 def _rows(atoms, atom_ids, id_array="global_index"):
     ids = np.asarray(atoms.arrays[id_array])
@@ -158,16 +160,14 @@ def get_molecule_rmsd(first, second, atom_ids, *, align=True, positions_unwrappe
     Atoms have equal weights, independent of their masses.
     """
     atom_ids = tuple(atom_ids)
-    a = _positions(first, positions_unwrapped)[_rows(first, atom_ids)]
-    b = _positions(second, positions_unwrapped)[_rows(second, atom_ids)]
-    if not np.array_equal(first.numbers[_rows(first, atom_ids)], second.numbers[_rows(second, atom_ids)]):
+    rows_a, rows_b = _rows(first, atom_ids), _rows(second, atom_ids)
+    a = _positions(first, positions_unwrapped)[rows_a]
+    b = _positions(second, positions_unwrapped)[rows_b]
+    if not np.array_equal(first.numbers[rows_a], second.numbers[rows_b]):
         raise ValueError("Matched atom IDs have different elements")
     if align:
         a, b = a - a.mean(axis=0), b - b.mean(axis=0)
-        u, _, vt = np.linalg.svd(a.T @ b)
-        correction = np.eye(3)
-        correction[-1, -1] = np.linalg.det(u @ vt)
-        a = a @ (u @ correction @ vt)
+        a = a @ kabsch_rotation(a, b)
     return float(np.sqrt(np.mean(np.sum((a - b) ** 2, axis=1))))
 
 
@@ -278,10 +278,6 @@ def validate_times(times_ps, length=None, *, minimum=2, uniform=False):
     return times
 
 
-def _times(times_ps, length, *, uniform=False):
-    return validate_times(times_ps, length, uniform=uniform)
-
-
 def lag_count(max_lag_ps, dt_ps, samples):
     """Number of lags k=0..K with k*dt <= max_lag_ps, capped at the sample count.
 
@@ -291,21 +287,22 @@ def lag_count(max_lag_ps, dt_ps, samples):
     return min(int(samples), int(np.floor(max_lag_ps / dt_ps * (1 + 1e-9))) + 1)
 
 
-def _fft_size(samples):
+def fft_size(samples):
+    """Zero-padded FFT length (a power of two >= 2*samples-1) for linear, not circular, correlation."""
     return 1 << (2 * samples - 1).bit_length()
 
 
 def _series_chunks(values, budget=1 << 23):
     """Yield (start, stop) object ranges so one FFT block stays near budget floats."""
     samples, objects = values.shape[:2]
-    width = max(1, budget // (_fft_size(samples) * values.shape[2]))
+    width = max(1, budget // (fft_size(samples) * values.shape[2]))
     for start in range(0, objects, width):
         yield start, min(objects, start + width)
 
 
-def _origin_sums(series, nlag):
-    """sum_{t=0}^{T-k-1} x[t]*x[t+k] for k < nlag, per column of x[T, M], by FFT."""
-    size = _fft_size(len(series))
+def origin_sums(series, nlag):
+    """sum_{t=0}^{T-k-1} x[t]*x[t+k] for k < nlag, per column of x[T, M] (or of a 1D x), by FFT."""
+    size = fft_size(len(series))
     spectrum = np.fft.rfft(series, n=size, axis=0)
     return np.fft.irfft(spectrum * spectrum.conj(), n=size, axis=0)[:nlag]
 
@@ -332,7 +329,7 @@ def lag_msd(positions, nlag=None):
         prefix = np.cumsum(squared, axis=0)
         head = prefix[samples - 1 - k]
         tail = prefix[-1] - np.where(k[:, None] > 0, prefix[np.maximum(k - 1, 0)], 0.)
-        cross = _origin_sums(block.reshape(samples, -1), nlag).reshape(nlag, stop - start, 3).sum(axis=-1)
+        cross = origin_sums(block.reshape(samples, -1), nlag).reshape(nlag, stop - start, 3).sum(axis=-1)
         total += (head + tail - 2 * cross).sum(axis=1)
     msd = total / ((samples - k) * objects)
     msd[0] = 0.
@@ -350,7 +347,7 @@ def lag_correlation(values, nlag=None, *, subtract_mean=False):
         v = v - v.mean(axis=0, keepdims=True)
     total = np.zeros(nlag)
     for start, stop in _series_chunks(v):
-        total += _origin_sums(v[:, start:stop].reshape(samples, -1), nlag).sum(axis=1)
+        total += origin_sums(v[:, start:stop].reshape(samples, -1), nlag).sum(axis=1)
     return total / ((samples - np.arange(nlag)) * objects)
 
 
@@ -361,7 +358,7 @@ def _series(values, times_ps):
     values = np.asarray(values, dtype=float)
     if values.ndim != 3 or values.shape[2] != 3 or values.shape[1] == 0 or not np.isfinite(values).all():
         raise ValueError("Expected finite (frames, selected_objects, 3) array")
-    times = _times(times_ps, len(values), uniform=True)
+    times = validate_times(times_ps, len(values), uniform=True)
     return values, np.arange(len(values)) * (times[1] - times[0])
 
 
@@ -386,7 +383,7 @@ def get_molecular_reference_msd(com_positions, times_ps, *, unwrapped, selection
     positions = np.asarray(com_positions)
     if positions.ndim != 3 or positions.shape[2] != 3 or positions.shape[1] == 0:
         raise ValueError('Expected finite (frames, molecules, 3) array')
-    times = _times(times_ps, len(positions))
+    times = validate_times(times_ps, len(positions))
     squared = np.empty(positions.shape[:2], dtype=float)
     reference = np.asarray(positions[0], dtype=float)
     for start in range(0, len(positions), 10000):
@@ -449,7 +446,7 @@ def get_molecular_diffusion_coefficient(msd_result, *, fit_start_ps, fit_end_ps)
     values = np.asarray(msd_result["msd_angstrom2"])
     if values.shape != lag.shape or not np.isfinite(values).all():
         raise ValueError("Invalid MSD values")
-    _times(lag, len(lag))
+    validate_times(lag, len(lag))
     mask = (lag >= fit_start_ps) & (lag <= fit_end_ps)
     if mask.sum() < 3:
         raise ValueError("Fit interval must contain at least three lag samples")

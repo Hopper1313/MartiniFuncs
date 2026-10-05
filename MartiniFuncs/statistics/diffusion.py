@@ -7,19 +7,15 @@ No uncertainty is inferred by treating overlapping MSD lags as independent data.
 """
 import numpy as np
 
+from MartiniFuncs._checks import integer as _integer
 from MartiniFuncs.statistics.md import lag_msd, validate_times
 from MartiniFuncs.statistics.stability import scalar_autocorrelation, statistical_inefficiency
 
 
-def _times(times, count):
+def _uniform_spacing(times, count):
     """Validate uniformly spaced times in ps (shared validator) and return their spacing."""
     times = validate_times(times, count, minimum=3, uniform=True)
     return float(times[1] - times[0])
-
-
-def _integer(value, name, minimum):
-    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)) or value < minimum:
-        raise ValueError(f"{name} must be an integer >= {minimum}")
 
 
 def _mean_interval(values, rng, resamples):
@@ -68,7 +64,7 @@ def diffusion_diagnostics(positions, times_ps, *, fit_intervals_ps, block_frames
     p = np.asarray(positions, dtype=float)
     if p.ndim != 3 or p.shape[2] != 3 or p.shape[1] == 0 or not np.isfinite(p).all():
         raise ValueError("Require finite positions (frames, molecules, 3)")
-    dt = _times(times_ps, len(p))
+    dt = _uniform_spacing(times_ps, len(p))
     _integer(block_frames, "block_frames", 3)
     _integer(min_blocks, "min_blocks", 4)
     _integer(resamples, "resamples", 100)
@@ -170,7 +166,7 @@ def scalar_stationarity(values, times_ps, *, block_frames, tolerance=None,
     x = np.asarray(values, dtype=float)
     if x.ndim != 1 or not np.isfinite(x).all():
         raise ValueError("Require a finite one-dimensional scalar trace")
-    dt = _times(times_ps, len(x))
+    dt = _uniform_spacing(times_ps, len(x))
     _integer(block_frames, "block_frames", 3)
     _integer(resamples, "resamples", 100)
     if tolerance is not None and (not np.isfinite(tolerance) or tolerance <= 0):

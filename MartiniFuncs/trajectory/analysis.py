@@ -8,10 +8,12 @@ import re
 import numpy as np
 from ase.data import covalent_radii
 
+from MartiniFuncs._checks import integer
 from MartiniFuncs.structure import graph
 from MartiniFuncs.statistics import md
 from MartiniFuncs.structure import periodic
-from MartiniFuncs.pairs import candidates as _candidates
+from MartiniFuncs.pairs import candidates as pair_candidates
+from MartiniFuncs.pairs.model import DEFAULT_REACTIVE_RADIUS
 from MartiniFuncs.io.lammps import iter_lammps_frames, read_lammps_input_settings
 
 
@@ -58,7 +60,7 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
                 units=None, timestep_ps=None, units_style=None, type_symbols=None, progress=None,
                 reaction_atom_counts=None, orientations=False, source_range=None,
                 on_topology_change=None, topology_persistence=1, frame_offsets=None,
-                reactive_radius=3.25, pair_model=None):
+                reactive_radius=DEFAULT_REACTIVE_RADIUS, pair_model=None):
     """Stream a text dump; retain scalar histories and all molecular COM vectors.
 
     max_frames caps source frames read, not retained frames. Molecules are the
@@ -101,10 +103,11 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
     u_t=u_(t-1)+mic(R_t-R_(t-1), H_t), u_0 the COM wrapped about the first cell
     center; mic is structure.periodic.minimum_image, which for orthorhombic cells is
     d-L*floor(d/L+1/2). This TOR update uses every source frame before striding.
-    Temperature is 2*K/(f*k_B) without COM subtraction; '3N-3' specifies f only.
+    Temperature is 2*K/(f*k_B) without COM subtraction; '3N-3' specifies f only
+    (see statistics.md.get_frame_temperature).
 
     reaction_atom_counts=(11, 23) enables an exact-size possible-product screen
-    for the current CPD/MAL system. It rebuilds connectivity on EVERY source frame,
+    for the CPD + N4T dienophile system. It rebuilds connectivity on EVERY source frame,
     before striding, and raises PossibleReactionError with atom IDs at the first
     candidate. This costs an additional graph calculation per source frame. None
     skips screening; fixed-connectivity analysis then assumes no new products.
@@ -114,7 +117,8 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
     centers, reactive sites and geometry metrics. pair_criteria is that model's
     PairCriteria (for cpd_n4t, CpdN4tCriteria).
 
-    reactive_radius (Angstrom, default 3.25) is the pair screen between the
+    reactive_radius (Angstrom, default pairs.model.DEFAULT_REACTIVE_RADIUS = 3.25)
+    is the pair screen between the
     model's screen centers (cpd_n4t: CPD COM to dienophile C=C COM), minimum
     image. With compute_pairs, pair_candidates holds every candidate inside it
     with its measured metrics, so pairs.candidates.select_pairs can later apply
@@ -172,18 +176,15 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
                              f"{pair_model.name!r}")
     if on_topology_change not in {None, "record", "truncate"}:
         raise ValueError("on_topology_change must be None, 'record' or 'truncate'")
-    if isinstance(topology_persistence, bool) or not isinstance(topology_persistence, int) or topology_persistence < 1:
-        raise ValueError("topology_persistence must be a positive integer")
+    integer(topology_persistence, "topology_persistence")
     range_start, range_stop = (0, None) if source_range is None else source_range
     if (isinstance(range_start, bool) or not isinstance(range_start, (int, np.integer)) or range_start < 0
             or (range_stop is not None and range_stop <= range_start)):
         raise ValueError("source_range must be (start, stop) with 0 <= start < stop, or (start, None)")
-    for name, value in (("pair_workers", pair_workers), ("pair_batch_size", pair_batch_size)):
-        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-            raise ValueError(f"{name} must be a positive integer")
-    for name, value in (("frame_stride", frame_stride), ("max_frames", max_frames)):
-        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 1):
-            raise ValueError(f"{name} must be a positive integer")
+    for name, value in (("pair_workers", pair_workers), ("pair_batch_size", pair_batch_size),
+                        ("frame_stride", frame_stride), ("max_frames", max_frames)):
+        if value is not None or name in {"pair_workers", "pair_batch_size"}:
+            integer(value, name)
     if units is not None and units_style is not None and units != units_style:
         raise ValueError("units and units_style must agree when both are provided")
     explicit_units = units if units is not None else units_style
@@ -276,8 +277,6 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
                 preparation["prescreened_frame"] = frame.index
             if first is None:
                 first = atoms.copy()
-                if degrees_of_freedom == "3N-3":
-                    degrees_of_freedom = 3*len(atoms)-3
                 ids = atoms.arrays["global_index"]
                 lookup = {int(i): row for row, i in enumerate(ids)}
                 bonded = graph.build_bond_graph(atoms, scale=bond_scale)
@@ -342,7 +341,7 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
             elif diffusion_reason is None:
                 center = prepared.origin + cell.sum(axis=0)/2
                 # Canonical image inside the current cell (TOR convention), then
-                # destination-cell minimum-image steps; see md.unwrap_com_trajectory.
+                # destination-cell minimum-image steps; see periodic.unwrap_com_trajectory.
                 in_cell = periodic.wrap_about_center(com, cell, center)
                 wrapped = in_cell - center
                 if previous_com is None:
@@ -428,7 +427,7 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
     elif max_step_fraction > .25:
         notices.append(f"Largest per-frame COM step is {max_step_fraction:.2f} of the cell; TOR unwrapping "
                        "is ambiguous at 0.5. Save frames more often.")
-    if not diffusion_reason and len(cells) and not all(periodic._is_diagonal(c) for c in cells):
+    if not diffusion_reason and len(cells) and not all(periodic.is_diagonal(c) for c in cells):
         notices.append("Non-orthorhombic cell: COM displacements are lab-frame and include any imposed shear flow.")
     range_end = topology_event["frame"] if topology_event is not None else range_start + frames_read
     return {"files":files,"settings":settings,"frames":rows,"frames_read":frames_read,
@@ -449,7 +448,7 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
             "com_velocity_angstrom_ps":np.asarray(velocities) if has_velocities else None,
             "net_force_eV_angstrom":np.asarray(forces) if has_forces else None,
             "pairs_by_frame":pairs_by_frame if compute_pairs else None,
-            "pair_candidates":(_candidates.concatenate(candidates_by_frame, reactive_radius, pair_model)
+            "pair_candidates":(pair_candidates.concatenate(candidates_by_frame, reactive_radius, pair_model)
                                if compute_pairs else None),
             "pair_shifts_by_frame":pair_shifts_by_frame if compute_pairs else None,
             "pair_analysis": {"model": pair_model.name, "backend": pair_backend, "workers": pair_workers,
@@ -504,6 +503,14 @@ def analyze_segments(directory, *, topology_persistence=5, progress=None, **opti
     return {"segments": segments, "events": events}
 
 
+def _cached_source_end(result):
+    """Exclusive end of the cached source-frame range (source frames, not retained rows)."""
+    source_range = result.get("source_range")
+    if source_range:
+        return int(source_range[1])
+    return int(result.get("frames_read", int(result["frames"][-1]["frame"]) + 1))
+
+
 def select_frame_window(result, *, startframe=0, endframe=None):
     """Return a retained-frame mask for source frames in [startframe, endframe).
 
@@ -516,8 +523,7 @@ def select_frame_window(result, *, startframe=0, endframe=None):
     frames = np.asarray([r["frame"] for r in result["frames"]])
     if frames.ndim != 1 or not len(frames) or frames.dtype.kind not in "iu" or np.any(np.diff(frames) <= 0):
         raise ValueError("Require increasing integer source frame indices")
-    source_range = result.get("source_range")
-    total = source_range[1] if source_range else result.get("frames_read", int(frames[-1]) + 1)
+    total = _cached_source_end(result)
     endframe = total if endframe is None else endframe
     for name, value in (("startframe", startframe), ("endframe", endframe)):
         if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)) or value < 0:
@@ -559,7 +565,7 @@ def molecular_window_statistics(result, *, startframe=0, endframe=None, max_lag_
     if requested and len(selected_times)<3:
         raise ValueError("Select at least three uniformly spaced frames for lag statistics")
     if requested:
-        md._times(selected_times, len(selected_times), uniform=True)
+        md.validate_times(selected_times, len(selected_times), uniform=True)
         dt = selected_times[1]-selected_times[0]
         nlag = md.lag_count(max_lag_ps, dt, len(selected_times))
     statistics = {}
@@ -567,9 +573,9 @@ def molecular_window_statistics(result, *, startframe=0, endframe=None, max_lag_
         mask = result["species"]==name
         entry = {"lag_ps":np.arange(nlag)*dt,"n_origins":len(selected_times)-np.arange(nlag),
                  "n_molecules":int(mask.sum()),"selection":name}
-        for source, key in (("com_angstrom","msd_angstrom2"),
-                            ("com_velocity_angstrom_ps","vacf"),("net_force_eV_angstrom","force_acf")):
-            option = {'msd_angstrom2': 'msd', 'vacf': 'vacf', 'force_acf': 'force-acf'}[key]
+        for source, key, option in (("com_angstrom", "msd_angstrom2", "msd"),
+                                    ("com_velocity_angstrom_ps", "vacf", "vacf"),
+                                    ("net_force_eV_angstrom", "force_acf", "force-acf")):
             if option not in requested:
                 continue
             if result[source] is None:
@@ -585,6 +591,5 @@ def molecular_window_statistics(result, *, startframe=0, endframe=None, max_lag_
                 progress(f'{name}: {option} complete ({nlag} lags)')
         statistics[name] = entry
     return {"time_window_ps":[float(selected_times[0]),float(selected_times[-1])],
-            "frame_window":[int(startframe), int(endframe if endframe is not None else
-                            (result.get("source_range") or [0, result.get("frames_read", result["frames"][-1]["frame"]+1)])[1])],
+            "frame_window":[int(startframe), int(_cached_source_end(result) if endframe is None else endframe)],
             "frame_mask":keep,"species":statistics}

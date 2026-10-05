@@ -5,10 +5,8 @@ from collections.abc import Mapping
 import numpy as np
 from ase import Atoms
 from MartiniFuncs.structure import graph as mfg
-from MartiniFuncs.structure.molecules import add_global_index
 
 
-@add_global_index
 def get_pair_shell_clusters(
     atoms: Atoms,
     pairs,
@@ -19,7 +17,7 @@ def get_pair_shell_clusters(
     graph=None,
     components=None,
 ):
-    """Build complete finite local clusters around pre-reactive molecular pairs.
+    """Build complete finite local clusters around molecular pairs.
 
     The geometric shell is defined as all atoms within ``shell_radius`` of any
     atom in the placed reactive pair. Any molecule touched by that geometric
@@ -30,7 +28,9 @@ def get_pair_shell_clusters(
     atoms
         Full periodic frame.
     pairs, shifts
-        Output of :func:`get_all_prereactive_pairs`.
+        Per-frame pairs [[first IDs, second IDs], ...] and the first member's
+        image shifts, e.g. one frame of pairs.candidates.select_pairs or of
+        pairs.assessment.screen_frame.
     shell_radius
         Atom-to-pair shell cutoff in Angstrom.
     scale
@@ -74,31 +74,31 @@ def get_pair_shell_clusters(
     symbols_all = np.asarray(atoms.get_chemical_symbols(), dtype=object)
     clusters = []
 
-    for pair_number, ((cpd_ids, mal_ids), cpd_image_shift) in enumerate(
+    for pair_number, ((first_ids, second_ids), first_image_shift) in enumerate(
         zip(pairs, shifts)
     ):
-        cpd_ids = [int(i) for i in cpd_ids]
-        mal_ids = [int(i) for i in mal_ids]
-        cpd_image_shift = np.asarray(cpd_image_shift, dtype=int)
+        first_ids = [int(i) for i in first_ids]
+        second_ids = [int(i) for i in second_ids]
+        first_image_shift = np.asarray(first_image_shift, dtype=int)
 
-        # MAL is the reference image. CPD receives the molecular shift returned
-        # by get_all_prereactive_pairs(). Each molecule is unwrapped internally.
-        cpd_arr, cpd_xyz, cpd_shifts = mfg.place_component(
+        # The second member is the reference image; the first receives the pair's
+        # molecular image shift. Each molecule is unwrapped internally.
+        first_arr, first_xyz, first_shifts = mfg.place_component(
             atoms,
             graph,
-            cpd_ids,
-            image_shift=cpd_image_shift,
+            first_ids,
+            image_shift=first_image_shift,
         )
-        mal_arr, mal_xyz, mal_shifts = mfg.place_component(
+        second_arr, second_xyz, second_shifts = mfg.place_component(
             atoms,
             graph,
-            mal_ids,
+            second_ids,
             image_shift=(0, 0, 0),
         )
 
-        pair_shift_map = {**mal_shifts, **cpd_shifts}
-        pair_ids = np.concatenate((cpd_arr, mal_arr))
-        pair_xyz = np.vstack((cpd_xyz, mal_xyz))
+        pair_shift_map = {**second_shifts, **first_shifts}
+        pair_ids = np.concatenate((first_arr, second_arr))
+        pair_xyz = np.vstack((first_xyz, second_xyz))
 
         contacts = mfg.get_shell_contacts(
             pair_shift_map,
@@ -116,9 +116,9 @@ def get_pair_shell_clusters(
             index_array="global_index",
         )
 
-        id_chunks = [cpd_arr, mal_arr]
-        xyz_chunks = [cpd_xyz, mal_xyz]
-        cluster_shift_map = {**cpd_shifts, **mal_shifts}
+        id_chunks = [first_arr, second_arr]
+        xyz_chunks = [first_xyz, second_xyz]
+        cluster_shift_map = {**first_shifts, **second_shifts}
 
         for shell in shell_components:
             id_chunks.append(np.asarray(shell["indices"], dtype=int))
@@ -135,27 +135,27 @@ def get_pair_shell_clusters(
         ])
 
         # Local indices refer to rows in the extracted finite cluster/XYZ.
-        # The cluster is deliberately assembled as CPD + MAL + shell molecules,
-        # so the original reactive pair always occupies the first rows.
-        cpd_local_indices = np.arange(len(cpd_arr), dtype=int)
-        mal_local_indices = np.arange(
-            len(cpd_arr),
-            len(cpd_arr) + len(mal_arr),
+        # The cluster is deliberately assembled as first + second member + shell
+        # molecules, so the original pair always occupies the first rows.
+        first_local_indices = np.arange(len(first_arr), dtype=int)
+        second_local_indices = np.arange(
+            len(first_arr),
+            len(first_arr) + len(second_arr),
             dtype=int,
         )
         cluster_local_indices = np.arange(len(cluster_ids), dtype=int)
 
         clusters.append({
             "pair_index": pair_number,
-            "cpd_ids": cpd_arr,
-            "mal_ids": mal_arr,
-            "cpd_local_indices": cpd_local_indices,
-            "mal_local_indices": mal_local_indices,
-            "cpd_shift": cpd_image_shift.copy(),
+            "first_ids": first_arr,
+            "second_ids": second_arr,
+            "first_local_indices": first_local_indices,
+            "second_local_indices": second_local_indices,
+            "first_shift": first_image_shift.copy(),
             "pair_ids": pair_ids,
             "pair_local_indices": np.concatenate((
-                cpd_local_indices,
-                mal_local_indices,
+                first_local_indices,
+                second_local_indices,
             )),
             "pair_xyz": pair_xyz,
             "pair_shifts": pair_shift_map,
@@ -223,7 +223,6 @@ def _source_vectors(atoms, source, ids):
     return result
 
 
-@add_global_index
 def get_pair_positions_and_forces(
     atoms: Atoms,
     mylammpsread,
@@ -235,8 +234,8 @@ def get_pair_positions_and_forces(
 ):
     """Backward-compatible pair extraction using persistent IDs safely.
 
-    Placed coordinates obey r'_i=r_i+(n_i+shift) @ cell for CPD and
-    r'_i=r_i+n_i @ cell for the dienophile, using graph bond shifts n_i.
+    Placed coordinates obey r'_i=r_i+(n_i+shift) @ cell for the first pair
+    member and r'_i=r_i+n_i @ cell for the second, using graph bond shifts n_i.
     Source vectors are selected by persistent IDs, without recalculation or rotation.
     An optional graph must belong to this frame; it avoids rebuilding connectivity.
     """
@@ -246,21 +245,21 @@ def get_pair_positions_and_forces(
         graph = mfg.build_bond_graph(atoms, scale=bond_scale)
     data = {}
 
-    for k, ((cpd_ids, mal_ids), cpd_shift) in enumerate(zip(pairs, shifts)):
-        cpd_arr, cpd_xyz, _ = mfg.place_component(
-            atoms, graph, cpd_ids, image_shift=cpd_shift
+    for k, ((first_ids, second_ids), first_shift) in enumerate(zip(pairs, shifts)):
+        first_arr, first_xyz, _ = mfg.place_component(
+            atoms, graph, first_ids, image_shift=first_shift
         )
-        mal_arr, mal_xyz, _ = mfg.place_component(
-            atoms, graph, mal_ids, image_shift=(0, 0, 0)
+        second_arr, second_xyz, _ = mfg.place_component(
+            atoms, graph, second_ids, image_shift=(0, 0, 0)
         )
-        ids = np.concatenate((cpd_arr, mal_arr))
-        xyz = np.vstack((cpd_xyz, mal_xyz))
+        ids = np.concatenate((first_arr, second_arr))
+        xyz = np.vstack((first_xyz, second_xyz))
         local = mfg.local_indices(atoms, ids)
 
-        cpd_local_indices = np.arange(len(cpd_arr), dtype=int)
-        mal_local_indices = np.arange(
-            len(cpd_arr),
-            len(cpd_arr) + len(mal_arr),
+        first_local_indices = np.arange(len(first_arr), dtype=int)
+        second_local_indices = np.arange(
+            len(first_arr),
+            len(first_arr) + len(second_arr),
             dtype=int,
         )
 
@@ -269,10 +268,10 @@ def get_pair_positions_and_forces(
             "positions": xyz,
             **_source_vectors(atoms, mylammpsread, ids),
             "symbols": np.asarray(atoms.get_chemical_symbols(), dtype=object)[local],
-            "cpd_local_indices": cpd_local_indices,
-            "mal_local_indices": mal_local_indices,
-            "cpd_global_ids": np.asarray(cpd_arr, dtype=int),
-            "mal_global_ids": np.asarray(mal_arr, dtype=int),
+            "first_local_indices": first_local_indices,
+            "second_local_indices": second_local_indices,
+            "first_global_ids": np.asarray(first_arr, dtype=int),
+            "second_global_ids": np.asarray(second_arr, dtype=int),
             # For pair-only output, the extracted pair is the whole cluster.
             "cluster_local_indices": np.arange(len(ids), dtype=int),
             "cluster_global_ids": np.asarray(ids, dtype=int),
@@ -299,14 +298,14 @@ def get_cluster_positions_and_forces(atoms: Atoms, mylammpsread, clusters):
             "symbols": np.asarray(cluster["symbols"], dtype=object),
             # Preserve the identity of the original reactive pair all the way
             # to XYZ output. "local" means row index in this extracted cluster.
-            "cpd_local_indices": np.asarray(
-                cluster["cpd_local_indices"], dtype=int
+            "first_local_indices": np.asarray(
+                cluster["first_local_indices"], dtype=int
             ),
-            "mal_local_indices": np.asarray(
-                cluster["mal_local_indices"], dtype=int
+            "second_local_indices": np.asarray(
+                cluster["second_local_indices"], dtype=int
             ),
-            "cpd_global_ids": np.asarray(cluster["cpd_ids"], dtype=int),
-            "mal_global_ids": np.asarray(cluster["mal_ids"], dtype=int),
+            "first_global_ids": np.asarray(cluster["first_ids"], dtype=int),
+            "second_global_ids": np.asarray(cluster["second_ids"], dtype=int),
             "cluster_local_indices": np.asarray(
                 cluster["cluster_local_indices"], dtype=int
             ),
@@ -421,32 +420,32 @@ def pair_data_to_extxyz(data, filename, *, role_labels=None):
                 cluster.new_array(name, values.copy())
 
         # ------------------------------------------------------------------
-        # Original reactive-pair membership
+        # Original pair membership
         # ------------------------------------------------------------------
-        cpd_local = np.asarray(
-            record.get("cpd_local_indices", []),
+        first_local = np.asarray(
+            record.get("first_local_indices", []),
             dtype=int,
         )
-        mal_local = np.asarray(
-            record.get("mal_local_indices", []),
+        second_local = np.asarray(
+            record.get("second_local_indices", []),
             dtype=int,
         )
 
-        for name, idx in (("CPD", cpd_local), ("MAL", mal_local)):
+        for name, idx in (("first", first_local), ("second", second_local)):
             if np.any((idx < 0) | (idx >= natoms)):
                 raise IndexError(
                     f"Cluster {i}: {name}_local_indices contains an index "
                     f"outside [0, {natoms})."
                 )
 
-        if np.intersect1d(cpd_local, mal_local).size:
+        if np.intersect1d(first_local, second_local).size:
             raise ValueError(
-                f"Cluster {i}: CPD and MAL local-index sets overlap."
+                f"Cluster {i}: {role_labels[0]} and {role_labels[1]} local-index sets overlap."
             )
 
         pair_role = np.full(natoms, "shell", dtype=f"U{max(5, *map(len, role_labels))}")
-        pair_role[cpd_local] = role_labels[0]
-        pair_role[mal_local] = role_labels[1]
+        pair_role[first_local] = role_labels[0]
+        pair_role[second_local] = role_labels[1]
         cluster.new_array("pair_role", pair_role)
 
         # ------------------------------------------------------------------
@@ -475,9 +474,10 @@ def pair_data_to_extxyz(data, filename, *, role_labels=None):
         # Extended XYZ header/comment line.
         cluster.info["cluster_index"] = int(i)
         cluster.info["n_clusters"] = int(nclusters)
-        cluster.info["n_cpd"] = int(len(cpd_local))
-        cluster.info["n_mal"] = int(len(mal_local))
-        cluster.info["n_shell"] = int(natoms - len(cpd_local) - len(mal_local))
+        # n_<label> per role (cpd_n4t: n_cpd, n_mal), then n_shell.
+        cluster.info[f"n_{role_labels[0].lower()}"] = int(len(first_local))
+        cluster.info[f"n_{role_labels[1].lower()}"] = int(len(second_local))
+        cluster.info["n_shell"] = int(natoms - len(first_local) - len(second_local))
 
         for key in ("force_units", "velocity_units", "lammps_units", "timestep",
                     "frame_index", "source", "id_offset", "source_cell", "source_pbc",
@@ -502,7 +502,7 @@ def pair_data_to_extxyz(data, filename, *, role_labels=None):
             for name in columns:
                 array = np.asarray(arrays[name])
                 block = array.reshape(len(cluster), -1)
-                tokens += ["%.17g" if array.dtype.kind in "fd" else "%s"] * block.shape[1]
+                tokens += ["%.17g" if array.dtype.kind == "f" else "%s"] * block.shape[1]
                 blocks.append(block.tolist())
             line = " ".join(tokens) + "\n"
             stream.write("".join(line % tuple(v for part in row for v in part) for row in zip(*blocks)))

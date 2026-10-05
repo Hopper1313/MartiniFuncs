@@ -3,30 +3,31 @@
 from __future__ import annotations
 
 from itertools import zip_longest
+import json
+from pathlib import Path
 
 import numpy as np
 from ase import Atoms
 
 from MartiniFuncs.pairs.lifetimes import pair_identity
-from MartiniFuncs.statistics.md import _times
-from MartiniFuncs.structure import graph as mfg
-from MartiniFuncs.structure.molecules import add_global_index
+from MartiniFuncs.pairs.model import DEFAULT_REACTIVE_RADIUS
+from MartiniFuncs.statistics.md import validate_times
 
 
 def get_mal_CC(bond_graph, elements):
-    """Return the maleimide C=C atoms from element-pattern intersections."""
-    hcch = mfg.find_element_chains(bond_graph, elements, "HCCH")
-    occcco = mfg.find_element_chains(bond_graph, elements, "OCCCCO")
-    hcch_atoms = {i for chain in hcch for i in chain}
-    occcco_atoms = {i for chain in occcco for i in chain}
-    return hcch_atoms & occcco_atoms
+    """Return the maleimide (dienophile) C=C atoms: the H-C=C-H carbons inside an O=C-C=C-C=O path.
+
+    The same rule as the model's sites (selection.dienophile_cc_candidates), so
+    the screen center and the measured C=C are always the same atoms.
+    """
+    from MartiniFuncs.chemistry.cpd_n4t.selection import dienophile_cc_candidates
+    return {i for chain in dienophile_cc_candidates(bond_graph, elements) for i in chain[2:4]}
 
 
-@add_global_index
 def get_all_prereactive_pairs(
     atoms: Atoms,
     scale: float = 1.3,
-    reactive_radius: float = 3.25,
+    reactive_radius: float = DEFAULT_REACTIVE_RADIUS,
     printing: bool = False,
     *,
     criteria=None,
@@ -88,7 +89,7 @@ def get_pair_geometry_timeseries(atoms_by_frame, pairs_by_frame, shifts_by_frame
     """
     key = pair_identity(pair)
     times = np.asarray(times_ps, dtype=float)
-    _times(times, len(times))
+    validate_times(times, len(times))
     result, sentinel = [], object()
     for atoms, pairs, shifts, time in zip_longest(
             atoms_by_frame, pairs_by_frame, shifts_by_frame, times, fillvalue=sentinel):
@@ -108,3 +109,26 @@ def get_pair_geometry_timeseries(atoms_by_frame, pairs_by_frame, shifts_by_frame
         result.append({"time_ps": float(time), "pair": key, "present": bool(matches),
                        "geometry": geometry, "error": error})
     return result
+
+
+def load_pair_geometries(index_jsonl):
+    """Per-candidate CPD + N4T geometry from an export's index.jsonl as arrays (for statistics.dynamics.pmf_*).
+
+    Returns frame, time_ps, max_forming_distance and distance_imbalance
+    (Angstrom), axis/plane/approach angles (degrees); NaN where the geometry
+    could not be measured.
+    """
+    fields = ("frame", "time_ps", "max_forming_distance", "distance_imbalance",
+              "axis_angle", "plane_angle", "approach_angle")
+    rows = {name: [] for name in fields}
+    for line in Path(index_jsonl).read_text(encoding="utf-8").splitlines():
+        record = json.loads(line)
+        g = record.get("geometry")
+        rows["frame"].append(record["frame"])
+        rows["time_ps"].append(record["time_ps"])
+        distances = g["forming_distances"] if g else [np.nan, np.nan]
+        rows["max_forming_distance"].append(max(distances))
+        rows["distance_imbalance"].append(abs(distances[0] - distances[1]))
+        for name in ("axis_angle", "plane_angle", "approach_angle"):
+            rows[name].append(g[name] if g else np.nan)
+    return {name: np.asarray(values, dtype=float) for name, values in rows.items()}

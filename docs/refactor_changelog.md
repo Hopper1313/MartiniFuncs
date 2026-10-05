@@ -791,3 +791,36 @@ value. The function now accepts `"3N-3"` (f = 3N - 3 for the frame's atoms). A r
 - **Not runnable here:** `examples/analyze_npt_diffusion` needs the original 1000 ps
   `equilibrate_2p5.lammpstrj`, which is not in the repository. Its fits are hard-coded at 20-400 ps.
   Reading, unwrapping and the MSD ran on the substitute dump.
+
+## Review fixes: bugs, consistency and deduplication (2026-10-05)
+
+- **Removed:** `io.orca` and its ORCA-only helpers in `io.psience` (`check_if_internal_part_of_multiple_fragments`,
+  `initialize_constraints_boolean`, `coords_str_to_ase`), with their two tests.
+- **Cache digest:** `_software()` now hashes every `MartiniFuncs/**/*.py`. Since the subpackage reorganization it
+  had hashed only `workflows/*.py`, so code changes elsewhere did not invalidate caches. Existing caches no longer
+  match and must be rebuilt.
+- **Cache configuration:** every `analyze_run` setting is recorded with defaults filled in and the pair model by
+  name, so explicit defaults, omitted options and PairModel instances give the same configuration. Options that
+  are not JSON-serializable raise before the analysis runs, instead of leaving a cache directory without a manifest.
+- **`write_report`:** the manifest's `topology_events` count no longer reports the number of pair lifetimes.
+  A completed report is recognized before pair selection.
+- **`frame_offsets`:** skips leading whitespace exactly like the serial reader.
+- **`pmf_2d`:** validates `y_jacobian` and accepts `"r2"`, like `pmf_1d`. `nemd_shear_viscosity` validates `blocks`.
+- **Deduplicated:**
+  - one bond-components helper in `trajectory.reactions`;
+  - one hop-shell breadth-first search behind `graph`'s neighborhood helpers;
+  - `graph.component_center_of_mass(subset=...)` replaces `molecules._site_center_of_mass`/`_weighted_com`;
+  - `alignment.kabsch_rotation`, shared with `md.get_molecule_rmsd`;
+  - `md.origin_sums`/`fft_size`, shared with `stability.scalar_autocorrelation`;
+  - one nearest-mass rule (`io.lammps.mass_to_symbol`, ASE masses; `periodictable` dependency dropped);
+  - shared validators and JSON conversion in `MartiniFuncs._checks`;
+  - `pairs.model.DEFAULT_REACTIVE_RADIUS` replaces eleven hard-coded 3.25 values;
+  - one dienophile C=C rule (`selection.dienophile_cc_candidates`) for both the screen center and the sites.
+- **Removed redundant API:** the `add_global_index` decorator (`get_index_maps` already creates the ID array), the
+  `ensure_global_index` alias, the unused `skin`/`neighbor_skin` parameters, and the no-op `--no-reaction-screen` flag.
+- **Generic naming:** `pairs.structures` records use `first_*`/`second_*` keys. Extended XYZ output is unchanged
+  (`pair_role` and `n_<label>` come from the model's role labels).
+- **Moved:** `load_pair_geometries` from `statistics.dynamics` to `chemistry.cpd_n4t.pairs`; `_wrap_points` to
+  `structure.periodic.wrap_points`.
+- **Verified:** 180 tests passed (1 skipped) before the changes. After them, 178 pass (1 skipped): the same suite
+  minus the two removed ORCA tests. No other test was modified.

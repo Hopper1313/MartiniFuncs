@@ -19,10 +19,14 @@ from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from dataclasses import dataclass, field, fields
 from importlib import import_module
+from types import MappingProxyType
 
 import numpy as np
 
 DEFAULT_PAIR_MODEL = "cpd_n4t"
+# Default pair screen radius in Angstrom between the model's screen centers
+# (cpd_n4t: CPD COM to dienophile C=C COM), used by every analysis entry point.
+DEFAULT_REACTIVE_RADIUS = 3.25
 
 _REGISTRY: dict = {}
 # Built-in models, imported lazily: name -> "module:attribute".
@@ -96,7 +100,7 @@ class PairModel(ABC):
     role_labels: tuple
     criteria_class: type
     metric_names: tuple
-    metric_ranges: dict = {}
+    metric_ranges: dict = MappingProxyType({})   # read-only default; subclasses assign a dict
     species: frozenset | None = None
 
     @abstractmethod

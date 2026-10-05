@@ -16,7 +16,6 @@ dependencies = [
     "numpy",
     "scipy",
     "pandas",
-    "periodictable",
 ]
 
 [project.optional-dependencies]

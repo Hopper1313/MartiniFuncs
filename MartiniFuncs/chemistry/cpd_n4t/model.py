@@ -2,7 +2,8 @@
 
 Roles: cyclopentadiene (CPD, C5H6, 11 atoms) is the first member and the
 N4T maleimide dienophile (C11H9NO2, 23 atoms) the second; 34-atom adducts
-take no part. Dimerization (CPD+CPD) is ignored: it is not observed
+take no part. In exported structures the members are labelled "CPD" and
+"MAL" (role_labels; MAL = the maleimide, i.e. the N4T dienophile). Dimerization (CPD+CPD) is ignored: it is not observed
 experimentally.
 
 Screen: the whole-CPD COM to the dienophile reactive C=C COM.
@@ -61,10 +62,11 @@ class CpdN4tModel(PairModel):
     def screen_atoms(self, graph, elements, component, role):
         if role == 0:
             return None
-        from MartiniFuncs.chemistry.cpd_n4t.pairs import get_mal_CC
-        cc = get_mal_CC(mfg.induced_subgraph(graph, component), elements)
+        from MartiniFuncs.chemistry.cpd_n4t.selection import dienophile_cc_candidates
+        cc = {i for chain in dienophile_cc_candidates(mfg.induced_subgraph(graph, component), elements)
+              for i in chain[2:4]}
         if len(cc) != 2:
-            raise ValueError(f"Could not identify MAL reactive C=C for component {component[:5]}...")
+            raise ValueError(f"Could not identify the dienophile reactive C=C for component {component[:5]}...")
         return cc
 
     def sites(self, graph, elements, component, role):

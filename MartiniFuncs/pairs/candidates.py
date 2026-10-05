@@ -91,8 +91,8 @@ def select_pairs(result, *, reactive_radius=None, criteria=None):
         return result["pairs_by_frame"], result["pair_shifts_by_frame"]
     candidates = result.get("pair_candidates")
     if candidates is None:
-        raise ValueError("This cache has no pair candidates (made before 2026-10-01 or without pairs); "
-                         "rerun the analysis to select pairs by radius/criteria")
+        raise ValueError("This cache has no pair candidates (made without pairs, or by a version that did not "
+                         "store candidates); rerun the analysis to select pairs by radius/criteria")
     keep = candidate_mask(candidates, reactive_radius=reactive_radius, criteria=criteria)
     if np.any(candidates["molecules"][keep] < 0):
         raise ValueError("Selected candidates include molecules that are not initial molecules")

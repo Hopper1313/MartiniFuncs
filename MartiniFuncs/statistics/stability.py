@@ -1,21 +1,22 @@
 """Descriptive trajectory stability diagnostics, not equilibrium pass/fail tests."""
 import numpy as np
 
+from MartiniFuncs.statistics.md import origin_sums
+from MartiniFuncs.structure.periodic import cell_plane_spacings, is_diagonal, minimum_image
+
 
 def scalar_autocorrelation(values):
     """Normalized ACF C[k]=sum_i (x_i-mu)(x_(i+k)-mu)/((N-k) var), by FFT in O(N log N).
 
     var=mean((x-mu)^2), so C[0]=1. Returns None for a constant series. This is
-    the estimator shared by get_series_statistics and diffusion_diagnostics.
+    the estimator shared by get_series_statistics and diffusion.scalar_stationarity.
     """
     x = np.asarray(values, dtype=float)
     centered = x - x.mean()
     variance = np.mean(centered**2)
     if variance <= 0:
         return None
-    size = 1 << (2*len(x)-1).bit_length()
-    spectrum = np.fft.rfft(centered, n=size)
-    covariance = np.fft.irfft(spectrum*spectrum.conj(), n=size)[:len(x)] / np.arange(len(x), 0, -1)
+    covariance = origin_sums(centered, len(x)) / np.arange(len(x), 0, -1)
     return covariance / variance
 
 
@@ -88,8 +89,7 @@ def _frame_distances(delta, cell):
     fractional nearest image and then the shortest of its 27 neighbors, which is
     exact for distances below half the smallest plane spacing (the RDF range).
     """
-    from MartiniFuncs.structure.periodic import _is_diagonal, minimum_image
-    if _is_diagonal(cell):
+    if is_diagonal(cell):
         return np.linalg.norm(minimum_image(delta, cell), axis=-1)
     base = minimum_image(delta, cell)
     images = np.array([[i, j, k] for i in (-1, 0, 1) for j in (-1, 0, 1) for k in (-1, 0, 1)]) @ cell
@@ -115,7 +115,6 @@ def get_molecular_com_rdf(positions, box_lengths, species, *, species_a, species
     they are not truncated at edges[-1]. edges[-1] may not exceed half the
     smallest face-to-face spacing of any frame.
     """
-    from MartiniFuncs.structure.periodic import cell_plane_spacings
     p = np.asarray(positions, dtype=float)
     lengths = np.asarray(box_lengths, dtype=float)
     labels = np.asarray(species)

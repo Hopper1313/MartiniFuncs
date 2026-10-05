@@ -6,14 +6,17 @@ Usage (also available as the installed martini-postprocess command)::
     python -m MartiniFuncs run RUN_DIR --output PAIR_ANALYSIS --units metal --timestep-ps 0.0005 --no-lag-statistics --shell-radius 3
     python -m MartiniFuncs report ANALYSIS_DIR/cache --output REPORT_DIR --startframe 1000 --endframe 2000
     python -m MartiniFuncs extract ANALYSIS_DIR/cache --output PAIRS_DIR --startframe 1000 --endframe 2000 --shell-radius 3
+    python -m MartiniFuncs collect RUN_DIR --output PAIRS_DIR --units metal --timestep-ps 0.0005 --shell-radius 3
 
 collect uses the same indexed parallel frame processing as run, and writes both
-pairs.extxyz and clusters.extxyz without generating statistical reports.
---shell-radius is required. Default stride is 1 (all source frames). Reaction
-(topology) events are recorded by default and never stop run or collect: see
---reaction-events and --reaction-persistence. All pairs means all accepted
-CPD/MAL candidates under the existing 3.25 Angstrom screen and optional criteria,
-not every possible Cartesian combination of molecules.
+pairs.extxyz and clusters.extxyz without generating statistical reports; for
+collect, --shell-radius is required. Default stride is 1 (all source frames).
+Reaction (topology) events are recorded by default and do not stop run or
+collect; --reaction-events stop ends the analysis cleanly before the first
+event and off disables the check (see also --reaction-persistence). All pairs
+means all accepted pair-model candidates (cpd_n4t: CPD + N4T dienophile) inside
+the --reactive-radius screen (default 3.25 Angstrom) and optional criteria, not
+every possible Cartesian combination of molecules.
 
 Frame convention
 ----------------
@@ -78,7 +81,7 @@ import os
 from pathlib import Path
 import sys
 
-from MartiniFuncs.pairs.model import DEFAULT_PAIR_MODEL, get_pair_model, pair_model_names
+from MartiniFuncs.pairs.model import DEFAULT_PAIR_MODEL, DEFAULT_REACTIVE_RADIUS, get_pair_model, pair_model_names
 from MartiniFuncs.workflows.postprocess import cache_analysis, cache_pair_model, export_pairs, write_report
 from MartiniFuncs.workflows.progress import log, run_stage
 
@@ -197,18 +200,16 @@ def _analysis_options(parser):
                              "analysis cleanly before the first one; off = do not check")
     parser.add_argument("--reaction-persistence", type=int, default=5,
                         help="source frames a topology change must last to count as an event (default: 5)")
-    screen = parser.add_mutually_exclusive_group()
-    screen.add_argument("--reaction-atom-counts", type=int, nargs=2, metavar=("A", "B"),
-                        help="legacy screen: abort with an error at the first A+B-atom component "
-                             "(prefer --reaction-events)")
-    screen.add_argument("--no-reaction-screen", dest="reaction_atom_counts", action="store_const", const=None,
-                        help="disable the legacy A+B abort screen")
+    parser.add_argument("--reaction-atom-counts", type=int, nargs=2, metavar=("A", "B"),
+                        help="legacy screen, off by default: abort with an error at the first A+B-atom "
+                             "component (prefer --reaction-events)")
     parser.add_argument("--pair-model", choices=pair_model_names(), default=DEFAULT_PAIR_MODEL,
                         help=f"pair chemistry (default {DEFAULT_PAIR_MODEL}: CPD + N4T dienophile)")
     parser.add_argument("--pair-backend", choices=["cached", "reference"], default="cached")
-    parser.add_argument("--reactive-radius", type=float, default=3.25,
+    parser.add_argument("--reactive-radius", type=float, default=DEFAULT_REACTIVE_RADIUS,
                         help="pair screen radius cached by the analysis in Angstrom (cpd_n4t: CPD COM to "
-                             "C=C COM; default 3.25); report/extract can later select any radius up to it")
+                             f"C=C COM; default {DEFAULT_REACTIVE_RADIUS:g}); report/extract can later select "
+                             "any radius up to it")
     parser.add_argument("--orientations", action="store_true",
                         help="also cache each molecule's long axis and plane normal per frame (rotational dynamics)")
     parser.add_argument("--workers", type=int, default=1, help="local frame-processing and export processes, not MPI ranks (default: 1)")
@@ -316,10 +317,8 @@ def main(argv=None):
                               {"on_topology_change": {"record": "record", "stop": "truncate"}[args.reaction_events],
                                "topology_persistence": args.reaction_persistence}),
                            pair_criteria=criteria, pair_backend=args.pair_backend, pair_workers=args.workers,
-                           **({} if args.pair_model == DEFAULT_PAIR_MODEL else {"pair_model": args.pair_model}),
-                           **({} if args.reactive_radius == 3.25 else {"reactive_radius": args.reactive_radius}),
-                           **({"orientations": True} if args.orientations else {}),
-                           pair_batch_size=args.batch_size)
+                           pair_model=args.pair_model, reactive_radius=args.reactive_radius,
+                           orientations=args.orientations, pair_batch_size=args.batch_size)
             report = None
             if args.command == "run":
                 report = stage('Statistical report', write_report, cache, args.output / "reports" / args.report_name,

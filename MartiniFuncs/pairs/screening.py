@@ -3,7 +3,7 @@
 from __future__ import annotations
 import numpy as np
 from ase.neighborlist import primitive_neighbor_list
-from MartiniFuncs.structure.molecules import _wrap_points
+from MartiniFuncs.structure.periodic import wrap_points
 
 
 def pairs_from_centers(first_centers, second_centers, first_components, second_components,
@@ -20,8 +20,8 @@ def pairs_from_centers(first_centers, second_centers, first_components, second_c
         return ([], [], []) if return_distances else ([], [])
     # Put both point sets into one primary periodic representation while
     # remembering which image was removed from each unwrapped centroid.
-    second_wrapped, second_image = _wrap_points(second_centers, cell, pbc)
-    first_wrapped, first_image = _wrap_points(first_centers, cell, pbc)
+    second_wrapped, second_image = wrap_points(second_centers, cell, pbc)
+    first_wrapped, first_image = wrap_points(first_centers, cell, pbc)
 
     nsecond = len(second_wrapped)
     nfirst = len(first_wrapped)

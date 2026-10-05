@@ -46,15 +46,12 @@ def _bonded_candidates(atoms, cutoff):
     return i, j, d
 
 
-def topology_change(atoms, groups, molecule_sizes, *, bond_scale=1.3):
-    """Components of the current bond graph that are not one of the reference molecules.
+def _bond_components(atoms, bond_scale):
+    """Bonded rows (i < j) and connected components of the current frame.
 
-    groups[row] is each atom's reference-molecule index and molecule_sizes its
-    atom count. With the same bond rule as graph.build_bond_graph, the frame has
-    the reference topology iff no bond joins two reference molecules and every
-    molecule is one component. Otherwise return the changed components (merged
-    or split pieces) as a sorted tuple of sorted atom-ID tuples; () if unchanged.
-    The fast check costs one neighbor search; details only when something changed.
+    The bond rule is graph.build_bond_graph's, d < bond_scale*(r_cov_i+r_cov_j),
+    without building the ID-keyed adjacency dictionary: only component labels
+    are needed. Returns (i, j, component count, label per atom row).
     """
     from ase.data import covalent_radii
     from scipy.sparse import coo_matrix
@@ -66,6 +63,20 @@ def topology_change(atoms, groups, molecule_sizes, *, bond_scale=1.3):
     i, j = i[bonded], j[bonded]
     count, labels = connected_components(coo_matrix((np.ones(len(i)), (i, j)), shape=(len(atoms), len(atoms))),
                                          directed=False)
+    return i, j, count, labels
+
+
+def topology_change(atoms, groups, molecule_sizes, *, bond_scale=1.3):
+    """Components of the current bond graph that are not one of the reference molecules.
+
+    groups[row] is each atom's reference-molecule index and molecule_sizes its
+    atom count. With the same bond rule as graph.build_bond_graph, the frame has
+    the reference topology iff no bond joins two reference molecules and every
+    molecule is one component. Otherwise return the changed components (merged
+    or split pieces) as a sorted tuple of sorted atom-ID tuples; () if unchanged.
+    The fast check costs one neighbor search; details only when something changed.
+    """
+    i, j, count, labels = _bond_components(atoms, bond_scale)
     if count == len(molecule_sizes) and not np.any(groups[i] != groups[j]):
         return ()
     ids = graph.ensure_index_array(atoms)
@@ -81,8 +92,8 @@ def topology_change(atoms, groups, molecule_sizes, *, bond_scale=1.3):
 def find_possible_products(atoms, *, reactant_atom_counts, bond_scale=1.3):
     """Find components with size sum(reactant_atom_counts) in one current frame.
 
-    For CPD C5H6 (11 atoms) and the current MAL C11H9NO2 (23 atoms), the target
-    is 34. Supply counts for the actual molecules, including all hydrogens.
+    For CPD C5H6 (11 atoms) and the N4T maleimide dienophile C11H9NO2 (23 atoms),
+    the target is 34. Supply counts for the actual molecules, including all hydrogens.
     Rebuild the periodic bond graph using distance <= bond_scale*(r_cov_i+r_cov_j)
     in Angstrom, then examine connected components. Do not use LAMMPS molecule
     IDs or the initial topology: those may stay unchanged after a reaction.
@@ -96,18 +107,8 @@ def find_possible_products(atoms, *, reactant_atom_counts, bond_scale=1.3):
         raise ValueError("Supply two positive integer reactant atom counts")
     if not np.isfinite(bond_scale) or bond_scale <= 0:
         raise ValueError("bond_scale must be positive and finite")
-    from ase.data import covalent_radii
-    from scipy.sparse import coo_matrix
-    from scipy.sparse.csgraph import connected_components
-
     ids = graph.ensure_index_array(atoms)
-    # Same bond rule as graph.build_bond_graph, without building the ID-keyed
-    # adjacency dictionary: only component sizes and members are needed here.
-    radii = bond_scale * covalent_radii[atoms.numbers]
-    i, j, d = _bonded_candidates(atoms, 2*float(radii.max()))
-    bonded = (j > i) & (d < radii[i] + radii[j])
-    count, labels = connected_components(coo_matrix((np.ones(bonded.sum()), (i[bonded], j[bonded])),
-                                                    shape=(len(atoms), len(atoms))), directed=False)
+    _, _, count, labels = _bond_components(atoms, bond_scale)
     sizes = np.bincount(labels, minlength=count)
     hits = []
     for label in np.flatnonzero(sizes == sum(counts)):

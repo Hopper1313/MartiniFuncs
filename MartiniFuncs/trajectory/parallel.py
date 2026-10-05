@@ -95,13 +95,14 @@ def frame_offsets(path):
     offsets = array('Q')
     with open(path, 'rb') as handle:
         head = handle.read(1 << 16)
-        body = head.lstrip(b'\r\n')
-        if not body.strip():
+        # Leading whitespace is skipped exactly as io.lammps._iter_blocks does.
+        body = head.lstrip()
+        if not body:
             raise ValueError(f'{path}: no frames')
         if not (body.startswith(marker) and body[len(marker):len(marker)+1] in (b'\n', b'\r', b'')):
             raise ValueError(f'{path}: expected ITEM: TIMESTEP')
-        if len(body) == len(head):
-            offsets.append(0)   # later markers (and one after blank lines) follow a newline
+        first = len(head) - len(body)
+        offsets.append(first)   # later markers follow a newline and are found by the scan
         handle.seek(0)
         # bytes.find over 64 MiB blocks (C speed). A match starting at i is only
         # accepted once the byte after the marker is available; later starts are
@@ -114,7 +115,8 @@ def frame_offsets(path):
             limit = len(data) if eof else len(data) - len(pattern)
             hit = data.find(pattern)
             while 0 <= hit < limit:
-                if data[hit+len(pattern):hit+len(pattern)+1] in (b'\n', b'\r', b''):
+                if (data[hit+len(pattern):hit+len(pattern)+1] in (b'\n', b'\r', b'')
+                        and base + hit + 1 != first):
                     offsets.append(base + hit + 1)
                 hit = data.find(pattern, hit + 1)
             if eof:
@@ -211,7 +213,7 @@ def prepare_frame(frame, context):
         from MartiniFuncs.pairs.candidates import frame_candidates
         from MartiniFuncs.pairs.model import get_pair_model
         model = get_pair_model(context.get('pair_model'))
-        radius = context.get('reactive_radius', 3.25)
+        radius = context['reactive_radius']
         if context['topology'] is not None:
             pairs, shifts, _, rows = context['topology'].evaluate(
                 whole, atoms.cell.array, atoms.pbc, criteria=context['pair_criteria'],

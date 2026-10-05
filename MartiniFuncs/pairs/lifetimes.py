@@ -3,7 +3,8 @@
 from dataclasses import dataclass
 from itertools import zip_longest
 import numpy as np
-from MartiniFuncs.statistics.md import _times
+from MartiniFuncs._checks import integer
+from MartiniFuncs.statistics.md import validate_times
 
 
 def pair_identity(pair):
@@ -33,7 +34,8 @@ class PairLifetime:
 def get_pair_lifetime(pairs_by_frame, times_ps, *, max_gap_frames=0, progress=None):
     """Track encounter episodes from per-frame lists of molecule-ID pairs.
 
-    Directly accepts pair lists from get_all_prereactive_pairs, or filtered lists.
+    Directly accepts per-frame pair lists from pairs.candidates.select_pairs,
+    analyze_run's pairs_by_frame or pairs.assessment.screen_frame.
     Use one fixed selection criterion throughout. Molecule IDs here are atom-ID
     sets, not per-frame candidate numbers. Pair order/atom order is immaterial.
 
@@ -55,13 +57,11 @@ def get_pair_lifetime(pairs_by_frame, times_ps, *, max_gap_frames=0, progress=No
     max_gap_frames; detected_frames counts observations, not bridged gaps.
     Optional progress reports completed frame counts and the final sorting stage.
     """
-    if (isinstance(max_gap_frames, (bool, np.bool_)) or not isinstance(max_gap_frames, (int, np.integer))
-            or max_gap_frames < 0):
-        raise ValueError("max_gap_frames must be a nonnegative integer")
+    max_gap_frames = integer(max_gap_frames, "max_gap_frames", minimum=0)
     times = np.asarray(times_ps, dtype=float)
     if times.ndim != 1:
         raise ValueError("Timestamps must be one-dimensional")
-    _times(times, len(times))
+    validate_times(times, len(times))
     active, result = {}, []
 
     def finish(key, state, censored):

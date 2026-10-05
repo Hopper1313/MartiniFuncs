@@ -14,6 +14,9 @@ from ase import Atoms
 from ase.cell import Cell
 from ase.io.lammpsdata import write_lammps_data
 
+from MartiniFuncs._checks import integer as _integer, positive as _positive
+from MartiniFuncs.io.lammps import type_symbol_list
+
 
 @dataclass(frozen=True)
 class MoleculeSpec:
@@ -26,18 +29,6 @@ class PackingError(RuntimeError):
     """Requested composition could not be packed within the attempt budget."""
 
 
-def _positive(value, name):
-    if not np.isfinite(value) or value <= 0:
-        raise ValueError(f"{name} must be finite and positive")
-    return float(value)
-
-
-def _integer(value, name, minimum=1):
-    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)) or value < minimum:
-        raise ValueError(f"{name} must be an integer >= {minimum}")
-    return int(value)
-
-
 def _orthorhombic_lengths(cell):
     matrix = np.asarray(Cell.new(cell))
     lengths = matrix.diagonal()
@@ -48,8 +39,9 @@ def _orthorhombic_lengths(cell):
 
 
 def _rotation(rng):
-    # Uniform SO(3) rotation from a normalized Gaussian quaternion.
-    """Draw q=(w,x,y,z) from four independent standard normals and normalize
+    """Uniform SO(3) rotation from a normalized Gaussian quaternion.
+
+    Draw q=(w,x,y,z) from four independent standard normals and normalize
     q/|q|. Its quaternion rotation is R=(w^2-v dot v)I+2 v v.T+2w[v]_cross,
     v=(x,y,z), giving a uniform proper rotation; packing uses row vectors @ R.T.
     """
@@ -174,7 +166,6 @@ def write_initial_data(atoms, path, *, type_symbols=None, overwrite=False):
     if "momenta" in atoms.arrays or np.any(atoms.get_initial_charges() != 0):
         raise ValueError("Initial export is geometry-only; velocities/charges require a separate workflow")
     symbols = atoms.get_chemical_symbols()
-    from MartiniFuncs.io.lammps import type_symbol_list
     types = sorted(set(symbols)) if type_symbols is None else type_symbol_list(type_symbols)
     if len(set(types)) != len(types) or set(types) != set(symbols):
         raise ValueError("type_symbols must list every element exactly once")

@@ -1,9 +1,10 @@
-"""Periodic-cell geometry: minimum images, plane spacings, wrapping, and TOR COM unwrapping.
+"""Periodic-cell geometry: minimum images, plane spacings, point wrapping, affine steps, and TOR COM unwrapping.
 """
 import numpy as np
 
 
-def _is_diagonal(cell):
+def is_diagonal(cell):
+    """True if the row-vector cell is exactly diagonal (orthorhombic, no tilt)."""
     return np.array_equal(cell, np.diag(np.diagonal(cell)))
 
 
@@ -17,7 +18,7 @@ def minimum_image(vectors, cell):
     """
     cell = np.asarray(cell, dtype=float)
     d = np.asarray(vectors, dtype=float)
-    if _is_diagonal(cell):
+    if is_diagonal(cell):
         lengths = np.diagonal(cell)
         return d - lengths * np.floor(d / lengths + .5)
     fractional = np.linalg.solve(cell.T, d.reshape(-1, 3).T).T.reshape(d.shape)
@@ -50,6 +51,26 @@ def affine_step(previous_points, steps, previous_cell, cell, previous_origin, or
     s_after = np.linalg.solve(cell.T, (p + d - origin).T).T
     shift = (origin - previous_origin) + 0.5 * (s_before + s_after) @ (cell - previous_cell)
     return shift.reshape(np.shape(steps))
+
+
+def wrap_points(points, cell, pbc):
+    """Wrap arbitrary Cartesian points and return removed integer cell shifts.
+
+    Returns ``wrapped, image`` with ``points = wrapped + image @ cell``.
+    Only periodic dimensions are wrapped.
+
+    For row-cell H, f=points @ inverse(H); image=floor(f) only on
+    periodic axes and zero elsewhere. wrapped=points-image @ H.
+    """
+    points = np.asarray(points, dtype=float)
+    cell = np.asarray(cell, dtype=float)
+    pbc = np.asarray(pbc, dtype=bool)
+
+    frac = np.linalg.solve(cell.T, points.T).T
+    image = np.zeros_like(frac, dtype=int)
+    image[:, pbc] = np.floor(frac[:, pbc]).astype(int)
+    wrapped = points - image @ cell
+    return wrapped, image
 
 
 def wrap_about_center(points, cell, center):

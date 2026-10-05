@@ -2,7 +2,7 @@
 
 Subpackages
 -----------
-io          file formats (LAMMPS, ORCA, Psience)
+io          file formats (LAMMPS dumps/inputs/thermo, Psience bridges)
 structure   bond graphs, periodic cells, alignment, packing
 trajectory  streaming analysis, parallel frames, reaction events
 statistics  MD observables, lag statistics, dynamics and diffusion diagnostics

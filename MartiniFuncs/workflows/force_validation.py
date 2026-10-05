@@ -16,6 +16,7 @@ from pathlib import Path
 
 import numpy as np
 
+from MartiniFuncs._checks import plain
 from MartiniFuncs.io.lammps import iter_lammps_frames, read_lammps_input_settings
 
 
@@ -30,14 +31,12 @@ MD_INFERENCE_SETTINGS = {
 }
 
 
-def _json_safe(value):
-    if isinstance(value, dict):
-        return {k: _json_safe(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple, set)):
-        return [_json_safe(v) for v in sorted(value)] if isinstance(value, set) else [_json_safe(v) for v in value]
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    return str(value)
+def _check_comparison(atol, charge, spin):
+    """Shared argument checks: absolute tolerance (eV/Angstrom), integer charge, spin multiplicity."""
+    if not np.isfinite(atol) or atol < 0:
+        raise ValueError("atol must be finite and nonnegative")
+    if not isinstance(charge, (int, np.integer)) or not isinstance(spin, (int, np.integer)) or spin < 1:
+        raise ValueError("charge must be an integer and spin a positive multiplicity")
 
 
 def compare_frame_forces(frame, calculator, *, charge, spin, atol):
@@ -53,10 +52,7 @@ def compare_frame_forces(frame, calculator, *, charge, spin, atol):
     passed means max(|E|)<=atol; worst_lammps_id uses the largest atom norm.
     Net forces are sum_i F_i; no relative tolerance is used.
     """
-    if not np.isfinite(atol) or atol < 0:
-        raise ValueError("atol must be finite and nonnegative")
-    if not isinstance(charge, (int, np.integer)) or not isinstance(spin, (int, np.integer)) or spin < 1:
-        raise ValueError("charge must be an integer and spin a positive multiplicity")
+    _check_comparison(atol, charge, spin)
     if "lammps_forces" not in frame.atoms.arrays:
         raise ValueError("Frame has no source forces")
     if frame.atoms.info.get("force_units") != "eV/Angstrom":
@@ -118,7 +114,7 @@ def local_uma_calculator(checkpoint, *, task="omol", device="cuda", inference_se
         settings = guess_inference_settings(inference_settings)
     predictor = load_predict_unit(checkpoint, device=device, inference_settings=settings)
     calculator = FAIRChemCalculator(predictor, task_name=task)
-    calculator.martini_inference_settings = _json_safe(settings.to_omegaconf())
+    calculator.martini_inference_settings = plain(settings.to_omegaconf(), fallback=str)
     return calculator
 
 
@@ -147,10 +143,7 @@ def validate_forces(dump, checkpoint, *, input_file=None, datafile=None, units=N
     if len(set(requested)) != len(requested):
         raise ValueError("indices must not contain duplicates")
     requested = sorted(int(i) for i in requested)
-    if not np.isfinite(atol) or atol < 0:
-        raise ValueError("atol must be finite and nonnegative")
-    if not isinstance(charge, (int, np.integer)) or not isinstance(spin, (int, np.integer)) or spin < 1:
-        raise ValueError("charge must be an integer and spin a positive multiplicity")
+    _check_comparison(atol, charge, spin)
     if units is not None:
         input_settings = {"source": str(input_file) if input_file else None,
                           "units": units, "units_source": "explicit", "input_parsed": False}

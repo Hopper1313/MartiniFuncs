@@ -8,7 +8,7 @@ barrier validation are future pipeline stages.
 
 | Subpackage | Contents |
 |---|---|
-| `MartiniFuncs.io` | `lammps` (dump/input reader), `lammps_inputs`, `thermo`, `orca`, `psience` |
+| `MartiniFuncs.io` | `lammps` (dump/input reader), `lammps_inputs`, `thermo`, `psience` |
 | `MartiniFuncs.structure` | `graph` (bond graphs, periodic neighbours), `periodic` (minimum image, TOR COM unwrapping), `molecules`, `alignment`, `packing` |
 | `MartiniFuncs.trajectory` | `analysis` (`analyze_run`, `analyze_segments`), `parallel` (indexed frame chunks), `reactions` (topology-change events) |
 | `MartiniFuncs.statistics` | `md` (molecular observables, FFT lag MSD/correlations), `dynamics`, `diffusion`, `stability` |

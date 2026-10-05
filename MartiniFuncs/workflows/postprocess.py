@@ -11,6 +11,7 @@ import csv
 from dataclasses import asdict
 import hashlib
 from importlib.metadata import PackageNotFoundError, version
+import inspect
 from io import StringIO
 import json
 from pathlib import Path
@@ -18,6 +19,7 @@ import platform
 
 import numpy as np
 
+from MartiniFuncs._checks import integer, plain as _plain
 from MartiniFuncs.pairs import lifetimes
 from MartiniFuncs.statistics import md
 from MartiniFuncs.structure import periodic
@@ -31,21 +33,6 @@ ARRAY_KEYS = ("species", "com_angstrom", "wrapped_com_angstrom", "box_lengths_an
               "com_nonaffine_angstrom", "orientation_axes")
 SCHEMA_VERSION = 2
 SUPPORTED_SCHEMAS = {1, 2}
-
-
-def _plain(value):
-    """Convert scientific metadata to JSON types without pickle or NaN literals."""
-    if isinstance(value, np.ndarray):
-        return value.tolist()
-    if isinstance(value, np.generic):
-        return value.item()
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, dict):
-        return {str(k): _plain(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_plain(v) for v in value]
-    return value
 
 
 def _json(path, value):
@@ -69,14 +56,19 @@ def _csv(path, rows, fields=None):
 
 
 def _software():
-    """Record installed version and source digest, including editable installs."""
+    """Record installed version and a digest of every package source file, including editable installs.
+
+    The digest covers all MartiniFuncs/**/*.py (paths relative to the package
+    root), so any code change, in any subpackage, invalidates cache reuse.
+    """
     try:
         package_version = version("MartiniFuncs")
     except PackageNotFoundError:
         package_version = "uninstalled"
+    root = Path(__file__).resolve().parents[1]
     digest = hashlib.sha256()
-    for path in sorted(Path(__file__).parent.glob("*.py")):
-        digest.update(path.name.encode())
+    for path in sorted(root.rglob("*.py")):
+        digest.update(path.relative_to(root).as_posix().encode())
         digest.update(path.read_bytes())
     return {"MartiniFuncs": package_version, "source_sha256": digest.hexdigest(),
             "python": platform.python_version(), "numpy": np.__version__}
@@ -106,13 +98,47 @@ def _manifest(cache_dir):
     return manifest
 
 
+# analyze_run arguments that never enter the cache configuration: resolved source
+# files are fingerprinted separately; workers/progress/offsets do not change results.
+_UNRECORDED_OPTIONS = {"directory", "input_file", "dump_file", "data_file", "progress",
+                       "pair_workers", "pair_batch_size", "frame_offsets"}
+
+
+def _analysis_configuration(options):
+    """JSON configuration of an analysis: every analyze_run setting, defaults filled in.
+
+    Filling defaults makes an omitted option and the same value passed
+    explicitly produce the same configuration. A PairModel instance is
+    recorded by its registered name. Raises ValueError for values that cannot
+    be stored as JSON, before any analysis runs.
+    """
+    from MartiniFuncs.trajectory.analysis import analyze_run
+    parameters = inspect.signature(analyze_run).parameters
+    unknown = set(options) - set(parameters)
+    if unknown:
+        raise TypeError(f"Unknown analyze_run options: {sorted(unknown)}")
+    config = {name: options.get(name, parameter.default) for name, parameter in parameters.items()
+              if name not in _UNRECORDED_OPTIONS}
+    # None, a registered name and a PairModel instance all resolve to the model's name.
+    config["pair_model"] = get_pair_model(config["pair_model"]).name
+    if config.get("pair_criteria") is not None:
+        config["pair_criteria"] = asdict(config["pair_criteria"])
+    config = _plain(config)
+    try:
+        json.dumps(config, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Analysis options cannot be recorded in the cache manifest: {exc}") from exc
+    return config
+
+
 def cache_analysis(directory, cache_dir, *, units, timestep_ps, pair_criteria=None,
                    compute_pairs=True, pair_workers=1, pair_batch_size=32,
                    progress=print, **options):
     """Analyze once or reuse an exactly matching completed cache.
 
-    Units/timestep are explicit. All analyze_run options except progress are
-    recorded. Changing worker/batch count permits reuse; changing selection,
+    Units/timestep are explicit. Every analyze_run setting is recorded with its
+    default filled in (except progress, worker/batch counts and frame offsets).
+    Changing worker/batch count permits reuse; changing selection,
     source size/mtime/path, or package source code requires a new cache directory.
     Initial metadata is fixed; partial directories never count as completed.
     On reuse only manifest.json is read before deciding; data load afterwards.
@@ -131,10 +157,8 @@ def cache_analysis(directory, cache_dir, *, units, timestep_ps, pair_criteria=No
                               dump_file=options.get("dump_file"), data_file=options.get("data_file"),
                               require_input=False)
     # Resolution is captured separately; filenames need not match spelling on reuse.
-    config = {k: v for k, v in options.items() if k not in {"input_file", "dump_file", "data_file"}}
-    config.update(units=units, timestep_ps=timestep_ps, compute_pairs=compute_pairs,
-                  pair_criteria=asdict(pair_criteria) if pair_criteria is not None else None)
-    config = _plain(config)
+    config = _analysis_configuration(dict(options, units=units, timestep_ps=timestep_ps,
+                                          compute_pairs=compute_pairs, pair_criteria=pair_criteria))
     software = _software()
     fingerprints = _fingerprints(files)
     if cache_dir.exists():
@@ -373,10 +397,9 @@ def write_report(cache_dir, output_dir, *, startframe=0, endframe=None,
     if progress and preloaded is None:
         progress('Loading report cache')
     result, source = preloaded if preloaded is not None else load_analysis_cache(cache_dir)
-    if isinstance(max_gap_frames, bool) or not isinstance(max_gap_frames, int) or max_gap_frames < 0:
-        raise ValueError("max_gap_frames must be a nonnegative integer")
-    if rdf_bins is not None and (isinstance(rdf_bins, bool) or not isinstance(rdf_bins, int) or rdf_bins < 1):
-        raise ValueError("rdf_bins must be a positive integer")
+    integer(max_gap_frames, "max_gap_frames", minimum=0)
+    if rdf_bins is not None:
+        integer(rdf_bins, "rdf_bins")
     config = dict(cache=str(Path(cache_dir).resolve()), source=source, startframe=startframe, endframe=endframe,
                   max_lag_ps=max_lag_ps, fit_interval_ps=fit_interval_ps,
                   max_gap_frames=max_gap_frames, stability=stability, rdf_bins=rdf_bins, software=_software())
@@ -384,16 +407,16 @@ def write_report(cache_dir, output_dir, *, startframe=0, endframe=None,
                   reactive_radius=reactive_radius,
                   pair_criteria=asdict(pair_criteria) if pair_criteria is not None else None)
     from MartiniFuncs.pairs.candidates import candidate_mask, metric_histograms, select_pairs
-    selection = reactive_radius is not None or pair_criteria is not None
-    selected_pairs = (select_pairs(result, reactive_radius=reactive_radius, criteria=pair_criteria)[0]
-                      if result["pairs_by_frame"] is not None else None)
-    # Check completed reports before performing potentially expensive statistics.
+    # Check completed reports before selecting pairs or computing statistics.
     output = Path(output_dir).expanduser().resolve()
     if output.exists():
         completed = _begin_product(output, config)[0]
         if progress:
             progress(f'Reusing completed report: {completed}')
         return completed
+    selection = reactive_radius is not None or pair_criteria is not None
+    selected_pairs = (select_pairs(result, reactive_radius=reactive_radius, criteria=pair_criteria)[0]
+                      if result["pairs_by_frame"] is not None else None)
     if progress:
         progress(f"Report selection: lag statistics={requested or 'none'}, pair lifetimes={pair_lifetimes}, frame summary={frame_summary}")
     window = molecular_window_statistics(result, startframe=startframe, endframe=endframe,
@@ -425,40 +448,41 @@ def write_report(cache_dir, output_dir, *, startframe=0, endframe=None,
         species_files[name] = {"file": filename, "n_molecules": entry["n_molecules"]}
     if fits:
         _csv(output / "diffusion.csv", fits)
-    events = result.get("topology_events") or []
-    if events:
+    topology_events = result.get("topology_events") or []
+    if topology_events:
         dt = result["settings"]["timestep"]
         _csv(output / "topology_events.csv",
              [dict(frame=e["frame"], timestep=e["timestep"], time_ps=e["timestep"] * dt,
                    persistence_frames=e["persistence_frames"], formulas=" + ".join(e["formulas"]),
-                   changed_components=e["changed_components"]) for e in events],
+                   changed_components=e["changed_components"]) for e in topology_events],
              fields=["frame", "timestep", "time_ps", "persistence_frames", "formulas", "changed_components"])
         if progress:
-            progress(f"Wrote {len(events)} topology (reaction) events")
+            progress(f"Wrote {len(topology_events)} topology (reaction) events")
     candidates = result.get("pair_candidates")
     if candidates is not None:
         # Distributions of the selected candidates inside this frame window.
         in_window = np.repeat(window["frame_mask"], np.diff(candidates["offsets"]))
-        mask = in_window & candidate_mask(candidates, reactive_radius=reactive_radius, criteria=pair_criteria)
         if not selection and result["pairs_by_frame"] is not None:
             # No report selection: describe the analysis's own accepted pairs.
             mask = in_window & candidate_mask(candidates, criteria=_analysis_criteria(result, source))
+        else:
+            mask = in_window & candidate_mask(candidates, reactive_radius=reactive_radius, criteria=pair_criteria)
         _csv(output / "pair_metric_histograms.csv", metric_histograms(candidates, mask),
              fields=["metric", "bin_low", "bin_high", "count"])
     if pair_lifetimes and result["pairs_by_frame"] is not None:
         if progress:
             progress(f'Computing pair lifetimes over {len(rows)} frames')
         pairs = [p for p, keep in zip(selected_pairs, window["frame_mask"]) if keep]
-        events = lifetimes.get_pair_lifetime(pairs, times, max_gap_frames=max_gap_frames, progress=progress)
+        episodes = lifetimes.get_pair_lifetime(pairs, times, max_gap_frames=max_gap_frames, progress=progress)
         # first_frame/last_frame count retained rows inside this window; the
         # source columns use the dump-frame numbering of every other output.
         source_frames = [r["frame"] for r in rows]
         _csv(output / "pair_lifetimes.csv",
              [dict(asdict(e), first_source_frame=source_frames[e.first_frame],
-                   last_source_frame=source_frames[e.last_frame]) for e in events],
+                   last_source_frame=source_frames[e.last_frame]) for e in episodes],
              fields=list(lifetimes.PairLifetime.__dataclass_fields__) + ["first_source_frame", "last_source_frame"])
         if progress:
-            progress(f'Wrote {len(events)} pair lifetime records')
+            progress(f'Wrote {len(episodes)} pair lifetime records')
     elif pair_lifetimes and progress:
         progress('Pair lifetimes unavailable: cache has no pair analysis')
     if stability:
@@ -493,7 +517,7 @@ def write_report(cache_dir, output_dir, *, startframe=0, endframe=None,
         _json(output / "rdf_species.json", rdf_files)
     _json(output / "manifest.json", {"schema_version": SCHEMA_VERSION, "configuration": config,
                                      "time_window_ps": window["time_window_ps"], "frame_window": window["frame_window"],
-                                     "species": species_files, "topology_events": len(events),
+                                     "species": species_files, "topology_events": len(topology_events),
                                      "notices": result["notices"]})
     if progress:
         progress(f'Report complete: {output}')
@@ -544,9 +568,8 @@ def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endf
     frame offsets saved in the cache after the first export.
     preloaded=(result, manifest) skips reading the cache again.
     """
-    for name, value in (("workers", workers), ("batch_size", batch_size)):
-        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-            raise ValueError(f"{name} must be a positive integer")
+    integer(workers, "workers")
+    integer(batch_size, "batch_size")
     result, source = preloaded if preloaded is not None else load_analysis_cache(cache_dir)
     if result["pairs_by_frame"] is None:
         raise ValueError("Cache contains no pair analysis; rerun analysis with pairs enabled")

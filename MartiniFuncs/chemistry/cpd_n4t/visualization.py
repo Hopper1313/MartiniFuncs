@@ -15,12 +15,8 @@ def to_display_molecule(atoms):
     r_bohr=r_angstrom*UnitsData.convert('Angstroms','BohrRadius').
     Only coordinates and elements are transferred; no force-unit conversion occurs.
     """
-    from McUtils.Data import UnitsData
-    from Psience.Molecools import Molecule
-
-    angstrom_to_bohr = UnitsData.convert("Angstroms", "BohrRadius")
-    coords_bohr = atoms.get_positions() * angstrom_to_bohr
-    return Molecule(atoms=atoms.get_chemical_symbols(), coords=coords_bohr)
+    from MartiniFuncs.io.psience import ase_atoms_to_molecule
+    return ase_atoms_to_molecule(atoms, energy_evaluator=None)
 
 
 def force_arrow_displacements(atoms, *, array="lammps_forces", scale=0.2):
@@ -62,8 +58,10 @@ def plot_cluster(atoms, *, forces=False, force_array="lammps_forces", force_scal
     """
     from McUtils.Data import UnitsData
 
+    from MartiniFuncs.pairs.model import get_pair_model
+    first_label, second_label = get_pair_model("cpd_n4t").role_labels
     roles = atoms.arrays.get("pair_role", np.full(len(atoms), "shell"))
-    colors = {"CPD": "green", "MAL": "orange", "shell": "gray"}
+    colors = {first_label: "green", second_label: "orange", "shell": "gray"}
     styles = {i: {"color": colors.get(str(role), "gray")} for i, role in enumerate(roles)}
     options = {}
     if forces:
@@ -122,11 +120,13 @@ def plot_pair_geometry(atoms, *, disk_radius=2.0, transparency=0.5,
         raise ValueError("Pair geometry overlays require plot units='Angstroms'")
     if "pair_role" not in atoms.arrays or "global_index" not in atoms.arrays:
         raise ValueError("Require pair_role and global_index arrays from pair extraction")
+    from MartiniFuncs.pairs.model import get_pair_model
+    first_label, second_label = get_pair_model("cpd_n4t").role_labels
     ids = mfg.atom_ids(atoms)
     roles = atoms.arrays["pair_role"]
     graph = mfg.build_bond_graph(atoms, scale=scale)
     ends, diene, cc, dienophile_plane = _sites(
-        atoms, graph, ids[roles == "CPD"], ids[roles == "MAL"]
+        atoms, graph, ids[roles == first_label], ids[roles == second_label]
     )
     xyz = dict(zip(ids, atoms.positions))
     cpd_center = np.mean([xyz[i] for i in ends], axis=0)

@@ -4,6 +4,18 @@ from dataclasses import dataclass
 import numpy as np
 
 
+def kabsch_rotation(p, q):
+    """Proper rotation R minimizing sum_i |p_i @ R - q_i|^2 for centered row-vector sets p, q.
+
+    SVD(p.T @ q)=U S Vt gives R=U diag(1,1,det(U Vt)) Vt; the determinant
+    correction excludes reflections.
+    """
+    u, _, vt = np.linalg.svd(np.asarray(p, dtype=float).T @ np.asarray(q, dtype=float))
+    correction = np.eye(3)
+    correction[-1, -1] = np.linalg.det(u @ vt)
+    return u @ correction @ vt
+
+
 @dataclass(frozen=True)
 class RigidTransform:
     """Row-vector convention: ``positions @ rotation + translation``."""
@@ -73,10 +85,7 @@ def align_geometry(mobile, reference, indices=None, *, id_array="global_index",
     if not np.isfinite(mobile.positions).all() or not np.isfinite(q).all():
         raise ValueError("Coordinates must be finite")
     pc, qc = p.mean(axis=0), q.mean(axis=0)
-    u, _, vt = np.linalg.svd((p - pc).T @ (q - qc))
-    correction = np.eye(3)
-    correction[-1, -1] = np.linalg.det(u @ vt)
-    rotation = u @ correction @ vt
+    rotation = kabsch_rotation(p - pc, q - qc)
     transform = RigidTransform(rotation, qc - pc @ rotation)
     aligned = mobile.copy()
     aligned.positions = transform.positions(mobile.positions)

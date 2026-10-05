@@ -32,6 +32,7 @@ from ase import Atoms
 from ase.data import covalent_radii
 from ase.neighborlist import first_neighbors, neighbor_list
 
+from MartiniFuncs.structure.periodic import cell_plane_spacings
 
 
 AtomID: TypeAlias = int
@@ -96,10 +97,6 @@ def ensure_index_array(
     return ids
 
 
-# Backward-friendly descriptive alias.
-ensure_global_index = ensure_index_array
-
-
 def get_index_maps(
     atoms: Atoms,
     index_array: str | None = "global_index",
@@ -111,8 +108,9 @@ def get_index_maps(
     atoms
         Current ASE ``Atoms`` object.
     index_array
-        Name of the persistent-ID array.  If ``None`` or absent, local ASE
-        indices are used as IDs.
+        Name of the persistent-ID array.  If ``None``, local ASE indices are
+        used as IDs. If the array is absent it is created on ``atoms`` as
+        ``0..N-1`` (see :func:`ensure_index_array`), so later slices keep the IDs.
 
     Returns
     -------
@@ -238,10 +236,7 @@ def periodic_pairs(
         fractional = np.linalg.solve(cell.T, positions.T).T
         images = np.floor(fractional).astype(int)
         inside = fractional - images
-        volume = abs(np.linalg.det(cell))
-        spacing = np.array([volume / np.linalg.norm(np.cross(cell[(k+1) % 3], cell[(k+2) % 3]))
-                            for k in range(3)])
-        margin = cutoff / spacing
+        margin = cutoff / cell_plane_spacings(cell)
         layers = np.ceil(margin).astype(int)
         ghost_rows, ghost_shifts = [], []
         for shift in np.array(np.meshgrid(*[np.arange(-n, n + 1) for n in layers], indexing="ij")).reshape(3, -1).T:
@@ -276,7 +271,6 @@ def periodic_pairs(
 def build_bond_graph(
     atoms: Atoms,
     scale: float = 1.3,
-    skin: float = 0.0,
     periodic: bool = True,
     index_array: str | None = "global_index",
 ) -> BondGraph:
@@ -293,8 +287,7 @@ def build_bond_graph(
     converted to persistent IDs when graph edges are stored.
 
     A bond satisfies |r_j+S_ij @ cell-r_i| < scale*(rcov_i+rcov_j).
-    Cell and positions are Angstrom, S_ij integer image shifts. skin is kept
-    for API compatibility; it never changed the final bond criterion.
+    Cell and positions are Angstrom, S_ij integer image shifts.
     The default scale, 1.3, is the package-wide bond criterion.
     Each adjacency list is sorted by (neighbor ID, shift), so traversal order
     (and hence component atom order) does not depend on geometry. Periodic
@@ -624,7 +617,7 @@ def place_component_from_anchor(
     if anchor_shift.shape != (3,):
         raise ValueError("anchor_shift must have shape (3,).")
 
-    relative_shifts, _ = unwrap_component(
+    relative_shifts, unwrapped = unwrap_component(
         atoms,
         graph,
         component,
@@ -638,9 +631,7 @@ def place_component_from_anchor(
         for atom_id in component
     }
 
-    local = local_indices(atoms, component, index_array=index_array)
-    shift_array = np.vstack([absolute_shifts[i] for i in component])
-    xyz = atoms.positions[local] + shift_array @ atoms.cell.array
+    xyz = unwrapped + translation @ atoms.cell.array
 
     return np.asarray(component, dtype=int), xyz, absolute_shifts
 
@@ -652,32 +643,41 @@ def component_center_of_mass(
     index_array: str | None = "global_index",
     *,
     strict: bool = False,
+    subset: Iterable[int] | None = None,
 ) -> np.ndarray:
-    """Center of mass of a component after molecular PBC unwrapping.
+    """Center of mass of a component, or of a subset of its atoms, after molecular PBC unwrapping.
 
-    R=sum_i(m_i*r_whole,i)/sum_i m_i, using component IDs, ASE masses,
-    and unwrap_component positions; result is Angstrom.
+    R=sum_i(m_i*r_whole,i)/sum_i m_i over the component, or over ``subset``
+    (persistent IDs inside the component, e.g. a reactive site) taken in the
+    component's unwrapped frame. Uses ASE masses and unwrap_component
+    positions; result is Angstrom.
     """
     component = [int(i) for i in component]
     if not component:
         raise ValueError("component must contain at least one atom.")
 
-    local = local_indices(atoms, component, index_array=index_array)
-    _, xyz = unwrap_component(
+    shifts, xyz = unwrap_component(
         atoms,
         graph,
         component,
         index_array=index_array,
         strict=strict,
     )
-    masses = atoms.get_masses()[local]
+    ids = component
+    if subset is not None:
+        ids = [int(i) for i in subset]
+        missing = [i for i in ids if i not in shifts]
+        if not ids or missing:
+            raise ValueError(f"subset must be nonempty atom IDs of the component; missing {missing[:10]}")
+        local = local_indices(atoms, ids, index_array=index_array)
+        xyz = atoms.positions[local] + np.vstack([shifts[i] for i in ids]) @ atoms.cell.array
+    masses = atoms.get_masses()[local_indices(atoms, ids, index_array=index_array)]
     return np.average(xyz, axis=0, weights=masses)
 
 
 def repair_fragmented_molecules(
     atoms: Atoms,
     bond_scale: float = 1.3,
-    neighbor_skin: float = 0.0,
     centroid_position_frac: np.ndarray | None = None,
     index_array: str | None = "global_index",
 ) -> Atoms:
@@ -692,12 +692,10 @@ def repair_fragmented_molecules(
     graph = build_bond_graph(
         repaired,
         scale=bond_scale,
-        skin=neighbor_skin,
         index_array=index_array,
     )
 
-    ids, id_to_local = get_index_maps(repaired, index_array=index_array)
-    components = connected_components(graph, atom_ids=ids)
+    components = connected_components(graph, atom_ids=atom_ids(repaired, index_array=index_array))
     new_positions = repaired.positions.copy()
 
     for comp in components:
@@ -710,13 +708,7 @@ def repair_fragmented_molecules(
             comp,
             index_array=index_array,
         )
-
-        local = np.fromiter(
-            (id_to_local[int(atom_id)] for atom_id in comp),
-            dtype=int,
-            count=len(comp),
-        )
-        new_positions[local] = unwrapped
+        new_positions[local_indices(repaired, comp, index_array=index_array)] = unwrapped
 
     repaired.positions[:] = new_positions
 
@@ -823,7 +815,7 @@ def get_shell_contacts(
 
     Notes
     -----
-    ASE's neighbor shift is relative to the center atom.  If the center already
+    The index's neighbor shift S_ij is relative to the center atom.  If the center already
     has absolute shift ``Q_i``, a neighbor contact with relative shift ``S_ij``
     belongs at absolute shift ``Q_j = Q_i + S_ij``.
 
@@ -1046,80 +1038,58 @@ def find_rings(graph, max_size=None):
     return list(nx.chordless_cycles(G, length_bound=max_size))
 
 
-def n_neighbor_subgraph(graph, subset, n=1):
-    """Extract subset atoms plus all atoms within ``n`` bond hops."""
-    if n < 0:
-        raise ValueError("n must be >= 0")
+def _hop_shells(graph, seeds, n=None):
+    """Breadth-first hop shells from seed IDs: (all reached IDs, shells).
 
-    subset = set(map(int, subset))
-    shells = [subset.copy()]
-    selected_atoms = subset.copy()
-    frontier = subset.copy()
-
-    for _ in range(n):
-        next_frontier = set()
-
-        for i in frontier:
-            for j, _ in graph.get(i, []):
-                j = int(j)
-                if j not in selected_atoms:
-                    next_frontier.add(j)
-
-        shells.append(next_frontier)
-        selected_atoms.update(next_frontier)
-        frontier = next_frontier
-
+    shells[0] is the seed set and shells[k] the IDs first reached after k bond
+    hops. n limits the hops (a search exhausted early records one final empty
+    shell); n=None continues until the whole connected component is reached.
+    """
+    frontier = {int(i) for i in seeds}
+    selected, shells, hops = set(frontier), [set(frontier)], 0
+    while n is None or hops < n:
+        if n is None and not frontier:
+            break
+        frontier = {int(j) for i in frontier for j, _ in graph.get(i, []) if int(j) not in selected}
+        hops += 1
+        if n is not None or frontier:
+            shells.append(frontier)
+        selected |= frontier
         if not frontier:
             break
+    return selected, shells
 
+
+def _copied_subgraph(graph, ids):
+    """Bonds of graph between members of ids, with copied shift arrays (defaultdict)."""
     subgraph = defaultdict(list)
-    for i in selected_atoms:
+    for i in ids:
         for j, S in graph.get(i, []):
             j = int(j)
-            if j in selected_atoms:
+            if j in ids:
                 subgraph[i].append((j, np.asarray(S, dtype=int).copy()))
+    return subgraph
 
-    return subgraph, selected_atoms, shells
+
+def n_neighbor_subgraph(graph, subset, n=1):
+    """Extract subset atoms plus all atoms within ``n`` bond hops: (subgraph, IDs, hop shells)."""
+    if n < 0:
+        raise ValueError("n must be >= 0")
+    selected_atoms, shells = _hop_shells(graph, subset, n)
+    return _copied_subgraph(graph, selected_atoms), selected_atoms, shells
 
 
 def n_neighbor_indices(graph, subset, n=1):
     """Return persistent atom IDs within <= ``n`` bond hops of ``subset``."""
     if n < 0:
         raise ValueError("n must be >= 0")
-
-    subset = set(map(int, subset))
-    selected = subset.copy()
-    frontier = subset.copy()
-
-    for _ in range(n):
-        next_frontier = {
-            int(j)
-            for i in frontier
-            for j, _ in graph.get(i, [])
-            if int(j) not in selected
-        }
-
-        selected.update(next_frontier)
-        frontier = next_frontier
-
-        if not frontier:
-            break
-
-    return selected
+    return _hop_shells(graph, subset, n)[0]
 
 
 def extract_neighborhood(graph, subset, n=1):
     """Return selected IDs and their induced graph within ``n`` bond hops."""
     selected = n_neighbor_indices(graph, subset, n)
-    subgraph = defaultdict(list)
-
-    for i in selected:
-        for j, S in graph.get(i, []):
-            j = int(j)
-            if j in selected:
-                subgraph[i].append((j, np.asarray(S, dtype=int).copy()))
-
-    return selected, subgraph
+    return selected, _copied_subgraph(graph, selected)
 
 
 def find_element_chains(
@@ -1181,27 +1151,5 @@ def complete_molecule(graph, seed):
         seeds = {int(seed)}
     else:
         seeds = {int(i) for i in seed}
-
-    if not seeds:
-        return set(), defaultdict(list)
-
-    visited = set(seeds)
-    queue = deque(seeds)
-
-    while queue:
-        i = queue.popleft()
-
-        for j, _ in graph.get(i, []):
-            j = int(j)
-            if j not in visited:
-                visited.add(j)
-                queue.append(j)
-
-    subgraph = defaultdict(list)
-    for i in visited:
-        for j, S in graph.get(i, []):
-            j = int(j)
-            if j in visited:
-                subgraph[i].append((j, np.asarray(S, dtype=int).copy()))
-
-    return visited, subgraph
+    visited = _hop_shells(graph, seeds)[0]
+    return visited, _copied_subgraph(graph, visited)

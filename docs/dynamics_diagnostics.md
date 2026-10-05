@@ -244,8 +244,8 @@ without interactions:
 - J ∝ r² for a distance;
 - J = 1 otherwise.
 
-`pmf_2d` combines a distance with an angle. `load_pair_geometries` reads the forming distances and angles
-from an export's `index.jsonl`.
+`pmf_2d` combines a distance with an angle. `MartiniFuncs.chemistry.cpd_n4t.pairs.load_pair_geometries`
+reads the forming distances and angles from an export's `index.jsonl`.
 
 **Caveat:** pair geometries exist only inside the 3.25 Å screen, so their PMF is conditional on being a
 candidate pair. For the full distance dependence, use the species COM RDF.

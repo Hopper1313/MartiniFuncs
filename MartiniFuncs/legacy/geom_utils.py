@@ -1,17 +1,18 @@
-"""Legacy helpers kept for reference only; not used by the package and not maintained.
+"""Legacy helpers kept for compatibility; nothing else in the package imports them.
 
-Superseded by MartiniFuncs.pairs and MartiniFuncs.chemistry.cpd_n4t.
+Superseded by MartiniFuncs.pairs and MartiniFuncs.chemistry.cpd_n4t. They are
+still exercised by the test suite, but new features are not added here.
 """
 from __future__ import annotations
 import numpy as np
 from ase import Atoms
 from ase.geometry import get_distances
 from MartiniFuncs.structure import graph as mfg
+from MartiniFuncs.chemistry.cpd_n4t.model import ADDUCT_SIZE, CPD_SIZE, DIENOPHILE_SIZE
 from MartiniFuncs.chemistry.cpd_n4t.pairs import get_mal_CC
-from MartiniFuncs.structure.molecules import _site_center_of_mass, _subset, add_global_index, get_element_map
+from MartiniFuncs.structure.molecules import _subset, get_element_map
 
 
-@add_global_index
 def get_diels_alder_reaction_indices_from_pair(atoms: Atoms, scale: float = 1.3):
     """Identify the reactive atoms in an isolated CPD + dienophile pair."""
     graph_all = mfg.build_bond_graph(atoms, scale=scale, index_array="global_index")
@@ -26,14 +27,14 @@ def get_diels_alder_reaction_indices_from_pair(atoms: Atoms, scale: float = 1.3)
             f"{[len(m) for m in molecules]}."
         )
 
-    if len(molecules[0]) == 11 and len(molecules[1]) == 23:
+    if len(molecules[0]) == CPD_SIZE and len(molecules[1]) == DIENOPHILE_SIZE:
         cpd_index, n4t_index = 0, 1
-    elif len(molecules[1]) == 11 and len(molecules[0]) == 23:
+    elif len(molecules[1]) == CPD_SIZE and len(molecules[0]) == DIENOPHILE_SIZE:
         cpd_index, n4t_index = 1, 0
     else:
         raise ValueError(
             f"Unexpected molecule sizes, got {[len(m) for m in molecules]}, "
-            "but expected 11 and 23."
+            f"but expected {CPD_SIZE} and {DIENOPHILE_SIZE}."
         )
 
     n4t_atoms = _subset(atoms, molecules[n4t_index])
@@ -105,10 +106,10 @@ def pair_data_to_xyz(data, filename):
                 if values.shape != positions.shape:
                     raise ValueError(f"Cluster {i}: {label} must have shape {positions.shape}")
 
-            cpd_local = data[i].get("cpd_local_indices", [])
-            mal_local = data[i].get("mal_local_indices", [])
-            cpd_global = data[i].get("cpd_global_ids", [])
-            mal_global = data[i].get("mal_global_ids", [])
+            cpd_local = data[i].get("first_local_indices", [])
+            mal_local = data[i].get("second_local_indices", [])
+            cpd_global = data[i].get("first_global_ids", [])
+            mal_global = data[i].get("second_global_ids", [])
             cluster_local = data[i].get(
                 "cluster_local_indices", np.arange(len(positions), dtype=int)
             )
@@ -136,11 +137,11 @@ def align_atoms(mobile, reference, indices=None):
     """Align finite clusters by row correspondence; rotate stored vectors too.
 
     Returns the historical ``(aligned, rmsd)`` tuple. For persistent-ID matching
-    and access to the rotation/translation, use ``geometry.align_geometry``.
+    and access to the rotation/translation, use ``structure.alignment.align_geometry``.
 
     Equal-weight Kabsch fit: minimize sum_i |r_mobile,i @ R+t-r_reference,i|^2
     with det(R)=+1. Return the aligned copy and sqrt(mean squared distance);
-    matching is by row, as delegated to geometry.align_geometry(id_array=None).
+    matching is by row, as delegated to structure.alignment.align_geometry(id_array=None).
     """
     from MartiniFuncs.structure.alignment import align_geometry
 
@@ -148,7 +149,6 @@ def align_atoms(mobile, reference, indices=None):
     return aligned, rmsd
 
 
-@add_global_index
 def get_pairs_distance_distribution(atoms: Atoms, scale: float = 1.3):
     """Return MIC distances between whole-CPD COMs and dienophile C=C COMs.
 
@@ -198,7 +198,7 @@ def _mal_site_centers(atoms: Atoms, graph, mal_components, elements) -> np.ndarr
             raise ValueError(
                 f"Could not identify MAL reactive C=C for component {comp[:5]}..."
             )
-        centers.append(_site_center_of_mass(atoms, graph, comp, mal_cc))
+        centers.append(mfg.component_center_of_mass(atoms, graph, comp, subset=mal_cc))
     return np.asarray(centers)
 
 
@@ -213,8 +213,8 @@ def _reaction_components(atoms: Atoms, scale: float):
         atom_ids=mfg.atom_ids(atoms),
     )
 
-    cpd = [c for c in components if len(c) == 11]
-    mal = [c for c in components if len(c) == 23]
-    product = [c for c in components if len(c) == 34]
-    other = [c for c in components if len(c) not in (11, 23, 34)]
+    cpd = [c for c in components if len(c) == CPD_SIZE]
+    mal = [c for c in components if len(c) == DIENOPHILE_SIZE]
+    product = [c for c in components if len(c) == ADDUCT_SIZE]
+    other = [c for c in components if len(c) not in (CPD_SIZE, DIENOPHILE_SIZE, ADDUCT_SIZE)]
     return graph, components, cpd, mal, product, other

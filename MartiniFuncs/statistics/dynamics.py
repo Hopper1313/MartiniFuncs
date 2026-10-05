@@ -10,6 +10,7 @@ to read the results are in docs/dynamics_diagnostics.md.
 import numpy as np
 from ase import units
 
+from MartiniFuncs._checks import integer
 from MartiniFuncs.statistics import md
 from MartiniFuncs.structure import periodic
 
@@ -45,7 +46,7 @@ def unwrap_nonaffine(wrapped_com, cells, origins, centers=None):
     """TOR trajectory with the cell's affine motion removed at every step.
 
     For each step, the TOR displacement mic(W_t - W_(t-1), H_t) minus
-    md.affine_step: (o_t - o_(t-1)) + s_mid (H_t - H_(t-1)), the motion of a
+    structure.periodic.affine_step: (o_t - o_(t-1)) + s_mid (H_t - H_(t-1)), the motion of a
     point that keeps its fractional coordinates s. Under fix deform this removes
     the imposed streaming flow u(s) = s dH/dt (with s from the box lo corner,
     the SLLOD/remap-v convention); under NPT it removes barostat dilation.
@@ -251,6 +252,7 @@ def nemd_shear_viscosity(pxy_bar, *, shear_rate_per_ps, blocks=10):
     Valid only in the linear-response regime and after the stress reaches
     steady state; at low shear rates the signal may be smaller than the noise.
     """
+    blocks = integer(blocks, "blocks", minimum=2)
     p = np.asarray(pxy_bar, dtype=float)
     if p.ndim != 1 or len(p) < 2 * blocks or not np.isfinite(p).all():
         raise ValueError("Need a finite 1D P_xy series with at least two samples per block")
@@ -310,6 +312,17 @@ def correlation_time(lag_ps, correlation, *, upper_ps=None):
 
 # ----------------------------------------------------------------------------- free energies
 
+def _reference_density(centers, jacobian):
+    """Uniform-reference density J at bin centers: "sin" (angles in degrees), "r2" (radii) or None."""
+    if jacobian == "sin":
+        return np.sin(np.radians(centers))
+    if jacobian == "r2":
+        return centers ** 2
+    if jacobian is None:
+        return np.ones_like(centers)
+    raise ValueError("jacobian must be None, 'sin' or 'r2'")
+
+
 def pmf_from_rdf(r_angstrom, g_r, *, temperature_K):
     """Potential of mean force W(r) = -k_B T ln g(r) (zero where g = 1, the bulk)."""
     g = np.asarray(g_r, dtype=float)
@@ -327,22 +340,15 @@ def pmf_1d(values, *, temperature_K, edges, jacobian=None):
     uniform reference density is proportional to sin(theta); "r2" for a
     radial distance (reference 4 pi r^2); None for no reference. Bins with no
     samples are +inf. This is a free energy only for the sampled ensemble:
-    pair geometries exist only inside the 3.25 Angstrom screen, so it is a
-    conditional PMF there.
+    pair geometries exist only inside the analysis's reactive_radius screen
+    (default 3.25 Angstrom), so it is a conditional PMF there.
     """
     x = np.asarray(values, dtype=float)
     edges = np.asarray(edges, dtype=float)
     counts = np.histogram(x[np.isfinite(x)], bins=edges)[0].astype(float)
     centers = (edges[1:] + edges[:-1]) / 2
     density = counts / max(counts.sum(), 1) / np.diff(edges)
-    if jacobian == "sin":
-        reference = np.sin(np.radians(centers))
-    elif jacobian == "r2":
-        reference = centers ** 2
-    elif jacobian is None:
-        reference = np.ones_like(centers)
-    else:
-        raise ValueError("jacobian must be None, 'sin' or 'r2'")
+    reference = _reference_density(centers, jacobian)
     kt = KB_EV * temperature_K
     with np.errstate(divide="ignore", invalid="ignore"):
         w = -kt * np.log(density / reference)
@@ -353,12 +359,15 @@ def pmf_1d(values, *, temperature_K, edges, jacobian=None):
 
 
 def pmf_2d(x, y, *, temperature_K, x_edges, y_edges, y_jacobian=None):
-    """Two-dimensional W(x, y) = -k_B T ln[P(x, y) / J(y)], min 0 (e.g. distance vs. angle)."""
+    """Two-dimensional W(x, y) = -k_B T ln[P(x, y) / J(y)], min 0 (e.g. distance vs. angle).
+
+    y_jacobian is J for the y variable, as jacobian in pmf_1d ("sin", "r2" or None).
+    """
     x, y = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
     keep = np.isfinite(x) & np.isfinite(y)
     counts = np.histogram2d(x[keep], y[keep], bins=[x_edges, y_edges])[0]
     yc = (np.asarray(y_edges)[1:] + np.asarray(y_edges)[:-1]) / 2
-    reference = np.sin(np.radians(yc)) if y_jacobian == "sin" else np.ones_like(yc)
+    reference = _reference_density(yc, y_jacobian)
     kt = KB_EV * temperature_K
     with np.errstate(divide="ignore", invalid="ignore"):
         w = -kt * np.log(counts / counts.sum() / reference[None, :])
@@ -368,27 +377,3 @@ def pmf_2d(x, y, *, temperature_K, x_edges, y_edges, y_jacobian=None):
     return {"x": (np.asarray(x_edges)[1:] + np.asarray(x_edges)[:-1]) / 2, "y": yc, "counts": counts,
             "pmf_eV": w, "pmf_kJ_mol": w * EV_TO_KJ_MOL}
 
-
-def load_pair_geometries(index_jsonl):
-    """Per-candidate geometry from an export's index.jsonl as arrays.
-
-    Returns frame, time_ps, max_forming_distance and distance_imbalance
-    (Angstrom), axis/plane/approach angles (degrees); NaN where the geometry
-    could not be measured.
-    """
-    import json
-    from pathlib import Path
-    fields = ("frame", "time_ps", "max_forming_distance", "distance_imbalance",
-              "axis_angle", "plane_angle", "approach_angle")
-    rows = {name: [] for name in fields}
-    for line in Path(index_jsonl).read_text(encoding="utf-8").splitlines():
-        record = json.loads(line)
-        g = record.get("geometry")
-        rows["frame"].append(record["frame"])
-        rows["time_ps"].append(record["time_ps"])
-        distances = g["forming_distances"] if g else [np.nan, np.nan]
-        rows["max_forming_distance"].append(max(distances))
-        rows["distance_imbalance"].append(abs(distances[0] - distances[1]))
-        for name in ("axis_angle", "plane_angle", "approach_angle"):
-            rows[name].append(g[name] if g else np.nan)
-    return {name: np.asarray(values, dtype=float) for name, values in rows.items()}
