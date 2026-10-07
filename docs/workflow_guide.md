@@ -4,8 +4,8 @@ This guide is the recommended order of work for a CPD + N4T trajectory, with
 copy-paste examples for every step. The short version:
 
 1. **`run` once per trajectory** (expensive, Slurm, many workers). It reads the
-   dump, collects every CPD/N4T pair inside a generous radius, and writes a
-   reusable **cache**.
+   dump, collects every CPD/N4T pair closer than the collection radius (set it to
+   the largest radius you will ever select), and writes a reusable **cache**.
 2. **Explore the cache in Python** (cheap). Pick the equilibrated frame window
    and the pair thresholds from the data.
 3. **`report` as often as you like** (about a minute each). Statistics,
@@ -66,9 +66,13 @@ Pairs are handled in two stages (details in [pair models](pair_models.md)):
 | 2. Selection | `CpdN4tCriteria(...)` | `--max-*` flags, `--geometry-required`, `select_pairs(...)` | which collected pairs a report, export or calculation **uses** |
 
 The collection radius is the CPD center of mass to the dienophile C=C center of
-mass distance (nearest periodic image). Selection never changes the cache, so
-you can try any thresholds without rereading the dump. You can narrow the
-radius later (`--max-screen-distance`) but never widen it.
+mass distance (nearest periodic image). A cache holds **only** the pairs below
+its collection radius: a 3.75 Angstrom cache contains every pair closer than
+3.75 Angstrom and nothing beyond. From it you can select any radius up to 3.75
+(`--max-screen-distance 3.25`, `3.5`, `3.75`), but never a larger one; a 4.0
+Angstrom selection needs a new `run` at 4.0 Angstrom or more. Selection never
+changes the cache, so every other threshold can be tried without rereading the
+dump.
 
 ---
 
@@ -187,7 +191,7 @@ sbatch postprocess.slurm --max-ring-dihedral-deviation 30 --report-name ring30
 | `--units metal` | LAMMPS unit style of the dump | required; only `metal` is supported for analysis |
 | `--timestep-ps 0.0005` | ps per MD step (not per saved frame) | must match the simulation input |
 | `--workers N --batch-size B` | N local processes, B frames per task | `--workers` may not exceed `SLURM_CPUS_PER_TASK` |
-| `--reactive-radius R` | collection radius, Angstrom (default 3.25) | collect generously (3.75-4.0) and narrow later |
+| `--reactive-radius R` | collection radius, Angstrom (default 3.25); the cache holds only pairs below it | set it to the largest radius you will ever want to select |
 | `--temperature-dof 3N-3` | degrees of freedom for the temperature column | omit to skip temperature |
 | `--no-export-pairs` | skip the structure export pass | recommended; use `extract` later |
 | `--orientations` | also cache each molecule's long axis and ring normal | needed for rotational dynamics; doubles the COM storage |
@@ -199,21 +203,33 @@ sbatch postprocess.slurm --max-ring-dihedral-deviation 30 --report-name ring30
 | `--max-*`, `--geometry-required` | selection for this run's own report/export only | the cache keeps every collected pair regardless |
 | `--startframe`, `--endframe` | frame window for this run's report/export only | the cache always covers all frames read |
 
+### Choosing the collection radius
+
+Pick the **largest** radius you might want to select, because the cache cannot
+hold anything beyond it. The script above collects at 3.75 Angstrom, so its
+cache supports selections at 3.75 Angstrom and below. If you might later want
+4.0 Angstrom, collect at 4.0 Angstrom in the first place. A larger radius only
+costs a bigger candidate table (the 3.75 Angstrom NVT cache held about 4.8
+million pair detections), not a slower `report`.
+
+To go beyond a radius you already collected, run again at the larger radius.
+This is a separate full pass over the dump into its own folder; it does not
+add to the existing cache:
+
+```bash
+python -m MartiniFuncs run ./ --output ./postprocess_v5_4.0cutoff \
+    --units metal --timestep-ps 0.0005 --workers 64 --reactive-radius 4.0 \
+    --temperature-dof 3N-3 --orientations --no-export-pairs
+```
+
 ### Variations
 
-A one-minute preview of a new trajectory (first 2,000 frames, few workers),
+A quick preview of a new trajectory (first 2,000 frames, few workers),
 interactively on a compute node:
 
 ```bash
 srun -n1 -c8 --mem=16G -t 00:30:00 python -m MartiniFuncs run ./ --output ./preview \
     --units metal --timestep-ps 0.0005 --workers 8 --max-frames 2000 --no-export-pairs
-```
-
-Collect even wider (here 4.0 Angstrom) to study 3.25 through 4.0 Angstrom from one cache:
-
-```bash
-python -m MartiniFuncs run ./ --output ./postprocess_v5_4.0cutoff \
-    --units metal --timestep-ps 0.0005 --workers 64 --reactive-radius 4.0 --no-export-pairs
 ```
 
 Keep every 10th frame (smaller cache, coarser lag statistics):
@@ -855,7 +871,7 @@ images), not exo/endo.
 |---|---|
 | change thresholds or narrow the radius | no: `report` / `extract` with selection flags |
 | change the frame window | no: `--startframe` / `--endframe` |
-| widen the collection radius | yes |
+| select a radius larger than the collected one (e.g. 4.0 from a 3.75 cache) | yes, at the larger radius |
 | change `--bond-scale`, `--frame-stride`, `--temperature-dof`, `--orientations` | yes |
 | use a metric added to the code after the cache was made (e.g. ring dihedral) | yes |
 | analyze a new or extended trajectory | yes |
