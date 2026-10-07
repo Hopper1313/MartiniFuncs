@@ -23,6 +23,8 @@ Common entry points are also importable lazily from the top level, e.g.
 
 ## Post-simulation CLI and Slurm
 
+Start with the [workflow guide](docs/workflow_guide.md): the recommended order of
+`run`, Python exploration, `report` and `extract`, with copy-paste examples.
 See the [CLI guide](docs/postprocessing_cli.md) for automatic directory discovery,
 cached molecular statistics, pair/force/shell exports, reusable frame-window reports,
 and Slurm job/job-array templates. Run `python -m MartiniFuncs --help`, or use
