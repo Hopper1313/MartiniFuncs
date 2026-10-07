@@ -340,8 +340,9 @@ def pmf_1d(values, *, temperature_K, edges, jacobian=None):
     uniform reference density is proportional to sin(theta); "r2" for a
     radial distance (reference 4 pi r^2); None for no reference. Bins with no
     samples are +inf. This is a free energy only for the sampled ensemble:
-    pair geometries exist only inside the analysis's reactive_radius screen
-    (default 3.25 Angstrom), so it is a conditional PMF there.
+    pair geometries exist only inside the analysis's collection radius
+    (reactive_radius, 3.25 Angstrom by default for cpd_n4t), so it is a
+    conditional PMF there.
     """
     x = np.asarray(values, dtype=float)
     edges = np.asarray(edges, dtype=float)

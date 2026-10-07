@@ -1,6 +1,7 @@
 """Directory-driven molecular trajectory analysis without precomputed reports."""
 from collections import deque
 from contextlib import ExitStack
+from dataclasses import asdict
 from itertools import islice
 from pathlib import Path
 import re
@@ -13,7 +14,7 @@ from MartiniFuncs.structure import graph
 from MartiniFuncs.statistics import md
 from MartiniFuncs.structure import periodic
 from MartiniFuncs.pairs import candidates as pair_candidates
-from MartiniFuncs.pairs.model import DEFAULT_REACTIVE_RADIUS
+from MartiniFuncs.pairs.model import get_collection, get_pair_model
 from MartiniFuncs.io.lammps import iter_lammps_frames, read_lammps_input_settings
 
 
@@ -55,12 +56,12 @@ def resolve_run_files(directory, *, input_file=None, dump_file=None, data_file=N
 
 def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
                 frame_stride=1, max_frames=None, bond_scale=1.3,
-                degrees_of_freedom=None, compute_pairs=False, pair_criteria=None,
+                degrees_of_freedom=None, compute_pairs=False, pair_collection=None,
                 pair_backend="cached", pair_workers=1, pair_batch_size=32,
                 units=None, timestep_ps=None, units_style=None, type_symbols=None, progress=None,
                 reaction_atom_counts=None, orientations=False, source_range=None,
                 on_topology_change=None, topology_persistence=1, frame_offsets=None,
-                reactive_radius=DEFAULT_REACTIVE_RADIUS, pair_model=None):
+                pair_model=None):
     """Stream a text dump; retain scalar histories and all molecular COM vectors.
 
     max_frames caps source frames read, not retained frames. Molecules are the
@@ -114,16 +115,16 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
 
     pair_model (a registered name or a PairModel; default 'cpd_n4t', see
     pairs.model) supplies the chemistry: which molecules pair, their screen
-    centers, reactive sites and geometry metrics. pair_criteria is that model's
-    PairCriteria (for cpd_n4t, CpdN4tCriteria).
+    centers, reactive sites and geometry metrics.
 
-    reactive_radius (Angstrom, default pairs.model.DEFAULT_REACTIVE_RADIUS = 3.25)
-    is the pair screen between the
-    model's screen centers (cpd_n4t: CPD COM to dienophile C=C COM), minimum
-    image. With compute_pairs, pair_candidates holds every candidate inside it
-    with its measured metrics, so pairs.candidates.select_pairs can later apply
-    any smaller radius or other criteria without rereading the dump; cache with
-    a generous radius to explore.
+    Pairs are collected here and selected later. pair_collection (the model's
+    PairCollection, cpd_n4t: CpdN4tCollection; None: its default) collects
+    every pair whose screen centers (cpd_n4t: CPD COM to dienophile C=C COM)
+    are closer than its reactive_radius (Angstrom, minimum image; 3.25 for
+    cpd_n4t). pairs_by_frame and pair_candidates hold all of them, with their
+    measured metrics; pairs.candidates.select_pairs applies the model's
+    PairCriteria afterwards without rereading the dump. Collect with a generous
+    radius to explore.
 
     When compute_pairs=True, pair_backend='cached' reuses initial molecule/site
     identities and the whole coordinates already reconstructed above. It assumes
@@ -166,14 +167,9 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
     """
     if pair_backend not in {"cached", "reference"}:
         raise ValueError("pair_backend must be 'cached' or 'reference'")
-    if not np.isfinite(reactive_radius) or reactive_radius <= 0:
-        raise ValueError("reactive_radius must be positive and finite")
+    pair_model = get_pair_model(pair_model)
     if compute_pairs:
-        from MartiniFuncs.pairs.model import get_pair_model
-        pair_model = get_pair_model(pair_model)
-        if pair_criteria is not None and not isinstance(pair_criteria, pair_model.criteria_class):
-            raise ValueError(f"pair_criteria must be {pair_model.criteria_class.__name__} for pair model "
-                             f"{pair_model.name!r}")
+        pair_collection = get_collection(pair_model, pair_collection)   # None: the model's default
     if on_topology_change not in {None, "record", "truncate"}:
         raise ValueError("on_topology_change must be None, 'record' or 'truncate'")
     integer(topology_persistence, "topology_persistence")
@@ -321,13 +317,12 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
                     has_velocities=has_velocities, has_forces=has_forces,
                     levels=levels, edges=edges, cutoffs=cutoffs, groups=groups,
                     molecular_masses=molecular_masses, topology=topology,
-                    compute_pairs=compute_pairs, pair_criteria=pair_criteria,
+                    compute_pairs=compute_pairs, pair_collection=pair_collection if compute_pairs else None,
                     pair_model=pair_model.name if compute_pairs else None,
                     frame_stride=frame_stride, bond_scale=bond_scale,
                     degrees_of_freedom=degrees_of_freedom,
                     reaction_atom_counts=reaction_atom_counts,
                     molecule_sizes=np.bincount(groups), check_topology=on_topology_change is not None,
-                    reactive_radius=float(reactive_radius),
                     molecule_index={frozenset(map(int, c)): k for k, c in enumerate(components)},
                     orientations=bool(orientations))
             prepared = getattr(frame, "prepared", None)
@@ -448,10 +443,12 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
             "com_velocity_angstrom_ps":np.asarray(velocities) if has_velocities else None,
             "net_force_eV_angstrom":np.asarray(forces) if has_forces else None,
             "pairs_by_frame":pairs_by_frame if compute_pairs else None,
-            "pair_candidates":(pair_candidates.concatenate(candidates_by_frame, reactive_radius, pair_model)
+            "pair_candidates":(pair_candidates.concatenate(candidates_by_frame, pair_collection.reactive_radius,
+                                                           pair_model)
                                if compute_pairs else None),
             "pair_shifts_by_frame":pair_shifts_by_frame if compute_pairs else None,
-            "pair_analysis": {"model": pair_model.name, "backend": pair_backend, "workers": pair_workers,
+            "pair_analysis": {"model": pair_model.name, "collection": asdict(pair_collection),
+                              "backend": pair_backend, "workers": pair_workers,
                               "batch_size": pair_batch_size} if compute_pairs else None,
             "notices":notices}
 

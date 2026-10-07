@@ -6,8 +6,15 @@ has, and how a placed pair is measured. Everything else is generic and lives
 in MartiniFuncs.pairs: the periodic center-distance screen, candidate caching,
 selection after the fact, lifetimes and structure export.
 
-Each model has a PairCriteria subclass whose fields are thresholds on the
-model's metrics (field metadata "metric"); None disables a threshold.
+A pair analysis has two stages, each with its own settings class:
+
+1. Collection (PairCollection; cpd_n4t: CpdN4tCollection) decides what an
+   analysis measures and caches: every pair whose screen centers are closer
+   than reactive_radius, with all of the model's metrics. It is the only pair
+   setting recorded in a cache.
+2. Selection (PairCriteria; cpd_n4t: CpdN4tCriteria) picks pairs from what was
+   collected: optional upper thresholds on the screen distance and the model's
+   metrics. It never changes a cache; reports and exports apply it.
 
 Models are registered by name. The name is recorded with an analysis, so
 report/extract use the model that produced a cache. Built-in models are
@@ -24,17 +31,35 @@ from types import MappingProxyType
 import numpy as np
 
 DEFAULT_PAIR_MODEL = "cpd_n4t"
-# Default pair screen radius in Angstrom between the model's screen centers
-# (cpd_n4t: CPD COM to dienophile C=C COM), used by every analysis entry point.
-DEFAULT_REACTIVE_RADIUS = 3.25
 
 _REGISTRY: dict = {}
 # Built-in models, imported lazily: name -> "module:attribute".
 _BUILTIN = {"cpd_n4t": "MartiniFuncs.chemistry.cpd_n4t.model:CpdN4tModel"}
 
 
+SCREEN_METRIC = "screen_distance"
+
+
+@dataclass(frozen=True)
+class PairCollection:
+    """Stage 1: what a pair analysis collects and caches.
+
+    Every candidate whose screen centers (the model's screen_atoms, nearest
+    periodic image) are closer than reactive_radius (Angstrom, strict) is
+    measured and stored with all of the model's metrics; later selections can
+    only narrow this set. A model's subclass gives reactive_radius its default,
+    because what the radius means depends on the model's screen centers.
+    """
+    reactive_radius: float
+
+    def __post_init__(self):
+        if (isinstance(self.reactive_radius, (bool, np.bool_)) or self.reactive_radius is None
+                or not np.isfinite(self.reactive_radius) or self.reactive_radius <= 0):
+            raise ValueError("reactive_radius must be positive and finite (Angstrom)")
+
+
 def threshold(metric, *, upper=None, unit="Angstrom", help=None):
-    """A PairCriteria field: an optional upper threshold on one model metric.
+    """A PairCriteria field: an optional upper threshold on one metric.
 
     upper bounds the threshold itself (e.g. 90 for acute angles, in degrees).
     """
@@ -43,14 +68,24 @@ def threshold(metric, *, upper=None, unit="Angstrom", help=None):
 
 @dataclass(frozen=True)
 class PairCriteria:
-    """Base class for a pair model's geometric thresholds (all None: no threshold).
+    """Stage 2: selection of collected pairs (base class; all None selects everything).
 
-    A candidate passes when its geometry was measured and each metric is at or
-    below its non-None threshold; equality passes.
+    Each threshold field is an optional upper bound on one metric; a metric
+    strictly above its bound rejects the pair, equality passes.
+    max_screen_distance narrows the collected reactive_radius (it cannot exceed
+    it). A pair whose geometry could not be measured is rejected when
+    require_geometry is True or any geometric (non-screen) threshold is set.
     """
+    max_screen_distance: float | None = threshold(
+        SCREEN_METRIC, help="screen-center distance; at most the collected reactive_radius")
+    require_geometry: bool = False
 
     def __post_init__(self):
+        if not isinstance(self.require_geometry, (bool, np.bool_)):
+            raise ValueError("require_geometry must be True or False")
         for f in fields(self):
+            if "metric" not in f.metadata:
+                continue
             value = getattr(self, f.name)
             if value is None:
                 continue
@@ -63,18 +98,40 @@ class PairCriteria:
     @classmethod
     def thresholds(cls):
         """{field name: metric name} for every threshold field, in field order."""
-        return {f.name: f.metadata.get("metric", f.name) for f in fields(cls)}
+        return {f.name: f.metadata["metric"] for f in fields(cls) if "metric" in f.metadata}
 
     def active(self):
         """{metric name: threshold} for the non-None thresholds."""
         return {metric: getattr(self, name) for name, metric in self.thresholds().items()
                 if getattr(self, name) is not None}
 
-    def rejection_reasons(self, metrics):
-        """Reasons, in field order, for metrics strictly above their non-None thresholds."""
-        return tuple(f"{name}: {metrics[metric]:.6g} > {getattr(self, name):.6g}"
-                     for name, metric in self.thresholds().items()
-                     if getattr(self, name) is not None and metrics[metric] > getattr(self, name))
+    def requires_geometry(self):
+        """True if unmeasured geometry rejects a pair: require_geometry or any geometric threshold."""
+        return bool(self.require_geometry) or any(metric != SCREEN_METRIC for metric in self.active())
+
+    def rejection_reasons(self, metrics, *, geometry_ok=True, error=None):
+        """Reasons, in field order, why a pair is rejected; () when it is selected.
+
+        metrics maps metric names to values: the model's metrics when the
+        geometry was measured (geometry_ok), plus screen_distance when known.
+        An unmeasured geometry is a reason only if requires_geometry(); error
+        is its message. A threshold whose metric is missing although it should
+        be available raises ValueError rather than passing silently.
+        """
+        reasons = []
+        if not geometry_ok and self.requires_geometry():
+            reasons.append(error or "geometry could not be measured")
+        for name, metric in self.thresholds().items():
+            limit = getattr(self, name)
+            if limit is None:
+                continue
+            if metric not in metrics:
+                if geometry_ok or metric == SCREEN_METRIC:
+                    raise ValueError(f"{name} needs the {metric!r} value, which was not supplied")
+                continue
+            if metrics[metric] > limit:
+                reasons.append(f"{name}: {metrics[metric]:.6g} > {limit:.6g}")
+        return tuple(reasons)
 
 
 class PairModel(ABC):
@@ -86,7 +143,11 @@ class PairModel(ABC):
     roles           identifiers of the two pair members, used in column and
                     field names (e.g. "cpd_molecule", "cpd_shift")
     role_labels     per-atom pair_role labels written in structure exports
-    criteria_class  the PairCriteria subclass with this model's thresholds
+    collection_class
+                    the PairCollection subclass for stage 1 (its reactive_radius
+                    default is this model's screen radius); the base
+                    PairCollection has no default, so a radius is then required
+    criteria_class  the PairCriteria subclass with this model's thresholds (stage 2)
     metric_names    the geometry metrics measure() reports, in column order
     metric_ranges   {metric: (low, high)} histogram ranges for reports
     species         molecular formulas the model expects in a trajectory, or None
@@ -102,6 +163,7 @@ class PairModel(ABC):
     metric_names: tuple
     metric_ranges: dict = MappingProxyType({})   # read-only default; subclasses assign a dict
     species: frozenset | None = None
+    collection_class: type = PairCollection
 
     @abstractmethod
     def classify(self, components, elements):
@@ -149,6 +211,34 @@ class PairModel(ABC):
         # Sent to worker processes by name and class: the worker uses its registered
         # model of that name, or registers a fresh instance of the (importable) class.
         return _restore_pair_model, (self.name, type(self))
+
+
+def get_collection(model=None, collection=None):
+    """The stage-1 PairCollection for a model: collection, or the model's default when None.
+
+    model is a PairModel, a registered name or None (the default model).
+    Raises ValueError when collection is not the model's collection_class, or
+    when None is given and the model's collection has no default radius.
+    """
+    model = get_pair_model(model)
+    cls = model.collection_class
+    if collection is None:
+        try:
+            return cls()
+        except TypeError:
+            raise ValueError(f"Pair model {model.name!r} has no default collection; pass "
+                             f"pair_collection={cls.__name__}(reactive_radius=...)") from None
+    if not isinstance(collection, cls):
+        raise ValueError(f"pair_collection must be {cls.__name__} for pair model {model.name!r}")
+    return collection
+
+
+def default_reactive_radius(model=None):
+    """The model's default collection radius in Angstrom, or None if it has none (for help text)."""
+    try:
+        return get_collection(model).reactive_radius
+    except ValueError:
+        return None
 
 
 def _restore_pair_model(name, cls):

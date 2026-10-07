@@ -3,30 +3,44 @@
 Roles: cyclopentadiene (CPD, C5H6, 11 atoms) is the first member and the
 N4T maleimide dienophile (C11H9NO2, 23 atoms) the second; 34-atom adducts
 take no part. In exported structures the members are labelled "CPD" and
-"MAL" (role_labels; MAL = the maleimide, i.e. the N4T dienophile). Dimerization (CPD+CPD) is ignored: it is not observed
-experimentally.
+"MAL" (role_labels; MAL = the maleimide, i.e. the N4T dienophile).
+Dimerization (CPD+CPD) is ignored: it is not observed experimentally.
 
-Screen: the whole-CPD COM to the dienophile reactive C=C COM.
-Sites: CPD bridge-ended diene termini and its four diene carbons; the
-dienophile C=C and its four ring carbons. Metrics (selection.measure_pair_geometry):
-max_forming_distance, distance_imbalance (Angstrom), axis_angle,
-plane_angle, approach_angle (acute degrees).
+Collection (CpdN4tCollection): every pair whose whole-CPD COM to dienophile
+reactive C=C COM distance (minimum image) is below reactive_radius, default
+3.25 Angstrom, a choice for this Diels-Alder pair. Selection (CpdN4tCriteria):
+optional thresholds on that screen distance and on the metrics below.
+Sites: CPD bridge-ended diene termini, its four diene carbons and the CH2
+bridge carbon; the dienophile C=C, its four ring carbons and the imide N.
+Metrics (selection.measure_pair_geometry): max_forming_distance,
+distance_imbalance (Angstrom), axis_angle, plane_angle, approach_angle (acute
+degrees), ring_dihedral (signed CH2 - termini midpoint - C=C midpoint - N
+dihedral: exo near 0, endo near 180) and ring_dihedral_deviation (degrees from
+the nearest of 0 and 180).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from MartiniFuncs.pairs.model import PairCriteria, PairModel, threshold
+from MartiniFuncs.pairs.model import PairCollection, PairCriteria, PairModel, threshold
 from MartiniFuncs.structure import graph as mfg
 
 CPD_SIZE, DIENOPHILE_SIZE, ADDUCT_SIZE = 11, 23, 34
 
 
 @dataclass(frozen=True)
-class CpdN4tCriteria(PairCriteria):
-    """Optional CPD + N4T thresholds: distances in Angstrom, unsigned acute angles in degrees.
+class CpdN4tCollection(PairCollection):
+    """Stage 1 for CPD + N4T: collect and cache every pair with CPD COM to C=C COM < reactive_radius."""
+    reactive_radius: float = 3.25   # Angstrom
 
-    Thresholds are research choices; none are imposed by default.
+
+@dataclass(frozen=True)
+class CpdN4tCriteria(PairCriteria):
+    """Stage 2 for CPD + N4T: optional thresholds on collected pairs.
+
+    Distances in Angstrom, unsigned acute angles and the dihedral deviation in
+    degrees; inherited max_screen_distance and require_geometry come from
+    PairCriteria. Thresholds are research choices; none are imposed by default.
     """
     max_forming_distance: float | None = threshold(
         "max_forming_distance", help="longer of the two forming C-C distances")
@@ -38,16 +52,22 @@ class CpdN4tCriteria(PairCriteria):
         "plane_angle", upper=90, unit="degrees", help="diene plane vs dienophile ring-carbon plane")
     max_approach_angle: float | None = threshold(
         "approach_angle", upper=90, unit="degrees", help="diene-plane normal vs site separation")
+    max_ring_dihedral_deviation: float | None = threshold(
+        "ring_dihedral_deviation", upper=90, unit="degrees",
+        help="CH2/termini/C=C/N dihedral within this of 0 (exo) or of 180 (endo)")
 
 
 class CpdN4tModel(PairModel):
     name = "cpd_n4t"
     roles = ("cpd", "dienophile")
     role_labels = ("CPD", "MAL")
+    collection_class = CpdN4tCollection
     criteria_class = CpdN4tCriteria
-    metric_names = ("max_forming_distance", "distance_imbalance", "axis_angle", "plane_angle", "approach_angle")
+    metric_names = ("max_forming_distance", "distance_imbalance", "axis_angle", "plane_angle", "approach_angle",
+                    "ring_dihedral", "ring_dihedral_deviation")
     metric_ranges = {"max_forming_distance": (0, 8), "distance_imbalance": (0, 4),
-                     "axis_angle": (0, 90), "plane_angle": (0, 90), "approach_angle": (0, 90)}
+                     "axis_angle": (0, 90), "plane_angle": (0, 90), "approach_angle": (0, 90),
+                     "ring_dihedral": (-180, 180), "ring_dihedral_deviation": (0, 90)}
     species = frozenset({"C5H6", "C11H9NO2"})
 
     def classify(self, components, elements):
@@ -82,4 +102,5 @@ class CpdN4tModel(PairModel):
         return {"max_forming_distance": max(geometry.forming_distances),
                 "distance_imbalance": geometry.distance_imbalance,
                 "axis_angle": geometry.axis_angle, "plane_angle": geometry.plane_angle,
-                "approach_angle": geometry.approach_angle}
+                "approach_angle": geometry.approach_angle, "ring_dihedral": geometry.ring_dihedral,
+                "ring_dihedral_deviation": geometry.ring_dihedral_deviation}

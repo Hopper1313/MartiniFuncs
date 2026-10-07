@@ -40,6 +40,7 @@ behavior; a chosen tolerance is a screening assumption, not a physical constant.
 | [06 Force reproduction](06_reproduce_uma_forces.ipynb) | Full periodic dump, local model, charge/spin, tolerance | UMA reproduction report; begin with one frame |
 | [07 Reaction preparation](07_prepare_reaction_inputs.ipynb) | Your own `cluster.extxyz` from 03 | Frozen-shell ASE structure and row-identified force archive |
 | [08 Diffusion and equilibration](08_diffusion_and_equilibration.ipynb) | Run directory or optional CLI cache; explicit source windows | Diffusive-regime checks, temporal-block uncertainty, scalar equivalence and structural comparisons |
+| [09 Build pairs](09_build_pairs.ipynb) | Nothing (RDKit templates), a trajectory frame, or your own relaxed CPD/N4T; distances, ring dihedrals, plane tilts | CPD + N4T pair structures at the requested geometry, measured; optional `pairs.extxyz` + table |
 
 Only 07 requires a derived structure, and 03 shows exactly how to generate it.
 No notebook requires precomputed reports or bundled research results. Notebook 08

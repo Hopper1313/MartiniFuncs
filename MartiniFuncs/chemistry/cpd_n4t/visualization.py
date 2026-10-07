@@ -84,7 +84,7 @@ def plot_cluster(atoms, *, forces=False, force_array="lammps_forces", force_scal
 
 def plot_pair_geometry(atoms, *, disk_radius=2.0, transparency=0.5,
                        cpd_color="green", dienophile_color="orange",
-                       line_color="blue", scale=1.3, **plot_kwargs):
+                       line_color="blue", scale=1.3, line_style="solid", **plot_kwargs):
     """Plot reactive-plane disks and the line joining the two site midpoints.
 
     Supply an extracted, whole, nonperiodic pair or pair-plus-shell with
@@ -125,7 +125,7 @@ def plot_pair_geometry(atoms, *, disk_radius=2.0, transparency=0.5,
     ids = mfg.atom_ids(atoms)
     roles = atoms.arrays["pair_role"]
     graph = mfg.build_bond_graph(atoms, scale=scale)
-    ends, diene, cc, dienophile_plane = _sites(
+    ends, diene, _, cc, dienophile_plane, _ = _sites(
         atoms, graph, ids[roles == first_label], ids[roles == second_label]
     )
     xyz = dict(zip(ids, atoms.positions))
@@ -138,5 +138,5 @@ def plot_pair_geometry(atoms, *, disk_radius=2.0, transparency=0.5,
              transparency=transparency).plot(fig)
     plt.Disk(dienophile_center, disk_radius, normal=dienophile_normal,
              color=dienophile_color, transparency=transparency).plot(fig)
-    plt.Line([cpd_center, dienophile_center], line_style="dashed", color=line_color).plot(fig)
+    plt.Line([cpd_center, dienophile_center], line_style=line_style, color=line_color).plot(fig)
     return fig

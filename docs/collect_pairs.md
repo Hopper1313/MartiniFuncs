@@ -16,10 +16,11 @@ when necessary. The default stride is **1**, covering every source frame.
 
 Every **accepted CPD/MAL candidate in every retained frame** becomes one pair entry
 and one cluster entry. The same molecular pair in 20 frames produces 20 entries.
-This uses notebook 04's screening: the whole CPD COM must be within 3.25 Å of the
-reactive MAL C=C center under periodic boundaries, followed by geometry validity
-and any optional `--max-*-angle`/distance criteria. It is not every possible CPD×MAL
-combination. Default numerical orientation limits are unset.
+Pairs are collected first: the whole CPD COM must be within `--reactive-radius`
+(default 3.25 Å) of the reactive MAL C=C center under periodic boundaries. Any
+optional selection flags (`--max-*` thresholds, `--geometry-required`) then pick
+which collected pairs are exported; without them every collected pair is. It is
+not every possible CPD×MAL combination. Default numerical orientation limits are unset.
 
 For shell radius R, neighboring atoms within R of any pair atom select their
 whole molecules, using periodic images. Exported coordinates form finite, whole

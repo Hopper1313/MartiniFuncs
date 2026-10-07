@@ -23,26 +23,37 @@ observed experimentally.
 
 | | |
 |---|---|
-| screen | whole-CPD COM to dienophile reactive C=C COM, minimum image (`--reactive-radius`, default 3.25 Angstrom) |
-| sites | CPD diene termini and four diene carbons; dienophile C=C and four ring carbons |
-| metrics | `max_forming_distance`, `distance_imbalance` (Angstrom); `axis_angle`, `plane_angle`, `approach_angle` (acute degrees) |
-| criteria | `CpdN4tCriteria(max_forming_distance, max_distance_imbalance, max_axis_angle, max_plane_angle, max_approach_angle)` |
+| collection | `CpdN4tCollection(reactive_radius=3.25)`: whole-CPD COM to dienophile reactive C=C COM, minimum image (`--reactive-radius`) |
+| sites | CPD diene termini, four diene carbons and the CH2 bridge carbon; dienophile C=C, four ring carbons and the imide N |
+| metrics | `max_forming_distance`, `distance_imbalance` (Angstrom); `axis_angle`, `plane_angle`, `approach_angle` (acute degrees); `ring_dihedral` (signed CH2 - termini midpoint - C=C midpoint - N dihedral, degrees: exo near 0, endo near 180) and `ring_dihedral_deviation` (degrees from the nearest of 0 and 180) |
+| criteria | `CpdN4tCriteria(max_screen_distance, require_geometry, max_forming_distance, max_distance_imbalance, max_axis_angle, max_plane_angle, max_approach_angle, max_ring_dihedral_deviation)` |
 | export labels | `pair_role` = `CPD` / `MAL` / `shell`; columns `cpd_molecule`, `dienophile_molecule`; index field `cpd_shift` |
 
 The equations are in `chemistry/cpd_n4t/selection.py` (`measure_pair_geometry`).
 
-## Criteria
+## Collection and selection
 
-A model's criteria class subclasses `pairs.model.PairCriteria`. Each field is
-an optional upper threshold on one metric, declared with `threshold(metric, ...)`.
+A pair analysis has two stages, each with its own settings class:
 
-A candidate passes when both of these hold:
+1. **Collection** (`pairs.model.PairCollection`; the model's `collection_class`):
+   which pairs an analysis measures and caches. Its `reactive_radius` is the
+   screen between the model's screen centers; the model's subclass gives it a
+   default, because what the radius means depends on the chemistry. It is the
+   only pair setting recorded in a cache.
+2. **Selection** (`pairs.model.PairCriteria`; the model's `criteria_class`):
+   which collected pairs a report, export or `select_pairs` uses. Each field is
+   an optional upper threshold on one metric, declared with
+   `threshold(metric, ...)`. Every model inherits `max_screen_distance` (at most
+   the collected radius) and `require_geometry`.
 
-- its geometry was measured;
-- every non-None threshold is met (`metric <= threshold`; equality passes).
+A collected pair is selected when every non-None threshold is met (`metric <=
+threshold`; equality passes) and, if any geometric threshold is set or
+`require_geometry=True`, its geometry was measured. With no criteria every
+collected pair is used.
 
-The CLI builds one `--max-...` flag per field, with help text from the field
-metadata. A flag that belongs to a different model is refused.
+The CLI builds one `--max-...` flag per threshold field, with help text from the
+field metadata, plus `--geometry-required`. A flag that belongs to a different
+model is refused.
 
 ## Adding a model
 
@@ -50,7 +61,11 @@ Write a `PairModel` subclass and register an instance:
 
 ```python
 from dataclasses import dataclass
-from MartiniFuncs.pairs.model import PairCriteria, PairModel, register_pair_model, threshold
+from MartiniFuncs.pairs.model import PairCollection, PairCriteria, PairModel, register_pair_model, threshold
+
+@dataclass(frozen=True)
+class MyCollection(PairCollection):
+    reactive_radius: float = 4.0                 # Angstrom between screen centers
 
 @dataclass(frozen=True)
 class MyCriteria(PairCriteria):
@@ -60,6 +75,7 @@ class MyModel(PairModel):
     name = "my_pair"
     roles = ("donor", "acceptor")          # column/field names: donor_molecule, donor_shift
     role_labels = ("DON", "ACC")           # per-atom pair_role in exports
+    collection_class = MyCollection
     criteria_class = MyCriteria
     metric_names = ("site_distance",)
     metric_ranges = {"site_distance": (0, 8)}   # report histogram ranges
@@ -79,6 +95,12 @@ class MyModel(PairModel):
 register_pair_model(MyModel())
 ```
 
+The collection's default radius belongs to the model because its meaning
+depends on the model's screen centers (`screen_atoms`): a radius chosen for CPD
+COM to C=C COM says nothing about another reaction. Without a subclass the
+model keeps the base `PairCollection`, which has no default, so every analysis
+must pass `pair_collection=PairCollection(reactive_radius=...)`.
+
 **What the engine guarantees:**
 - pairs are `[first IDs, second IDs]`;
 - the periodic image shift applies to the first member;
@@ -92,3 +114,30 @@ register_pair_model(MyModel())
 
 `tests/test_pair_models.py` runs a toy model through the whole pipeline: both
 backends, workers, selection, and the CLI.
+
+## Building CPD + N4T pairs at a chosen geometry
+
+`MartiniFuncs.chemistry.cpd_n4t.build` makes finite pair structures, for example
+as starting points for reaction or barrier calculations. The N4T template is
+fixed; the CPD is placed as a rigid body:
+
+```python
+from MartiniFuncs.chemistry.cpd_n4t.build import build_pair, rdkit_templates
+
+cpd, n4t = rdkit_templates()        # or templates_from_frame(atoms), or your own relaxed Atoms
+atoms, geometry = build_pair(cpd, n4t, distance=3.0, ring_dihedral=180, plane_angle=15)
+```
+
+- `distance` is the CPD termini midpoint to C=C midpoint distance by default;
+  `distance_kind="max_forming"` or `"screen"` targets the longer forming C...C
+  distance or the analysis screen distance (CPD COM to C=C COM) instead.
+- `ring_dihedral` is the signed CH2 - termini midpoint - C=C midpoint - N dihedral
+  (exo near 0, endo near 180), met exactly.
+- `plane_angle` tilts the CPD ring about its termini axis; positive opens the CH2
+  side away from the N4T. The measured `plane_angle` and `approach_angle` match it
+  to within the templates' non-planarity.
+- `face` picks the N4T face; `min_contact` rejects overlapping structures.
+
+The structure is measured with the same equations as the analysis; the returned
+`geometry` and `atoms.info` (`measured_*`, `min_intermolecular_distance`) report
+what was built. Rows are CPD then N4T, with `global_index` and `pair_role`.

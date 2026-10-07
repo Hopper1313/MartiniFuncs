@@ -74,7 +74,8 @@ class PairSelectionTests(unittest.TestCase):
     def test_ambiguous_connectivity_is_reported(self):
         reports = assess_prereactive_pairs(self.atoms, self.pairs, self.shifts, scale=1.5)
         self.assertIsNone(reports[1].geometry)
-        self.assertIn("bridge", reports[1].reasons[0])
+        self.assertIn("bridge", reports[1].error)
+        self.assertEqual(reports[1].reasons, ())          # no criteria: an unmeasured pair is not rejected
 
     def test_invalid_thresholds_and_lengths(self):
         for kwargs in ({"max_axis_angle": 91}, {"max_forming_distance": -1},

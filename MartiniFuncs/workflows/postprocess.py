@@ -23,7 +23,7 @@ from MartiniFuncs._checks import integer, plain as _plain
 from MartiniFuncs.pairs import lifetimes
 from MartiniFuncs.statistics import md
 from MartiniFuncs.structure import periodic
-from MartiniFuncs.pairs.model import get_pair_model
+from MartiniFuncs.pairs.model import get_collection, get_pair_model
 from MartiniFuncs.trajectory.analysis import (analyze_run, molecular_window_statistics, resolve_run_files,
                                               select_frame_window)
 
@@ -109,8 +109,10 @@ def _analysis_configuration(options):
 
     Filling defaults makes an omitted option and the same value passed
     explicitly produce the same configuration. A PairModel instance is
-    recorded by its registered name. Raises ValueError for values that cannot
-    be stored as JSON, before any analysis runs.
+    recorded by its registered name and the pair collection (stage 1, the only
+    pair setting a cache depends on) by its fields, with the model's default
+    when omitted. Raises ValueError for values that cannot be stored as JSON,
+    before any analysis runs.
     """
     from MartiniFuncs.trajectory.analysis import analyze_run
     parameters = inspect.signature(analyze_run).parameters
@@ -119,10 +121,11 @@ def _analysis_configuration(options):
         raise TypeError(f"Unknown analyze_run options: {sorted(unknown)}")
     config = {name: options.get(name, parameter.default) for name, parameter in parameters.items()
               if name not in _UNRECORDED_OPTIONS}
-    # None, a registered name and a PairModel instance all resolve to the model's name.
+    # None, a registered name and a PairModel instance all resolve to the model's name, and an
+    # omitted collection to that model's default, so equivalent requests share one configuration.
+    config["pair_collection"] = (asdict(get_collection(config["pair_model"], config["pair_collection"]))
+                                 if config["compute_pairs"] else None)
     config["pair_model"] = get_pair_model(config["pair_model"]).name
-    if config.get("pair_criteria") is not None:
-        config["pair_criteria"] = asdict(config["pair_criteria"])
     config = _plain(config)
     try:
         json.dumps(config, allow_nan=False)
@@ -131,14 +134,17 @@ def _analysis_configuration(options):
     return config
 
 
-def cache_analysis(directory, cache_dir, *, units, timestep_ps, pair_criteria=None,
+def cache_analysis(directory, cache_dir, *, units, timestep_ps, pair_collection=None,
                    compute_pairs=True, pair_workers=1, pair_batch_size=32,
                    progress=print, **options):
     """Analyze once or reuse an exactly matching completed cache.
 
     Units/timestep are explicit. Every analyze_run setting is recorded with its
     default filled in (except progress, worker/batch counts and frame offsets).
-    Changing worker/batch count permits reuse; changing selection,
+    pair_collection (stage 1; None: the pair model's default) decides which
+    pairs are collected and stored. Pair selection (PairCriteria) is not part
+    of a cache: write_report/export_pairs apply it. Changing worker/batch count
+    permits reuse; changing the collection or other analysis settings,
     source size/mtime/path, or package source code requires a new cache directory.
     Initial metadata is fixed; partial directories never count as completed.
     On reuse only manifest.json is read before deciding; data load afterwards.
@@ -158,7 +164,7 @@ def cache_analysis(directory, cache_dir, *, units, timestep_ps, pair_criteria=No
                               require_input=False)
     # Resolution is captured separately; filenames need not match spelling on reuse.
     config = _analysis_configuration(dict(options, units=units, timestep_ps=timestep_ps,
-                                          compute_pairs=compute_pairs, pair_criteria=pair_criteria))
+                                          compute_pairs=compute_pairs, pair_collection=pair_collection))
     software = _software()
     fingerprints = _fingerprints(files)
     if cache_dir.exists():
@@ -170,7 +176,7 @@ def cache_analysis(directory, cache_dir, *, units, timestep_ps, pair_criteria=No
             progress(f"Reusing completed cache: {cache_dir}")
         return load_analysis_cache(cache_dir)
     result = analyze_run(directory, units=units, timestep_ps=timestep_ps, compute_pairs=compute_pairs,
-                         pair_criteria=pair_criteria, pair_workers=pair_workers,
+                         pair_collection=pair_collection, pair_workers=pair_workers,
                          pair_batch_size=pair_batch_size, progress=progress, **options)
     if _fingerprints(files) != fingerprints:
         raise ValueError("Simulation files changed during analysis; cache is incomplete. Wait for MD to finish.")
@@ -366,13 +372,13 @@ def write_report(cache_dir, output_dir, *, startframe=0, endframe=None,
                  max_lag_ps=100., fit_interval_ps=None, max_gap_frames=0,
                  stability=False, rdf_bins=None, lag_statistics=None,
                  pair_lifetimes=True, frame_summary=True, progress=None, preloaded=None,
-                 reactive_radius=None, pair_criteria=None):
+                 criteria=None):
     """Compute a source-frame-window report from cached molecular data.
 
-    reactive_radius (Angstrom, at most the cached radius) and pair_criteria
-    (PairCriteria) select pairs from the cached candidates for the lifetimes,
-    the per-frame selected_pairs column and pair_metric_histograms.csv; see
-    pairs.candidates.select_pairs. Neither means the analysis's own pairs.
+    criteria (the cache's pair model's PairCriteria; stage 2) selects pairs
+    from the collected candidates for the lifetimes, the per-frame
+    selected_pairs column and pair_metric_histograms.csv; see
+    pairs.candidates.select_pairs. None uses every collected pair.
 
     startframe is inclusive and endframe exclusive, both zero-based source dump
     indices (not retained-row indices or timesteps). Defaults select the full
@@ -404,8 +410,7 @@ def write_report(cache_dir, output_dir, *, startframe=0, endframe=None,
                   max_lag_ps=max_lag_ps, fit_interval_ps=fit_interval_ps,
                   max_gap_frames=max_gap_frames, stability=stability, rdf_bins=rdf_bins, software=_software())
     config.update(lag_statistics=requested, pair_lifetimes=pair_lifetimes, frame_summary=frame_summary,
-                  reactive_radius=reactive_radius,
-                  pair_criteria=asdict(pair_criteria) if pair_criteria is not None else None)
+                  criteria=asdict(criteria) if criteria is not None else None)
     from MartiniFuncs.pairs.candidates import candidate_mask, metric_histograms, select_pairs
     # Check completed reports before selecting pairs or computing statistics.
     output = Path(output_dir).expanduser().resolve()
@@ -414,9 +419,8 @@ def write_report(cache_dir, output_dir, *, startframe=0, endframe=None,
         if progress:
             progress(f'Reusing completed report: {completed}')
         return completed
-    selection = reactive_radius is not None or pair_criteria is not None
-    selected_pairs = (select_pairs(result, reactive_radius=reactive_radius, criteria=pair_criteria)[0]
-                      if result["pairs_by_frame"] is not None else None)
+    selection = criteria is not None
+    selected_pairs = select_pairs(result, criteria)[0] if result["pairs_by_frame"] is not None else None
     if progress:
         progress(f"Report selection: lag statistics={requested or 'none'}, pair lifetimes={pair_lifetimes}, frame summary={frame_summary}")
     window = molecular_window_statistics(result, startframe=startframe, endframe=endframe,
@@ -462,11 +466,7 @@ def write_report(cache_dir, output_dir, *, startframe=0, endframe=None,
     if candidates is not None:
         # Distributions of the selected candidates inside this frame window.
         in_window = np.repeat(window["frame_mask"], np.diff(candidates["offsets"]))
-        if not selection and result["pairs_by_frame"] is not None:
-            # No report selection: describe the analysis's own accepted pairs.
-            mask = in_window & candidate_mask(candidates, criteria=_analysis_criteria(result, source))
-        else:
-            mask = in_window & candidate_mask(candidates, reactive_radius=reactive_radius, criteria=pair_criteria)
+        mask = in_window & candidate_mask(candidates, criteria)
         _csv(output / "pair_metric_histograms.csv", metric_histograms(candidates, mask),
              fields=["metric", "bin_low", "bin_high", "count"])
     if pair_lifetimes and result["pairs_by_frame"] is not None:
@@ -542,7 +542,7 @@ def _export_identity(records, frame, first_structure, time_ps):
 
 
 def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endframe=None, progress=print,
-                 workers=1, batch_size=32, preloaded=None, reactive_radius=None, pair_criteria=None):
+                 workers=1, batch_size=32, preloaded=None, criteria=None):
     """Stream selected cached encounters into pair/shell Extended XYZ and an index.
 
     Select source frames in [startframe, endframe), defaulting to the entire
@@ -562,8 +562,9 @@ def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endf
     Pairs whose molecules are no longer separate components in a frame (e.g.
     after a reaction) are exported with membership_changed=true in index.jsonl
     and counted in the manifest; they never abort the export.
-    reactive_radius / pair_criteria export only the pairs selected from the
-    cached candidates (pairs.candidates.select_pairs); default: cached pairs.
+    criteria (the cache's pair model's PairCriteria) exports only the pairs it
+    selects from the collected candidates (pairs.candidates.select_pairs);
+    None exports every collected pair.
     Only selected frames are parsed (each from its own byte range), using
     frame offsets saved in the cache after the first export.
     preloaded=(result, manifest) skips reading the cache again.
@@ -580,11 +581,10 @@ def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endf
     keep = select_frame_window(result, startframe=startframe, endframe=endframe)
     config = dict(cache=str(Path(cache_dir).resolve()), source=source, shell_radius=shell_radius,
                   startframe=startframe, endframe=endframe, software=_software())
-    if reactive_radius is not None or pair_criteria is not None:
-        config.update(reactive_radius=reactive_radius,
-                      pair_criteria=asdict(pair_criteria) if pair_criteria is not None else None)
+    if criteria is not None:
+        config.update(criteria=asdict(criteria))
     from MartiniFuncs.pairs.candidates import select_pairs
-    chosen_pairs, chosen_shifts = select_pairs(result, reactive_radius=reactive_radius, criteria=pair_criteria)
+    chosen_pairs, chosen_shifts = select_pairs(result, criteria)
     output, create = _begin_product(output_dir, config)
     if not create:
         return output
@@ -661,12 +661,6 @@ def _pair_model(result):
     return get_pair_model((result.get("pair_analysis") or {}).get("model"))
 
 
-def _analysis_criteria(result, source):
-    """The analysis's own pair criteria (the model's PairCriteria), or None."""
-    criteria = source["configuration"].get("pair_criteria")
-    return None if criteria is None else _pair_model(result).criteria_class(**criteria)
-
-
 def _export_frame_chunk(task):
     """Parse, validate, build shells and serialize one independent source chunk.
 
@@ -724,7 +718,8 @@ def _export_frame_chunk(task):
                     record = dict(structure_index=count, frame=frame.index, timestep=frame.timestep,
                                   time_ps=row["time_ps"], candidate=candidate, pair_atom_ids=pair,
                                   **{f"{model.roles[0]}_shift": shift}, geometry=asdict(assessment.geometry) if assessment.geometry else None,
-                                  geometry_errors=assessment.reasons, membership_changed=changed[candidate])
+                                  geometry_errors=(assessment.error,) if assessment.error else (),
+                                  membership_changed=changed[candidate])
                     index_stream.write(json.dumps(_plain(record), allow_nan=False) + "\n")
                     count += 1
     return (pair_stream.getvalue(), cluster_stream.getvalue() if cluster_stream is not None else None,

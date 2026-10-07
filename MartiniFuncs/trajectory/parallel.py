@@ -213,16 +213,15 @@ def prepare_frame(frame, context):
         from MartiniFuncs.pairs.candidates import frame_candidates
         from MartiniFuncs.pairs.model import get_pair_model
         model = get_pair_model(context.get('pair_model'))
-        radius = context['reactive_radius']
+        collection = context['pair_collection']
+        # Stage 1 only: every collected pair, measured; selection happens later from the cache.
         if context['topology'] is not None:
             pairs, shifts, _, rows = context['topology'].evaluate(
-                whole, atoms.cell.array, atoms.pbc, criteria=context['pair_criteria'],
-                reactive_radius=radius, candidates=True)
+                whole, atoms.cell.array, atoms.pbc, collection=collection, candidates=True)
         else:
             from MartiniFuncs.pairs.assessment import screen_frame
             pairs, shifts, found = screen_frame(
-                atoms, model, scale=context['bond_scale'], criteria=context['pair_criteria'],
-                reactive_radius=radius, return_candidates=True)
+                atoms, model, scale=context['bond_scale'], collection=collection, return_candidates=True)
             index = context['molecule_index']
             rows = [(index.get(frozenset(map(int, first)), -1), index.get(frozenset(map(int, second)), -1), shift,
                      model.metric_row(distance, geometry)) for (first, second), shift, distance, geometry in found]

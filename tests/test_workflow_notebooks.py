@@ -131,6 +131,36 @@ class WorkflowNotebookTests(unittest.TestCase):
             self.assertEqual(validate.call_args.kwargs["units"],"metal")
             self.assertEqual(validate.call_args.kwargs["task"],"omol")
 
+    def test_pair_builder_scan_and_export(self):
+        try:
+            import rdkit  # noqa: F401
+        except ImportError:
+            self.skipTest("RDKit is not installed")
+        output = self.directory/"built"
+        built,_ = self.run_notebook("09_build_pairs.ipynb", OUTPUT_DIR=output, WRITE_FILES=True,
+                                    DISTANCES=[1.0, 3.0], RING_DIHEDRALS=[0.0, 180.0, -60.0],
+                                    PLANE_ANGLES=[0.0, 20.0], MIN_CONTACT=1.0)
+        table = built["table"]
+        self.assertEqual(len(table), 12)
+        self.assertTrue((~table["kept"] & table["reason"].str.contains("min_contact")).any())   # 1 Angstrom overlaps
+        kept = table[table["kept"]]
+        np.testing.assert_allclose(kept["center_separation"], kept["requested_distance"], atol=1e-9)
+        wrapped = (kept["requested_ring_dihedral"] + 180) % 360 - 180
+        np.testing.assert_allclose(np.cos(np.radians(kept["ring_dihedral"] - wrapped)), 1., atol=1e-12)
+        frames = read(output/"pairs.extxyz", index=":")
+        self.assertEqual(len(frames), len(kept))
+        self.assertEqual(set(frames[0].arrays["pair_role"]), {"CPD", "MAL"})
+        self.assertAlmostEqual(frames[-1].info["measured_ring_dihedral"], kept["ring_dihedral"].iloc[-1], places=6)
+        self.assertTrue((output/"pairs.csv").is_file() and (output/"configuration.json").is_file())
+        with self.assertRaises(FileExistsError):
+            self.run_notebook("09_build_pairs.ipynb", OUTPUT_DIR=output, WRITE_FILES=True)
+        # Templates from a trajectory frame, and a different distance definition.
+        framed,_ = self.run_notebook("09_build_pairs.ipynb", TEMPLATE_SOURCE="frame",
+                                     TEMPLATE_FRAME_FILE=self.directory/"trajectory.lammpstrj",
+                                     DISTANCE_KIND="max_forming", DISTANCES=[3.2], RING_DIHEDRALS=[180.0],
+                                     PLANE_ANGLES=[10.0])
+        np.testing.assert_allclose(framed["table"]["max_forming_distance"], [3.2], atol=1e-9)
+
 
 if __name__ == "__main__":
     unittest.main()

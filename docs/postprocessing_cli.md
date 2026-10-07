@@ -87,32 +87,38 @@ Use `--input-file`, `--dump-file`, or `--data-file` when several files match.
 Units and timestep are mandatory; temperature DOF is explicit and optional.
 `--type-symbols types.json` supplies mappings when required by the dump format.
 
-### Choosing pairs after the analysis: reactive radius and CpdN4tCriteria
+### Pairs in two stages: collection, then selection
 
 The pair chemistry comes from a pair model (`--pair-model`, default `cpd_n4t`;
-see [pair models](pair_models.md)). The `--max-*` flags are the model's criteria.
-The analysis caches every CPD/dienophile candidate inside `--reactive-radius`.
-The screen distance is CPD COM to dienophile C=C COM, minimum image (default
-3.25 Angstrom). Each candidate is stored with its measured geometry: max forming
-distance, distance imbalance, axis/plane/approach angles, and whether the
-geometry could be measured. `report` and `extract` can then select pairs without
-rereading the dump:
+see [pair models](pair_models.md)).
+
+1. **Collection** (`run`/`collect`, `--reactive-radius`): every CPD/dienophile
+   pair whose screen distance (CPD COM to dienophile C=C COM, minimum image) is
+   below the radius (default 3.25 Angstrom) is measured and cached with its
+   geometry: forming distances and imbalance, axis/plane/approach angles, the
+   ring dihedral and whether the geometry could be measured. The collection is
+   the only pair setting the cache depends on.
+2. **Selection** (the `--max-*` flags and `--geometry-required`): picks pairs
+   from what was collected. On `run`/`collect` it only shapes the report and
+   export written by that command; `report` and `extract` re-select from the
+   cache, so changing thresholds never requires rereading the dump.
 
 ```sh
-# cache once with a generous radius
-python -m MartiniFuncs run RUN_DIR --output ANALYSIS --units metal --timestep-ps 0.0005     --reactive-radius 4.0 --no-export-pairs
-# recompute counts, distributions and lifetimes for any radius / thresholds
-python -m MartiniFuncs report ANALYSIS/cache --output R3p0 --reactive-radius 3.0
-python -m MartiniFuncs report ANALYSIS/cache --output R3p5_axis30 --reactive-radius 3.5 --max-axis-angle 30
+# collect once with a generous radius
+python -m MartiniFuncs run RUN_DIR --output ANALYSIS --units metal --timestep-ps 0.0005 --reactive-radius 4.0 --no-export-pairs
+# recompute counts, distributions and lifetimes for any selection
+python -m MartiniFuncs report ANALYSIS/cache --output R3p0 --max-screen-distance 3.0
+python -m MartiniFuncs report ANALYSIS/cache --output R3p5_axis30 --max-screen-distance 3.5 --max-axis-angle 30
 # export structures for one selection
-python -m MartiniFuncs extract ANALYSIS/cache --output PAIRS_R3p0 --reactive-radius 3.0 --shell-radius 3
+python -m MartiniFuncs extract ANALYSIS/cache --output PAIRS_R3p0 --max-screen-distance 3.0 --shell-radius 3
 ```
 
 **Selection rules:**
-- A radius is at most the cached radius; a larger one is refused.
-- Any `--max-*` threshold (or `--geometry-required`) requires measurable geometry
-  and rejects values strictly above the threshold, exactly as in the analysis.
-- With no selection options, the analysis's own pairs are used.
+- `--max-screen-distance` is at most the collected radius; a larger one is refused.
+- Each `--max-*` threshold rejects values strictly above it (equality passes).
+- A pair whose geometry could not be measured is rejected when any geometric
+  threshold is set, or with `--geometry-required`.
+- With no selection options, every collected pair is used.
 
 **What a selected report contains:**
 - pair lifetimes for the selection;
@@ -121,13 +127,15 @@ python -m MartiniFuncs extract ANALYSIS/cache --output PAIRS_R3p0 --reactive-rad
   each geometry metric.
 
 **From Python:**
-- `pairs.candidates.select_pairs(result, reactive_radius=..., criteria=...)` returns
-  the per-frame pairs in the usual format.
+- `pairs.candidates.select_pairs(result, CpdN4tCriteria(...))` returns the
+  per-frame pairs in the usual format; `analyze_run(pair_collection=CpdN4tCollection(reactive_radius=...))`
+  sets the collection.
 - `pairs.candidates.candidate_table(result)` returns every candidate as a pandas
   DataFrame.
 
-A selected radius gives exactly the pairs a fresh analysis at that radius would
-find (tested).
+Selecting `--max-screen-distance R` from a wider collection gives exactly the
+pairs collected at radius R, and the same criteria select the same pairs from
+either (tested).
 
 **Cost of a wider cache.** A larger cached radius measures more candidates. On the
 2.5 GPa system:
@@ -180,7 +188,10 @@ By default, this command:
    the report and these exports; without bounds, all cached frames are used.
 
 `--max-axis-angle 45`, `--max-plane-angle`, `--max-approach-angle`,
-`--max-forming-distance`, and `--max-distance-imbalance` enable optional thresholds.
+`--max-forming-distance`, `--max-distance-imbalance` and `--max-ring-dihedral-deviation`
+enable optional thresholds. `--max-ring-dihedral-deviation 30` keeps pairs whose
+CH2 - termini midpoint - C=C midpoint - imide N dihedral is within 30 degrees of
+0 (exo) or of 180 (endo); the signed dihedral is stored as `ring_dihedral`.
 Angles are degrees; distances are Angstrom. These are screening choices, not TS
 predictions. Pair chemistry comes from `--pair-model` (only `cpd_n4t` is built
 in; [pair models](pair_models.md) explains how to add one). Use **`--no-pairs`**
@@ -269,9 +280,10 @@ result, provenance = load_analysis_cache("/scratch/my_run_analysis/cache")
 window = molecular_window_statistics(result, startframe=1500, endframe=2000, max_lag_ps=50)
 ```
 
-Changing pair criteria, bond scale, units, timestep, or frame sampling requires a
-new cache/output directory. A stricter or looser criterion can change lifetimes;
-this implementation does not silently filter previously filtered candidates.
+Changing the collection radius, bond scale, units, timestep, or frame sampling
+requires a new cache/output directory. Selection thresholds do not: a `run` with
+other `--max-*` flags reuses the matching cache, and `report`/`extract` select
+from it directly. A stricter or looser selection can change lifetimes.
 An identical `run` command reuses a matching completed cache. For another report
 through `run`, supply a new `--report-name`. `report` is the simpler route.
 

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from MartiniFuncs.pairs.assessment import PairAssessment
-from MartiniFuncs.pairs.model import DEFAULT_REACTIVE_RADIUS, get_pair_model
+from MartiniFuncs.pairs.model import SCREEN_METRIC, get_collection, get_pair_model
 from MartiniFuncs.pairs.screening import pairs_from_centers
 
 
@@ -69,20 +69,20 @@ class FixedPairTopology:
                    [sites(c, 0) for c in members[0]], [sites(c, 1) for c in members[1]],
                    indices[0], indices[1])
 
-    def evaluate(self, whole, cell, pbc, *, criteria=None, reactive_radius=DEFAULT_REACTIVE_RADIUS, candidates=False):
-        """Return selected pairs, shifts and candidate assessments for one frame.
+    def evaluate(self, whole, cell, pbc, *, collection=None, criteria=None, candidates=False):
+        """Return one frame's pairs, shifts and candidate assessments (collect, then select).
 
         Screen centers are sum(m_i*r_i)/sum(m_i) over each molecule's screen atoms
-        in whole (Angstrom), with the same image search as screen_frame. With
-        criteria, the model measures each screened pair and the criteria reject
-        metrics above their thresholds; assessments precede filtering.
-        criteria=None skips geometry checks and returns an empty assessment list.
-        candidates=True also measures every screened pair and returns a fourth
-        value: rows (first_molecule, second_molecule, shift, metrics) for
-        pairs.candidates.frame_candidates, independent of criteria.
+        in whole (Angstrom), with the same image search as screen_frame; the
+        collection (None: the model's default) sets the radius. With criteria,
+        the model measures each collected pair and the criteria select from them
+        exactly as pairs.candidates.select_pairs; assessments precede filtering.
+        criteria=None returns every collected pair and, unless candidates, an
+        empty assessment list. candidates=True also measures every collected
+        pair and returns a fourth value: rows (first_molecule, second_molecule,
+        shift, metrics) for pairs.candidates.frame_candidates.
         """
-        if not np.isfinite(reactive_radius) or reactive_radius <= 0:
-            raise ValueError("reactive_radius must be positive and finite")
+        reactive_radius = get_collection(self.model, collection).reactive_radius
         whole = np.asarray(whole, dtype=float)
         if whole.shape != (len(self.masses), 3) or not np.isfinite(whole).all():
             raise ValueError("whole must be finite coordinates in initial atom-row order")
@@ -94,22 +94,25 @@ class FixedPairTopology:
         if criteria is None and not candidates:
             return pairs, shifts, []
         model = self.model
-        measure = criteria if criteria is not None else model.criteria_class()
         first_index = {tuple(c): i for i, c in enumerate(self.first)}
         second_index = {tuple(c): i for i, c in enumerate(self.second)}
         assessments, rows = [], []
         for index, ((first, second), shift) in enumerate(zip(pairs, shifts)):
             a, b = first_index[tuple(first)], second_index[tuple(second)]
+            geometry = error = None
             try:
                 fs, ss = self.first_sites[a], self.second_sites[b]
                 if isinstance(fs, str) or isinstance(ss, str):
                     raise ValueError(fs if isinstance(fs, str) else ss)
                 geometry = model.measure(first, whole[self.first_rows[a]] + np.asarray(shift) @ cell,
                                          second, whole[self.second_rows[b]], fs, ss, self.rows)
-                reasons = measure.rejection_reasons(model.metrics(geometry))
             except ValueError as exc:
-                geometry, reasons = None, (str(exc),)
-            assessments.append(PairAssessment(index, geometry, reasons))
+                error = str(exc)
+            metrics = dict(model.metrics(geometry)) if geometry is not None else {}
+            metrics[SCREEN_METRIC] = float(distances[index])
+            reasons = (criteria.rejection_reasons(metrics, geometry_ok=geometry is not None, error=error)
+                       if criteria is not None else ())
+            assessments.append(PairAssessment(index, geometry, reasons, error))
             rows.append((self.first_molecules[a], self.second_molecules[b], shift,
                          model.metric_row(distances[index], geometry)))
         if criteria is None:

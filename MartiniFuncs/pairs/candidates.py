@@ -1,22 +1,22 @@
-"""Cached pair candidates and selection with any reactive radius / PairCriteria after the fact.
+"""Collected pair candidates (stage 1) and selection from them (stage 2).
 
-analyze_run(compute_pairs=True) stores every pair candidate inside its
-reactive_radius (the pair model's center-distance screen, minimum image), with
-the model's measured geometry metrics. select_pairs then applies a smaller
-radius and/or any of the model's PairCriteria thresholds to those candidates,
-so pair counts, distributions and lifetimes can be recomputed without
-rereading the dump.
+analyze_run(compute_pairs=True) collects every pair inside its PairCollection's
+reactive_radius (the pair model's center-distance screen, minimum image) and
+stores it with the model's measured metrics. select_pairs applies a model's
+PairCriteria (a smaller max_screen_distance and/or geometric thresholds) to
+those candidates, so pair counts, distributions and lifetimes can be recomputed
+for any selection without rereading the dump.
 
 Candidate arrays (one row per candidate, frames delimited by offsets):
   offsets (frames+1), molecules (n, 2) [first, second member] indices into
   molecule_atom_ids (-1 if the molecule is not an initial molecule), shifts
   (n, 3) first-member periodic image shift, and metrics (n, k) with columns
   metric_columns(candidates): screen_distance, the model's metric_names, geometry_ok.
-The dict also records reactive_radius and the pair model name.
+The dict also records the collected reactive_radius and the pair model name.
 """
 import numpy as np
 
-from MartiniFuncs.pairs.model import get_pair_model
+from MartiniFuncs.pairs.model import PairCriteria, get_pair_model
 
 
 def metric_columns(candidates_or_model):
@@ -40,7 +40,7 @@ def frame_candidates(rows, model=None):
 
 
 def concatenate(per_frame, radius, model=None):
-    """Join per-frame candidate dicts into the stored (offsets, molecules, shifts, metrics) form."""
+    """Join per-frame candidate dicts into the stored form; radius is the collected reactive_radius."""
     model = get_pair_model(model)
     counts = [len(c["molecules"]) for c in per_frame]
     empty = frame_candidates([], model)
@@ -52,24 +52,28 @@ def concatenate(per_frame, radius, model=None):
             "metric_names": list(model.metric_names)}
 
 
-def candidate_mask(candidates, *, reactive_radius=None, criteria=None):
-    """Boolean mask over all candidate rows for a selection.
+def candidate_mask(candidates, criteria=None):
+    """Boolean mask over all candidate rows for a selection (criteria None: all rows).
 
-    screen_distance < reactive_radius (strict, as in the screen). With criteria
-    (the model's PairCriteria, possibly all None): the geometry must have been
-    measured, and each non-None threshold rejects values strictly above it
-    (equality passes), exactly as PairCriteria.rejection_reasons.
+    Exactly PairCriteria.rejection_reasons, vectorized: each non-None threshold
+    rejects values strictly above it (equality passes); unmeasured geometry is
+    rejected only when criteria.requires_geometry(). max_screen_distance may
+    not exceed the collected reactive_radius.
     """
     metrics = np.asarray(candidates["metrics"])
     column = {name: metrics[:, i] for i, name in enumerate(metric_columns(candidates))}
     keep = np.ones(len(metrics), dtype=bool)
-    if reactive_radius is not None:
-        cached = candidates["reactive_radius"]
-        if not 0 < reactive_radius <= cached:
-            raise ValueError(f"reactive_radius must be in (0, {cached:g}] Angstrom, the radius cached by the analysis")
-        keep &= column["screen_distance"] < reactive_radius
     if criteria is not None:
-        keep &= column["geometry_ok"] > 0
+        model = get_pair_model(candidates.get("model"))
+        if not isinstance(criteria, model.criteria_class) and type(criteria) is not PairCriteria:
+            raise ValueError(f"criteria must be {model.criteria_class.__name__} (or the generic PairCriteria) "
+                             f"for candidates of pair model {model.name!r}")
+        collected = candidates["reactive_radius"]
+        if criteria.max_screen_distance is not None and criteria.max_screen_distance > collected:
+            raise ValueError(f"max_screen_distance must be at most {collected:g} Angstrom, "
+                             "the reactive_radius collected by the analysis")
+        if criteria.requires_geometry():
+            keep &= column["geometry_ok"] > 0
         for metric, threshold in criteria.active().items():
             if metric not in column:
                 raise ValueError(f"{type(criteria).__name__} thresholds metric {metric!r}, "
@@ -78,22 +82,22 @@ def candidate_mask(candidates, *, reactive_radius=None, criteria=None):
     return keep
 
 
-def select_pairs(result, *, reactive_radius=None, criteria=None):
-    """Per-frame (pairs, shifts) for a selection, in the cached pairs' format.
+def select_pairs(result, criteria=None):
+    """Per-frame (pairs, shifts) selected by criteria (the model's PairCriteria), in the cached format.
 
-    With neither option, returns the analysis's own pairs_by_frame and
-    pair_shifts_by_frame (its radius and criteria). Otherwise the selection
-    starts from all cached candidates, so it can be looser or stricter than the
-    analysis criteria, but never wider than the cached radius. Pair order within
-    a frame is screen distance, then molecule indices, as in the screen.
+    criteria=None returns every collected pair (pairs_by_frame and
+    pair_shifts_by_frame). Otherwise the selection applies criteria to the
+    cached candidates; max_screen_distance cannot exceed the collected radius.
+    Pair order within a frame is screen distance, then molecule indices, as in
+    the screen.
     """
-    if reactive_radius is None and criteria is None:
+    if criteria is None:
         return result["pairs_by_frame"], result["pair_shifts_by_frame"]
     candidates = result.get("pair_candidates")
     if candidates is None:
         raise ValueError("This cache has no pair candidates (made without pairs, or by a version that did not "
-                         "store candidates); rerun the analysis to select pairs by radius/criteria")
-    keep = candidate_mask(candidates, reactive_radius=reactive_radius, criteria=criteria)
+                         "store candidates); rerun the analysis to select pairs with criteria")
+    keep = candidate_mask(candidates, criteria)
     if np.any(candidates["molecules"][keep] < 0):
         raise ValueError("Selected candidates include molecules that are not initial molecules")
     ids = [list(map(int, m)) for m in result["molecule_atom_ids"]]
@@ -106,8 +110,8 @@ def select_pairs(result, *, reactive_radius=None, criteria=None):
     return pairs, shifts
 
 
-def candidate_table(result, *, reactive_radius=None, criteria=None):
-    """All cached candidates (optionally only a selection) as a pandas DataFrame.
+def candidate_table(result, criteria=None):
+    """All collected candidates (optionally only a selection by criteria) as a pandas DataFrame.
 
     Columns: frame, time_ps, <role>_molecule for the model's two roles (for
     cpd_n4t: cpd_molecule, dienophile_molecule), shift_x/y/z and the metric
@@ -129,8 +133,8 @@ def candidate_table(result, *, reactive_radius=None, criteria=None):
                           "shift_z": candidates["shifts"][:, 2],
                           **{name: candidates["metrics"][:, i]
                              for i, name in enumerate(metric_columns(candidates))}})
-    if reactive_radius is not None or criteria is not None:
-        table = table[candidate_mask(candidates, reactive_radius=reactive_radius, criteria=criteria)]
+    if criteria is not None:
+        table = table[candidate_mask(candidates, criteria)]
     return table.reset_index(drop=True)
 
 

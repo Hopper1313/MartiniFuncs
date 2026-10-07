@@ -11,7 +11,8 @@ from MartiniFuncs.structure import graph
 from MartiniFuncs.pairs import lifetimes
 from MartiniFuncs.chemistry.cpd_n4t.pairs import get_all_prereactive_pairs
 from MartiniFuncs.io.lammps import iter_lammps_frames, read_lammps_frame
-from MartiniFuncs.chemistry.cpd_n4t import CpdN4tCriteria
+from MartiniFuncs.chemistry.cpd_n4t import CpdN4tCollection, CpdN4tCriteria
+from MartiniFuncs.pairs.candidates import select_pairs
 from MartiniFuncs.chemistry.cpd_n4t.selection import assess_prereactive_pairs
 from MartiniFuncs.trajectory.analysis import analyze_run
 from MartiniFuncs.pairs.topology import FixedPairTopology
@@ -42,9 +43,10 @@ class TrajectoryPairTests(unittest.TestCase):
         topology = FixedPairTopology.from_frame(atoms, bonded, components)
         whole = whole_positions(atoms, bonded, components)
         reference_pairs, reference_shifts = get_all_prereactive_pairs(atoms, reactive_radius=radius)
-        for criteria in (None, CpdN4tCriteria(), CpdN4tCriteria(max_axis_angle=45, max_plane_angle=5)):
-            pairs, shifts, reports = topology.evaluate(whole, atoms.cell.array, atoms.pbc,
-                                                      criteria=criteria, reactive_radius=radius)
+        for criteria in (None, CpdN4tCriteria(), CpdN4tCriteria(require_geometry=True),
+                         CpdN4tCriteria(max_axis_angle=45, max_plane_angle=5)):
+            pairs, shifts, reports = topology.evaluate(whole, atoms.cell.array, atoms.pbc, criteria=criteria,
+                                                      collection=CpdN4tCollection(reactive_radius=radius))
             if criteria is None:
                 self.assertEqual(pairs, reference_pairs)
                 self.assertEqual(shifts, reference_shifts)
@@ -54,6 +56,7 @@ class TrajectoryPairTests(unittest.TestCase):
             for actual, expected in zip(reports, reference):
                 self.assertEqual(actual.reasons, expected.reasons)
                 self.assertEqual(actual.accepted, expected.accepted)
+                self.assertEqual(actual.error, expected.error)
                 if expected.geometry is None:
                     self.assertIsNone(actual.geometry)
                     continue
@@ -115,8 +118,8 @@ class TrajectoryPairTests(unittest.TestCase):
     def test_process_order_striding_and_lifetimes(self):
         with tempfile.TemporaryDirectory() as directory:
             shutil.copyfile(FIXTURES / "multiple_frames.lammpstrj", Path(directory) / "trajectory.lammpstrj")
-            options = dict(units="metal", timestep_ps=.0005, compute_pairs=True,
-                           pair_criteria=CpdN4tCriteria(max_axis_angle=60), frame_stride=2)
+            options = dict(units="metal", timestep_ps=.0005, compute_pairs=True, frame_stride=2)
+            criteria = CpdN4tCriteria(max_axis_angle=60)
             reference = analyze_run(directory, pair_backend="reference", **options)
             for workers, backend in ((1, 'cached'), (2, 'cached'), (2, 'reference')):
                 result = analyze_run(directory, pair_workers=workers, pair_backend=backend, pair_batch_size=2, **options)
@@ -127,6 +130,11 @@ class TrajectoryPairTests(unittest.TestCase):
                 times = [r["time_ps"] for r in result["frames"]]
                 self.assertEqual(lifetimes.get_pair_lifetime(result["pairs_by_frame"], times),
                                  lifetimes.get_pair_lifetime(reference["pairs_by_frame"], times))
+                selected, expected = select_pairs(result, criteria), select_pairs(reference, criteria)
+                self.assertEqual(pair_ids(selected[0]), pair_ids(expected[0]))
+                self.assertEqual(selected[1], expected[1])
+                self.assertEqual(lifetimes.get_pair_lifetime(selected[0], times),
+                                 lifetimes.get_pair_lifetime(expected[0], times))
 
     def test_worker_failure_propagates_in_order(self):
         """The production pool (trajectory.parallel.ordered_tasks) yields results in task

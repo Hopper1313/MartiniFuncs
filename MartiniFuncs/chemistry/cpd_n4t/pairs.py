@@ -9,8 +9,8 @@ from pathlib import Path
 import numpy as np
 from ase import Atoms
 
+from MartiniFuncs.chemistry.cpd_n4t.model import CpdN4tCollection
 from MartiniFuncs.pairs.lifetimes import pair_identity
-from MartiniFuncs.pairs.model import DEFAULT_REACTIVE_RADIUS
 from MartiniFuncs.statistics.md import validate_times
 
 
@@ -27,13 +27,15 @@ def get_mal_CC(bond_graph, elements):
 def get_all_prereactive_pairs(
     atoms: Atoms,
     scale: float = 1.3,
-    reactive_radius: float = DEFAULT_REACTIVE_RADIUS,
+    reactive_radius: float | None = None,
     printing: bool = False,
     *,
     criteria=None,
     return_candidates=False,
 ):
     """Find all CPD / dienophile molecular pairs inside ``reactive_radius``.
+
+    reactive_radius is the collection radius (CpdN4tCollection; None: 3.25 Angstrom).
 
     Returns the same API as the historical implementation:
 
@@ -60,7 +62,8 @@ def get_all_prereactive_pairs(
     The generic engine is pairs.assessment.screen_frame with the cpd_n4t model.
     """
     from MartiniFuncs.pairs.assessment import screen_frame
-    found = screen_frame(atoms, "cpd_n4t", scale=scale, reactive_radius=reactive_radius, criteria=criteria,
+    collection = CpdN4tCollection() if reactive_radius is None else CpdN4tCollection(reactive_radius=reactive_radius)
+    found = screen_frame(atoms, "cpd_n4t", scale=scale, collection=collection, criteria=criteria,
                          return_candidates=return_candidates)
     if printing:
         print(len(found[0]), "pre-reactive pairs found")
@@ -115,11 +118,12 @@ def load_pair_geometries(index_jsonl):
     """Per-candidate CPD + N4T geometry from an export's index.jsonl as arrays (for statistics.dynamics.pmf_*).
 
     Returns frame, time_ps, max_forming_distance and distance_imbalance
-    (Angstrom), axis/plane/approach angles (degrees); NaN where the geometry
-    could not be measured.
+    (Angstrom), axis/plane/approach angles and the signed ring_dihedral
+    (degrees); NaN where the geometry could not be measured or, for
+    ring_dihedral, an older export did not record it.
     """
     fields = ("frame", "time_ps", "max_forming_distance", "distance_imbalance",
-              "axis_angle", "plane_angle", "approach_angle")
+              "axis_angle", "plane_angle", "approach_angle", "ring_dihedral")
     rows = {name: [] for name in fields}
     for line in Path(index_jsonl).read_text(encoding="utf-8").splitlines():
         record = json.loads(line)
@@ -129,6 +133,6 @@ def load_pair_geometries(index_jsonl):
         distances = g["forming_distances"] if g else [np.nan, np.nan]
         rows["max_forming_distance"].append(max(distances))
         rows["distance_imbalance"].append(abs(distances[0] - distances[1]))
-        for name in ("axis_angle", "plane_angle", "approach_angle"):
-            rows[name].append(g[name] if g else np.nan)
+        for name in ("axis_angle", "plane_angle", "approach_angle", "ring_dihedral"):
+            rows[name].append(g.get(name, np.nan) if g else np.nan)
     return {name: np.asarray(values, dtype=float) for name, values in rows.items()}

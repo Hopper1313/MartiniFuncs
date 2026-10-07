@@ -8,11 +8,11 @@ implementation in `chemistry.cpd_n4t.pairs` and `chemistry.cpd_n4t.selection`.
 
 ```python
 from MartiniFuncs.trajectory.analysis import analyze_run
-from MartiniFuncs.chemistry.cpd_n4t import CpdN4tCriteria
+from MartiniFuncs.chemistry.cpd_n4t import CpdN4tCollection
 
 result = analyze_run(
     RUN_DIR, units="metal", timestep_ps=0.0005,
-    compute_pairs=True, pair_criteria=CpdN4tCriteria(),
+    compute_pairs=True, pair_collection=CpdN4tCollection(reactive_radius=3.25),
     pair_backend="cached", pair_workers=1, pair_batch_size=32,
 )
 ```

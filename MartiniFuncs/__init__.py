@@ -24,9 +24,11 @@ _API = {
     "write_report": "workflows.postprocess", "export_pairs": "workflows.postprocess",
     "select_pairs": "pairs.candidates", "candidate_table": "pairs.candidates",
     "get_pair_lifetime": "pairs.lifetimes",
-    "PairModel": "pairs.model", "PairCriteria": "pairs.model", "get_pair_model": "pairs.model",
+    "PairModel": "pairs.model", "PairCollection": "pairs.model", "PairCriteria": "pairs.model",
+    "get_pair_model": "pairs.model",
     "register_pair_model": "pairs.model",
-    "CpdN4tCriteria": "chemistry.cpd_n4t.model", "CpdN4tModel": "chemistry.cpd_n4t.model",
+    "CpdN4tCollection": "chemistry.cpd_n4t.model", "CpdN4tCriteria": "chemistry.cpd_n4t.model",
+    "CpdN4tModel": "chemistry.cpd_n4t.model",
 }
 
 __all__ = sorted(_API)
