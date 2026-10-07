@@ -19,6 +19,7 @@ force validation) hangs off these four steps.
 Contents:
 
 - [The commands at a glance](#the-commands-at-a-glance)
+- [Where to run each command (not the login node)](#where-to-run-each-command-not-the-login-node)
 - [Before you start](#before-you-start)
 - [Step 1: `run`, collect once](#step-1-run-collect-once)
 - [Step 2: explore the cache in Python](#step-2-explore-the-cache-in-python)
@@ -76,9 +77,59 @@ dump.
 
 ---
 
+## Where to run each command (not the login node)
+
+Login nodes are shared by everyone on the cluster and are only for editing,
+installing, and submitting jobs. **Nothing in this guide that reads a dump, loads
+a cache or computes statistics belongs on the login node**, not even the
+one-minute `report`: it memory-maps arrays of 0.5-1 GB each and keeps a CPU busy.
+Login-node jobs are typically throttled or killed, and they slow the node down
+for everyone.
+
+| Task | Where | How |
+|---|---|---|
+| `git fetch/merge`, `pip install -e`, editing scripts, `--help`, `sbatch`, `squeue` | login node | directly |
+| `run`, `collect` | compute node, batch | `sbatch` script with many CPUs (Step 1) |
+| `extract` | compute node, batch | `sbatch` script with `--workers` (Step 4) |
+| `report`, `examples/diffusion_from_report.py` | compute node, small | batch job, or an interactive session (below) |
+| Python exploration, notebooks 04/05/08/09 | compute node | interactive session, or the cluster's Jupyter service on a compute node |
+| Force validation (UMA), notebook 06 | GPU compute node | batch job requesting a GPU |
+
+**Batch jobs** run unattended: write the commands into a Slurm script and
+submit it with `sbatch` (Steps 1, 3 and 4 show complete scripts).
+
+**An interactive session** gives you a shell on a compute node; every command
+typed in it runs there, not on the login node:
+
+```bash
+srun --ntasks=1 --cpus-per-task=4 --mem=16G --time=02:00:00 --pty bash
+```
+
+Once the prompt changes to a compute node, activate the environment and work
+normally (the `report` commands in Step 3 and the bare `python ...` commands in
+this guide are meant for such a session or a batch script):
+
+```bash
+source /scratch/user/nchopper_tamu.edu/conda/minicondainstall/miniconda3/etc/profile.d/conda.sh
+conda activate martini
+python -m MartiniFuncs report postprocess_v5_3.75cutoff/cache --output postprocess_v5_3.75cutoff/reports/r3.25 \
+    --startframe 100000 --max-screen-distance 3.25
+exit                                                # leave the compute node and free the allocation
+```
+
+A single command can also be sent to a compute node without opening a shell, by
+prefixing it with `srun` (as in the preview and report examples below).
+
+For notebooks, use the cluster's web portal or Jupyter service if it offers one
+(it starts the notebook kernel on a compute node), or start Jupyter inside an
+interactive session and connect through an SSH tunnel. Do not start a Jupyter
+server on the login node.
+
+---
+
 ## Before you start
 
-**Update the code and the environment.** On the cluster:
+**Update the code and the environment** (on the login node; these are light):
 
 ```bash
 cd /scratch/user/nchopper_tamu.edu/MartiniFuncs
@@ -112,7 +163,10 @@ python -m MartiniFuncs report --help
 
 **Validate forces once per model setup** (before any reaction or UMA work on
 extracted structures). This recomputes forces for a few full periodic frames
-with your local UMA checkpoint and compares them with the forces in the dump:
+with your local UMA checkpoint and compares them with the forces in the dump.
+It needs a GPU: run it in a batch job or interactive session that requests one
+(for example `--gres=gpu:1`; your cluster may require a GPU type or partition),
+never on the login node:
 
 ```bash
 python -m MartiniFuncs.workflows.force_validation nve_2p5.lammpstrj \
@@ -172,7 +226,8 @@ python -m MartiniFuncs run "$run_dir" \
     "$@"
 ```
 
-Submit it from the simulation directory:
+Submit it from the simulation directory (submitting is the only part that
+happens on the login node; the job itself runs on a compute node):
 
 ```bash
 sbatch postprocess.slurm
@@ -224,8 +279,12 @@ python -m MartiniFuncs run ./ --output ./postprocess_v5_4.0cutoff \
 
 ### Variations
 
-A quick preview of a new trajectory (first 2,000 frames, few workers),
-interactively on a compute node:
+The full-size commands in this section use 64 workers: put them in the Slurm
+script in place of its `python -m MartiniFuncs run ...` line and submit with
+`sbatch`; do not run them on the login node.
+
+A quick preview of a new trajectory (first 2,000 frames, few workers), sent to
+a compute node with `srun`:
 
 ```bash
 srun -n1 -c8 --mem=16G -t 00:30:00 python -m MartiniFuncs run ./ --output ./preview \
@@ -283,8 +342,10 @@ Molecule columns follow `molecules.json`; atom IDs are LAMMPS IDs minus one.
 
 ## Step 2: explore the cache in Python
 
-Work in a notebook or an interactive job; nothing here reads the dump. The
-examples assume:
+Work in a notebook or an interactive session **on a compute node** (see
+[Where to run](#where-to-run-each-command-not-the-login-node)); nothing here
+reads the dump, but loading and histogramming millions of rows takes several GB
+of memory. The examples assume:
 
 ```python
 from pathlib import Path
@@ -514,7 +575,10 @@ molecules rotate in place (plastic-crystal-like) rather than being frozen.
 
 ## Step 3: `report`, statistics for any selection
 
-`report` reads only the cache. Give every report its own `--output` folder;
+`report` reads only the cache and needs only one CPU, but it is still compute:
+run the examples below in an interactive session on a compute node or put them
+in a batch script (as in the radius scan below), not on the login node. Give
+every report its own `--output` folder;
 re-running an identical command reuses the finished report, and a different
 selection in an existing folder is refused (nothing is overwritten).
 
@@ -617,7 +681,7 @@ for radius in 3.0 3.25 3.5 3.75; do
 done
 ```
 
-Run a report interactively instead of as a batch job:
+Send a single report to a compute node without opening a session:
 
 ```bash
 srun -n1 -c1 --mem=16G -t 00:30:00 python -m MartiniFuncs report postprocess_v5_3.75cutoff/cache \
@@ -676,7 +740,9 @@ otherwise the MSD is still caged or ballistic in that range.
 
 ## Step 4: `extract`, structures for the final selection
 
-`extract` reads the selected frames from the dump again and writes one
+`extract` rereads the 43 GB dump and should always run as a **batch job** on
+a compute node (the Slurm script below), with `--workers` matching the CPUs you
+request. It reads the selected frames from the dump again and writes one
 structure per selected pair per frame, with the dump's forces (eV/Angstrom).
 Each export becomes many structures, so narrow the selection and the frame
 window first: the same selection through `report` tells you how many pairs to
@@ -780,7 +846,8 @@ force archive.
 `collect` is `run` and `extract` in one pass, with no statistical report and
 `--shell-radius` required. Prefer `run` followed by `extract`: you keep the
 reusable cache, and you choose the selection after looking at the data. Use
-`collect` only when you already know the selection and only want structures:
+`collect` only when you already know the selection and only want structures.
+Like `run`, it reads the whole dump: put the command in a batch script.
 
 ```bash
 python -m MartiniFuncs collect ./ --output ./collect_ring30 --units metal --timestep-ps 0.0005 \
@@ -796,7 +863,8 @@ python -m MartiniFuncs collect ./ --output ./collect_ring30 --units metal --time
 a requested geometry, independent of any trajectory. Use it for controlled
 scans (distance, exo/endo, tilt) and to compare sampled encounters with
 designed ones. Notebook `examples/workflows/09_build_pairs.ipynb` does the same
-with plots and export.
+with plots and export. It is light (seconds per structure) but still belongs in
+an interactive session or notebook on a compute node.
 
 ```python
 from ase.io import write
@@ -897,24 +965,28 @@ images), not exo/endo.
 
 ## A complete session, start to finish
 
-1. Update and preview (interactive, about 10 minutes):
+Steps marked *login* run on the login node; everything else runs on a compute
+node, as a batch job or inside an interactive session (`srun ... --pty bash`).
+
+1. *login*, then compute: update the code (Before you start), then preview on a
+   compute node (about 10 minutes):
 
    ```bash
    srun -n1 -c8 --mem=16G -t 00:30:00 python -m MartiniFuncs run ./ --output ./preview \
        --units metal --timestep-ps 0.0005 --workers 8 --max-frames 2000 --no-export-pairs
    ```
 
-2. Full collection (batch):
+2. *login*: submit the full collection as a batch job:
 
    ```bash
    jobid=$(sbatch --parsable postprocess.slurm)      # 3.75 Angstrom, --orientations, --no-export-pairs
    ```
 
-3. Explore in a notebook (Step 2): choose `START = 100_000` from density,
+3. Compute node: explore in a notebook (Step 2): choose `START = 100_000` from density,
    energy and the candidate histograms; choose thresholds, e.g.
    `max_screen_distance=3.25, max_forming_distance=3.8, max_ring_dihedral_deviation=30`.
 
-4. Reports for the decisions (cheap, repeat freely):
+4. Compute node (interactive session or batch): reports for the decisions (cheap, repeat freely):
 
    ```bash
    python -m MartiniFuncs report postprocess_v5_3.75cutoff/cache --output postprocess_v5_3.75cutoff/reports/all \
@@ -927,13 +999,13 @@ images), not exo/endo.
        --max-ring-dihedral-deviation 30 --no-lag-statistics
    ```
 
-5. Check diffusion honestly:
+5. Compute node: check diffusion honestly:
 
    ```bash
    python examples/diffusion_from_report.py postprocess_v5_3.75cutoff/reports/all --fit-ps 50 100
    ```
 
-6. Structures for the final selection (batch, workers):
+6. Batch job: structures for the final selection (put this in a Slurm script with 32 CPUs):
 
    ```bash
    python -m MartiniFuncs extract postprocess_v5_3.75cutoff/cache --output postprocess_v5_3.75cutoff/exports/final \
@@ -941,5 +1013,5 @@ images), not exo/endo.
        --max-ring-dihedral-deviation 30 --shell-radius 3.0 --workers 32
    ```
 
-7. Validate forces once, then prepare reaction inputs (notebooks 06 and 07);
+7. GPU compute node: validate forces once, then prepare reaction inputs (notebooks 06 and 07);
    compare with designed pairs from notebook 09.
