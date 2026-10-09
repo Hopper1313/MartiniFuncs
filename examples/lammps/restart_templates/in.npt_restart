@@ -1,0 +1,71 @@
+# UMA NPT continuation (no shear) from a restart file
+# Types: 1=C 2=H 3=N 4=O
+# Requires fairchem-lammps + uma-s-1p1; charge/spin are set in the fairchem config (spin: 1)
+# No pair_style / bonded force-field terms
+
+# ---- Edit these values ------------------------------------------------------
+variable        my_temp        equal 400.0       # target temperature, K
+variable        my_pressure    equal 25000.0     # target pressure, bar (25000 bar = 2.5 GPa)
+variable        t_damp         equal 0.05        # thermostat damping, ps (~100 timesteps)
+variable        p_damp         equal 0.5         # barostat damping, ps (~1000 timesteps)
+variable        dt_ps          equal 0.0005      # timestep, ps (0.5 fs)
+variable        run_time_ps    equal 2000.0      # length of this run, ps (2000 ps = 2 ns)
+variable        thermo_every   equal 2000        # thermo output interval, steps
+variable        dump_every     equal 1000        # trajectory frame interval, steps
+variable        restart_every  equal 100000      # checkpoint interval, steps
+variable        run_label      string npt_cont1  # label of this run (part of every output name)
+variable        restart_infile_name string equilibrated_T400K_P25000bar.restart   # restart to continue from
+# ----------------------------------------------------------------------------
+
+# Output names (edit only to choose different names)
+variable        tag                  string T${my_temp}K_P${my_pressure}bar_${run_label}   # e.g. T400K_P25000bar_npt_cont1
+variable        dumpfile_name        string ${tag}.lammpstrj
+variable        restart_outfile_name string ${tag}.restart
+variable        data_output_name     string ${tag}.data
+variable        checkpoint_dir       string restart_checkpoints
+variable        element_list         string "C H N O"                          # element of each atom type, in type order
+
+# Number of MD steps for run_time_ps (derived; do not edit)
+variable        run_steps            equal round(${run_time_ps}/${dt_ps})
+
+# Restores units, atom style, box (triclinic), atoms, masses, velocities and the step counter
+read_restart    ${restart_infile_name}
+
+# Not reliably stored in restart files: set them again
+neighbor        2.0 bin
+neigh_modify    every 10 delay 0 check yes
+comm_modify     cutoff 6.0
+timestep        ${dt_ps}
+
+# No "velocity create": velocities come from the restart file.
+# Isotropic Nose-Hoover NPT. LAMMPS restores the thermostat/barostat state stored
+# in the restart only for a fix with the same ID and style as the run that wrote
+# it: use "1" to continue the NPT equilibration input (fix 1 ... npt), or keep
+# integrate_npt when continuing a run made with this template.
+fix             integrate_npt all npt temp ${my_temp} ${my_temp} ${t_damp} &
+                                      iso ${my_pressure} ${my_pressure} ${p_damp}
+
+thermo_style    custom step time temp pe ke etotal press &
+                       pxx pyy pzz pxy pxz pyz vol density lx ly lz xy xz yz
+thermo_modify   norm no
+thermo          ${thermo_every}
+
+# Per-atom force magnitude
+variable        netforce atom sqrt(fx*fx+fy*fy+fz*fz)
+
+dump            trajectory all custom ${dump_every} ${dumpfile_name} &
+                id type mass element x y z &
+                ix iy iz vx vy vz &
+                fx fy fz v_netforce
+dump_modify     trajectory element ${element_list} sort id
+
+# Periodic binary checkpoints in their own folder: <checkpoint_dir>/<restart_outfile_name>.<timestep>
+shell           mkdir ${checkpoint_dir}
+restart         ${restart_every} ${checkpoint_dir}/${restart_outfile_name}.*
+
+timer           full
+
+# run_steps more steps (step numbers continue from the restart), then write the
+# final data/restart into the run folder.
+# MUST remain the final top-level command for fairchem-lammps
+run             ${run_steps} every ${run_steps} "write_data ${data_output_name}" "write_restart ${restart_outfile_name}"
