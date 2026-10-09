@@ -9,6 +9,7 @@ statistics  MD observables, lag statistics, dynamics and diffusion diagnostics
 pairs       chemistry-independent pair machinery: pair models, screening,
             candidates, selection, lifetimes, structures
 chemistry   pair models for specific chemistry (cpd_n4t)
+recompute   isolated-fragment forces/energies (F_env) and optimizations of exported structures
 workflows   CLI, cache/report/export, force validation
 legacy      superseded helpers kept for reference
 

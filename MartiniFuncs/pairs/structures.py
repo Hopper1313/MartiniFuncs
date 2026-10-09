@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 import numpy as np
 from ase import Atoms
+from MartiniFuncs.io.extxyz import write_extxyz
 from MartiniFuncs.structure import graph as mfg
 
 
@@ -357,8 +358,6 @@ def pair_data_to_extxyz(data, filename, *, role_labels=None):
     if role_labels is None:
         from MartiniFuncs.pairs.model import get_pair_model
         role_labels = get_pair_model().role_labels
-    from contextlib import nullcontext
-    from ase.io.extxyz import output_column_format
 
     images = []
     nclusters = len(data)
@@ -486,23 +485,5 @@ def pair_data_to_extxyz(data, filename, *, role_labels=None):
                 cluster.info[key] = record[key]
         images.append(cluster)
 
-    # ASE's default %16.8f truncates small MD force components. Retain its
-    # Extended XYZ header/schema but serialize floating values with 17 digits.
-    context = nullcontext(filename) if hasattr(filename, "write") else open(filename, "w", encoding="utf-8")
-    with context as stream:
-        for cluster in images:
-            arrays = {"symbols": np.asarray(cluster.get_chemical_symbols()),
-                      "positions": cluster.positions,
-                      **{k: v for k, v in cluster.arrays.items() if k not in {"numbers", "positions"}}}
-            columns = list(arrays)
-            comment, _, _, _ = output_column_format(cluster, columns, arrays)
-            stream.write(f"{len(cluster)}\n{comment}\n")
-            # One %-format per row ("%.17g" % x == format(x, ".17g"); "%s" == str).
-            blocks, tokens = [], []
-            for name in columns:
-                array = np.asarray(arrays[name])
-                block = array.reshape(len(cluster), -1)
-                tokens += ["%.17g" if array.dtype.kind == "f" else "%s"] * block.shape[1]
-                blocks.append(block.tolist())
-            line = " ".join(tokens) + "\n"
-            stream.write("".join(line % tuple(v for part in row for v in part) for row in zip(*blocks)))
+    # Full-precision writer shared with MartiniFuncs.recompute (ASE's default %16.8f truncates forces).
+    write_extxyz(images, filename)

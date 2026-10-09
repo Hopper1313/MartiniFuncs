@@ -8,12 +8,13 @@ barrier validation are future pipeline stages.
 
 | Subpackage | Contents |
 |---|---|
-| `MartiniFuncs.io` | `lammps` (dump/input reader), `lammps_inputs`, `thermo`, `psience` |
+| `MartiniFuncs.io` | `lammps` (dump/input reader), `lammps_inputs`, `thermo`, `extxyz` (full-precision writer), `psience` |
 | `MartiniFuncs.structure` | `graph` (bond graphs, periodic neighbours), `periodic` (minimum image, TOR COM unwrapping), `molecules`, `alignment`, `packing` |
 | `MartiniFuncs.trajectory` | `analysis` (`analyze_run`, `analyze_segments`), `parallel` (indexed frame chunks), `reactions` (topology-change events) |
 | `MartiniFuncs.statistics` | `md` (molecular observables, FFT lag MSD/correlations), `dynamics`, `diffusion`, `stability` |
 | `MartiniFuncs.pairs` | chemistry-independent pair machinery: `model` (`PairModel`, `PairCriteria`, registry), `assessment` (per-frame screen/measurement), `candidates` (cached candidates, `select_pairs`), `lifetimes`, `screening`, `structures` (pair/shell clusters, Extended XYZ), `topology` (cached fixed-topology evaluator) |
 | `MartiniFuncs.chemistry.cpd_n4t` | the CPD + N4T Diels-Alder model: `model` (`CpdN4tModel`, `CpdN4tCriteria`), `pairs` (molecule classes, pair screen), `selection` (reactive sites and geometry), `visualization` |
+| `MartiniFuncs.recompute` | recompute exported pairs/clusters with a calculator (UMA): `fragments`, `evaluation` (isolated single points, optimizations), `tasks` (`ForceDecomposition` for F_isolated/F_env and energies, `FragmentRelaxation`, `FrozenShellOptimization`), `driver` (`recompute_file`) |
 | `MartiniFuncs.workflows` | `cli` (`python -m MartiniFuncs`), `postprocess` (cache/report/export), `progress`, `force_validation` |
 | `MartiniFuncs.legacy` | superseded helpers kept for reference only |
 

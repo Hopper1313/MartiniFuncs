@@ -118,6 +118,16 @@ def local_uma_calculator(checkpoint, *, task="omol", device="cuda", inference_se
     return calculator
 
 
+def inference_settings_option(value):
+    """A CLI --inference-settings value: a JSON overrides file (dict), a fairchem preset name, or None."""
+    if value and Path(value).is_file():
+        settings = json.loads(Path(value).read_text(encoding="utf-8"))
+        if not isinstance(settings, dict):
+            raise ValueError("inference settings JSON must contain an object")
+        return settings
+    return value
+
+
 def validate_forces(dump, checkpoint, *, input_file=None, datafile=None, units=None,
                     indices=(0,), charge, spin, atol, task="omol", device="cuda",
                     inference_settings=None):
@@ -217,11 +227,10 @@ def main(argv=None):
     parser.add_argument("--inference-settings", help="JSON overrides file or fairchem preset; default: confirmed MD settings")
     parser.add_argument("--output", type=Path, help="optional JSON report path")
     args = parser.parse_args(argv)
-    settings = args.inference_settings
-    if settings and Path(settings).is_file():
-        settings = json.loads(Path(settings).read_text(encoding="utf-8"))
-        if not isinstance(settings, dict):
-            parser.error("inference settings JSON must contain an object")
+    try:
+        settings = inference_settings_option(args.inference_settings)
+    except ValueError as exc:
+        parser.error(str(exc))
     indices = args.indices if args.indices is not None else [0 if args.index is None else args.index]
     report = validate_forces(args.dump, args.checkpoint, input_file=args.input,
                              datafile=args.datafile, units=args.units, indices=indices,

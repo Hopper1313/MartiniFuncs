@@ -25,6 +25,7 @@ Contents:
 - [Step 2: explore the cache in Python](#step-2-explore-the-cache-in-python)
 - [Step 3: `report`, statistics for any selection](#step-3-report-statistics-for-any-selection)
 - [Step 4: `extract`, structures for the final selection](#step-4-extract-structures-for-the-final-selection)
+- [Step 5: `recompute`, isolated forces, F_env and energies](#step-5-recompute-isolated-forces-f_env-and-energies)
 - [`collect`: structures without a report](#collect-structures-without-a-report)
 - [Designed pairs: the pair builder](#designed-pairs-the-pair-builder)
 - [Selection reference](#selection-reference)
@@ -94,6 +95,7 @@ for everyone.
 | `report`, `examples/diffusion_from_report.py` | compute node, small | batch job, or an interactive session (below) |
 | Python exploration, notebooks 04/05/08/09 | compute node | interactive session, or the cluster's Jupyter service on a compute node |
 | Force validation (UMA), notebook 06 | GPU compute node | batch job requesting a GPU |
+| `recompute` (UMA single points and optimizations) | GPU compute node | batch job requesting a GPU (Step 5) |
 
 **Batch jobs** run unattended: write the commands into a Slurm script and
 submit it with `sbatch` (Steps 1, 3 and 4 show complete scripts).
@@ -835,9 +837,180 @@ geometry = load_pair_geometries(export / "index.jsonl")
 print({name: float(np.nanmean(values)) for name, values in geometry.items()})
 ```
 
-Next steps for reaction work: `examples/workflows/07_prepare_reaction_inputs.ipynb`
+Next steps: Step 5 recomputes these structures with UMA (isolated-fragment forces,
+the environmental force F_env, energies, optimizations).
+`examples/workflows/07_prepare_reaction_inputs.ipynb`
 turns a `clusters.extxyz` structure into a frozen-shell input and a row-identified
 force archive.
+
+---
+
+## Step 5: `recompute`, isolated forces, F_env and energies
+
+The forces exported by `extract` (`lammps_forces`) are the **total** MD forces in
+the periodic system. `recompute` evaluates parts of each exported structure in
+isolation with the same UMA model, so the total force can be split into an
+internal part and the force exerted by the surroundings:
+
+F_env = F_MD - F_isolated (per atom, eV/Angstrom)
+
+It reads `pairs.extxyz` or `clusters.extxyz` and writes a new `.extxyz` with the
+input's arrays and info kept and the new quantities added. It needs a GPU and
+the UMA checkpoint used for the MD, and always runs as a batch job.
+
+**Validate forces first.** F_env is only meaningful if the calculator reproduces
+the MD forces on the full periodic frame (see
+[Before you start](#before-you-start)). Otherwise F_env also contains model
+differences.
+
+### The three tasks
+
+| `--task` | What it does | Adds |
+|---|---|---|
+| `single-point` (default) | evaluates the pair as one isolated fragment, and each shell molecule alone, at the MD geometry | arrays `isolated_forces`, `environment_forces`, `isolated_fragment` (0 = pair, k = shell molecule); info `energy_pair`, `energy_shell` |
+| `single-point --molecules` | also evaluates each pair member alone | arrays `molecule_isolated_forces`, `molecule_environment_forces`; info `energy_CPD`, `energy_MAL`, `interaction_energy` = E_pair - E_CPD - E_MAL |
+| `relax-fragments` | relaxes the isolated pair (and with `--molecules` each member) from the MD geometry | info `energy_L`, `relaxed_energy_L`, `deformation_energy_L` = energy_L - relaxed_energy_L, `relaxation_converged_L`, `relaxation_steps_L` for L = pair, CPD, MAL; relaxed fragments in `OUTPUT.relaxed.extxyz` |
+| `frozen-shell` | optimizes the pair with every shell atom fixed (clusters only) | the cluster at the optimized geometry with `md_positions`, `frozen`, `optimized_forces`; info `energy_md_geometry`, `energy_optimized`, `optimization_converged` |
+
+What the two force decompositions mean:
+
+- **Pair mode** (default): F_isolated is the force on each atom of the
+  CPD + N4T pair evaluated together without anything else. F_env on a pair
+  atom is then the force from everything beyond the pair. The CPD-N4T
+  interaction counts as internal.
+- **Molecule mode** (`--molecules`, added on top): each molecule is evaluated
+  alone, so `molecule_environment_forces` on a CPD atom also includes the force
+  from its N4T partner. The difference between the two decompositions on a pair
+  atom is exactly the partner's contribution.
+- Shell molecules (clusters) are always evaluated one molecule at a time, so
+  their F_env is the force from all other molecules in the MD frame.
+
+Energies are eV; every fragment is neutral and a singlet by default
+(`--charge`, `--spin` apply to all fragments). `relax-fragments` and
+`frozen-shell` change the geometry, so their structures no longer correspond to
+the exported MD forces (kept for reference, with `md_positions` recording the
+geometry they belong to).
+
+### Examples
+
+Single points on the final clusters, pair mode:
+
+```bash
+python -m MartiniFuncs recompute postprocess_v5_3.75cutoff/exports/final/clusters.extxyz \
+    --output postprocess_v5_3.75cutoff/exports/final/clusters_fenv.extxyz \
+    --checkpoint /path/to/uma-s-1p1.pt --device cuda
+```
+
+Pair and molecule decompositions with interaction energies:
+
+```bash
+python -m MartiniFuncs recompute postprocess_v5_3.75cutoff/exports/final/pairs.extxyz \
+    --output postprocess_v5_3.75cutoff/exports/final/pairs_fenv_molecules.extxyz \
+    --checkpoint /path/to/uma-s-1p1.pt --device cuda --molecules
+```
+
+Relax the isolated pair and both molecules (deformation energies):
+
+```bash
+python -m MartiniFuncs recompute postprocess_v5_3.75cutoff/exports/final/pairs.extxyz \
+    --output postprocess_v5_3.75cutoff/exports/final/pairs_relaxed.extxyz \
+    --checkpoint /path/to/uma-s-1p1.pt --device cuda --task relax-fragments --molecules \
+    --optimizer BFGS --fmax 0.05 --steps 500
+```
+
+Optimize each pair inside its frozen shell:
+
+```bash
+python -m MartiniFuncs recompute postprocess_v5_3.75cutoff/exports/final/clusters.extxyz \
+    --output postprocess_v5_3.75cutoff/exports/final/clusters_frozen_shell.extxyz \
+    --checkpoint /path/to/uma-s-1p1.pt --device cuda --task frozen-shell --fmax 0.05 --steps 1000
+```
+
+The default inference settings are the MD settings with `merge_mole` and
+`compile` turned off. Both are UMA's fixed-composition MD fast path; recompute
+evaluates fragments of changing composition, and the unmerged model gives the
+same forces (agreement about 1e-6 eV/Angstrom). These defaults also run on CPU
+and on machines without a C++ compiler, e.g. Windows (`--device cpu`; about
+0.1-2 s per fragment). Further overrides go in a JSON file passed with
+`--inference-settings settings.json`.
+
+Testing on a laptop or workstation without a GPU works the same way:
+
+```bash
+python -m MartiniFuncs recompute EXPORT/clusters.extxyz --output EXPORT/clusters_fenv_cpu.extxyz     --checkpoint /path/to/uma-s-1p1.pt --device cpu --molecules
+```
+
+As a GPU batch job (adjust the GPU request to your cluster):
+
+```bash
+#!/usr/bin/env bash
+#SBATCH --job-name=martini-recompute
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --gres=gpu:1
+#SBATCH --mem=32G
+#SBATCH --time=04:00:00
+#SBATCH --output=martini-recompute-%j.out
+set -euo pipefail
+source /scratch/user/nchopper_tamu.edu/conda/minicondainstall/miniconda3/etc/profile.d/conda.sh
+conda activate martini
+
+export_dir=postprocess_v5_3.75cutoff/exports/final
+python -m MartiniFuncs recompute "$export_dir/clusters.extxyz" --output "$export_dir/clusters_fenv.extxyz" \
+    --checkpoint /path/to/uma-s-1p1.pt --device cuda --molecules
+```
+
+Outputs are never overwritten (choose a new `--output`), and a run that fails
+partway leaves no partial file.
+
+### From Python
+
+The same tasks are classes in `MartiniFuncs.recompute` and work with any ASE
+calculator:
+
+```python
+from ase.io import read
+from MartiniFuncs.recompute.driver import recompute_file
+from MartiniFuncs.recompute.evaluation import FragmentEvaluator, FragmentRelaxer, uma_calculator
+from MartiniFuncs.recompute.tasks import ForceDecomposition, FragmentRelaxation, FrozenShellOptimization
+
+calculator = uma_calculator("/path/to/uma-s-1p1.pt", task="omol", device="cuda")   # or device="cpu"
+evaluator = FragmentEvaluator(calculator, charge=0, spin=1)
+
+export = "postprocess_v5_3.75cutoff/exports/final"
+recompute_file(f"{export}/clusters.extxyz", f"{export}/clusters_fenv.extxyz",
+               ForceDecomposition(evaluator, molecules=True))
+
+relaxer = FragmentRelaxer(evaluator, optimizer="BFGS", fmax=0.05, steps=500)
+recompute_file(f"{export}/pairs.extxyz", f"{export}/pairs_relaxed.extxyz", FragmentRelaxation(relaxer, molecules=True))
+recompute_file(f"{export}/clusters.extxyz", f"{export}/clusters_frozen.extxyz", FrozenShellOptimization(relaxer))
+
+# One structure at a time:
+cluster = read(f"{export}/clusters.extxyz", index=0)
+result = ForceDecomposition(evaluator).apply(cluster).structure
+print(result.info["energy_pair"], result.arrays["environment_forces"][:3])
+```
+
+### Reading the results
+
+```python
+import numpy as np
+import pandas as pd
+from ase.io import read
+
+structures = read("postprocess_v5_3.75cutoff/exports/final/clusters_fenv.extxyz", index=":")
+rows = []
+for s in structures:
+    roles = s.arrays["pair_role"]
+    pair = roles != "shell"
+    f_env = s.arrays["environment_forces"][pair]
+    rows.append(dict(frame=s.info.get("frame_index"), structure=s.info.get("structure_index"),
+                     interaction_energy_eV=s.info.get("interaction_energy"),
+                     net_env_force_CPD=np.linalg.norm(s.arrays["environment_forces"][roles == "CPD"].sum(axis=0)),
+                     net_env_force_MAL=np.linalg.norm(s.arrays["environment_forces"][roles == "MAL"].sum(axis=0)),
+                     rms_env_force_pair_atoms=np.sqrt((f_env ** 2).sum(axis=1).mean())))
+print(pd.DataFrame(rows).describe())
+```
 
 ---
 
@@ -1013,5 +1186,13 @@ node, as a batch job or inside an interactive session (`srun ... --pty bash`).
        --max-ring-dihedral-deviation 30 --shell-radius 3.0 --workers 32
    ```
 
-7. GPU compute node: validate forces once, then prepare reaction inputs (notebooks 06 and 07);
+7. GPU compute node: validate forces once, then recompute the final structures (Step 5):
+
+   ```bash
+   python -m MartiniFuncs recompute postprocess_v5_3.75cutoff/exports/final/clusters.extxyz \
+       --output postprocess_v5_3.75cutoff/exports/final/clusters_fenv.extxyz \
+       --checkpoint /path/to/uma-s-1p1.pt --device cuda --molecules
+   ```
+
+8. Prepare reaction inputs (notebook 07);
    compare with designed pairs from notebook 09.

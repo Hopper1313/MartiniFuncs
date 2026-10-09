@@ -266,7 +266,54 @@ def build_parser():
     extract.add_argument("--workers", type=int, default=1, help="local frame/export worker processes")
     extract.add_argument("--batch-size", type=int, default=32, help="selected frames per export chunk")
     _selection_options(extract, "")
+
+    recompute = commands.add_parser(
+        "recompute", help="recompute exported pairs/clusters with UMA: F_isolated, F_env and energies, or optimizations")
+    recompute.add_argument("input", type=Path, help="pairs.extxyz or clusters.extxyz from extract/collect")
+    recompute.add_argument("--output", type=Path, required=True, help="new .extxyz file (never overwritten)")
+    recompute.add_argument("--task", choices=["single-point", "relax-fragments", "frozen-shell"], default="single-point",
+                           help="single-point: F_isolated and F_env = F_MD - F_isolated at the MD geometry (default); "
+                                "relax-fragments: relax the isolated pair (and molecules) and report deformation "
+                                "energies; frozen-shell: optimize the pair with the shell fixed (clusters only)")
+    recompute.add_argument("--molecules", action="store_true",
+                           help="also evaluate each pair member alone: per-molecule forces, member energies and "
+                                "interaction energy E_pair - E_first - E_second (single-point, relax-fragments)")
+    recompute.add_argument("--checkpoint", type=Path, required=True, help="local UMA checkpoint, e.g. uma-s-1p1.pt")
+    recompute.add_argument("--model-task", default="omol", help="UMA task head (default omol)")
+    recompute.add_argument("--device", choices=["cpu", "cuda"], default="cuda")
+    recompute.add_argument("--inference-settings",
+                           help="JSON overrides file (applied on top) or fairchem preset; default: the MD settings "
+                                "with merge_mole and compile off (fragments change composition; runs on CPU too)")
+    recompute.add_argument("--charge", type=int, default=0, help="charge of every isolated fragment (default 0)")
+    recompute.add_argument("--spin", type=int, default=1, help="spin multiplicity of every fragment (default 1)")
+    recompute.add_argument("--bond-scale", type=float, default=1.3, help="bond rule for splitting shell molecules")
+    recompute.add_argument("--optimizer", choices=["BFGS", "LBFGS", "FIRE"], default="BFGS")
+    recompute.add_argument("--fmax", type=float, default=0.05, help="optimization force threshold, eV/Angstrom")
+    recompute.add_argument("--steps", type=int, default=500, help="maximum optimization steps per fragment")
+    recompute.add_argument("--relaxed-output", type=Path,
+                           help="relaxed fragments file for relax-fragments (default OUTPUT stem + .relaxed.extxyz)")
+    recompute.add_argument("--quiet", action="store_true")
     return parser
+
+
+def _recompute(args, progress=None):
+    """Build the evaluator and task for `recompute` and run it over the input file."""
+    from MartiniFuncs.recompute.driver import recompute_file
+    from MartiniFuncs.recompute.evaluation import FragmentEvaluator, FragmentRelaxer, uma_calculator
+    from MartiniFuncs.recompute.tasks import ForceDecomposition, FragmentRelaxation, FrozenShellOptimization
+    from MartiniFuncs.workflows.force_validation import inference_settings_option
+    if args.task == "frozen-shell" and args.molecules:
+        raise ValueError("--molecules applies to single-point and relax-fragments, not frozen-shell")
+    calculator = uma_calculator(args.checkpoint, task=args.model_task, device=args.device,
+                                inference_settings=inference_settings_option(args.inference_settings))
+    evaluator = FragmentEvaluator(calculator, charge=args.charge, spin=args.spin)
+    if args.task == "single-point":
+        task = ForceDecomposition(evaluator, molecules=args.molecules, scale=args.bond_scale)
+    else:
+        relaxer = FragmentRelaxer(evaluator, optimizer=args.optimizer, fmax=args.fmax, steps=args.steps)
+        task = (FragmentRelaxation(relaxer, molecules=args.molecules, scale=args.bond_scale)
+                if args.task == "relax-fragments" else FrozenShellOptimization(relaxer, scale=args.bond_scale))
+    return recompute_file(args.input, args.output, task, extras_path=args.relaxed_output, progress=progress)
 
 
 def main(argv=None):
@@ -288,7 +335,8 @@ def main(argv=None):
         if (getattr(args, 'fit_ps', None) is not None and args.lag_statistics is not None
                 and 'msd' not in args.lag_statistics):
             raise ValueError('--fit-ps requires msd; remove --no-lag-statistics or include msd in --lag-statistics')
-        if args.startframe < 0 or (args.endframe is not None and args.endframe <= args.startframe):
+        if hasattr(args, "startframe") and (args.startframe < 0 or
+                                            (args.endframe is not None and args.endframe <= args.startframe)):
             raise ValueError("Require 0 <= startframe < endframe; omit endframe to use the cached end")
         if hasattr(args, "workers"):
             if args.workers < 1 or args.batch_size < 1:
@@ -346,6 +394,8 @@ def main(argv=None):
         elif args.command == "report":
             print(stage('Statistical report', write_report, args.cache, args.output, **_report_kwargs(args),
                         **_selection_kwargs(args)))
+        elif args.command == "recompute":
+            print(stage('Recompute', _recompute, args))
         else:
             print(stage('Pair/shell export', export_pairs, args.cache, args.output, shell_radius=args.shell_radius,
                                startframe=args.startframe, endframe=args.endframe,
