@@ -141,3 +141,17 @@ atoms, geometry = build_pair(cpd, n4t, distance=3.0, ring_dihedral=180, plane_an
 The structure is measured with the same equations as the analysis; the returned
 `geometry` and `atoms.info` (`measured_*`, `min_intermolecular_distance`) report
 what was built. Rows are CPD then N4T, with `global_index` and `pair_role`.
+
+The adducts themselves come from stereo SMILES (`PRODUCT_SMILES`, both cis-fused):
+
+```python
+from MartiniFuncs.chemistry.cpd_n4t.build import product_template
+
+endo, geometry = product_template("endo")   # or "exo"; RDKit ETKDG + MMFF94
+```
+
+Rows use the same layout (the five CPD-derived carbons and their hydrogens first,
+then the N4T-derived atoms), so the `pair_role` blocks match a built reactant
+complex; the atom order inside each block is not the same as `rdkit_templates`.
+The two new C-C bonds are the measured forming bonds, and the measured
+`approach_type` is checked against the request.

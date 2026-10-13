@@ -5,7 +5,7 @@ import unittest
 import numpy as np
 from numpy.testing import assert_allclose, assert_array_equal
 
-from MartiniFuncs.chemistry.cpd_n4t.build import build_pair, rdkit_templates, templates_from_frame
+from MartiniFuncs.chemistry.cpd_n4t.build import build_pair, product_template, rdkit_templates, templates_from_frame
 from MartiniFuncs.chemistry.cpd_n4t.selection import measure_pair_geometry
 from MartiniFuncs.io.lammps import read_lammps_frame
 
@@ -79,6 +79,24 @@ class PairBuilderTests(unittest.TestCase):
             build_pair(self.cpd, self.n4t, distance=1.0, min_contact=1.5)
         with self.assertRaises(ValueError):
             build_pair(self.n4t, self.cpd, distance=3.0)      # roles swapped
+
+    def test_product_templates(self):
+        """Endo/exo adducts: CPD rows first, measured stereo as requested, cis-fused at the former C=C."""
+        for approach, phi in (("endo", 180.), ("exo", 0.)):
+            atoms, geometry = product_template(approach)
+            self.assertEqual(atoms.get_chemical_formula(), "C16H15NO2")
+            assert_array_equal(atoms.arrays["pair_role"], ["CPD"] * 11 + ["MAL"] * 23)
+            self.assertEqual(atoms[:11].get_chemical_formula(), "C5H6")
+            again = self.remeasure(atoms)
+            self.assertEqual((geometry.approach_type, again.approach_type), (approach, approach))
+            self.assertLess(abs(np.cos(np.radians(again.ring_dihedral)) - np.cos(np.radians(phi))), 0.01)
+            assert_allclose(again.forming_distances, 1.55, atol=0.05)          # new C-C single bonds
+            c1, c2 = again.forming_bonds[0][1], again.forming_bonds[1][1]
+            h1, h2 = ([j for j in range(len(atoms)) if atoms[j].symbol == "H" and atoms.get_distance(c, j) < 1.2][0]
+                      for c in (c1, c2))
+            self.assertLess(abs(np.cos(np.radians(atoms.get_dihedral(h1, c1, c2, h2))) - 1), 0.05)   # cis
+        with self.assertRaises(ValueError):
+            product_template("bogus")
 
     def test_templates_from_trajectory_frame(self):
         cpd, n4t = templates_from_frame(read_lammps_frame(FIXTURE, units="metal").atoms)

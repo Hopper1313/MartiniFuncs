@@ -25,13 +25,17 @@ and N4T); axis_angle follows from the dihedral for stacked rings. Always check
 the returned geometry and minimum intermolecular distance; nothing here is a
 transition-state or energy calculation.
 
+product_template builds the endo or exo adduct itself from a stereo SMILES,
+with the same row layout (CPD-derived atoms first).
+
 Example::
 
-    from MartiniFuncs.chemistry.cpd_n4t.build import build_pair, rdkit_templates
+    from MartiniFuncs.chemistry.cpd_n4t.build import build_pair, product_template, rdkit_templates
     cpd, n4t = rdkit_templates()
     atoms, geometry = build_pair(cpd, n4t, distance=3.0, ring_dihedral=180, plane_angle=15)
     atoms.write("endo_3A.xyz")
     print(geometry.forming_distances, geometry.approach_type, atoms.info["min_intermolecular_distance"])
+    product, geometry = product_template("exo")
 """
 from __future__ import annotations
 
@@ -47,7 +51,23 @@ from MartiniFuncs.structure import graph as mfg
 
 # Cyclopentadiene and N-(p-tolyl)maleimide (N4T, C11H9NO2).
 SMILES = {"C5H6": "C1C=CC=C1", "C11H9NO2": "Cc1ccc(cc1)N1C(=O)C=CC1=O"}
+# The two Diels-Alder adducts (both meso, cis-fused at the former C=C):
+# 4-(p-tolyl)-4-azatricyclo[5.2.1.0^2,6]dec-8-ene-3,5-dione.
+PRODUCT_SMILES = {"endo": "Cc1ccc(N2C(=O)[C@@H]3[C@H](C2=O)[C@@H]2C=C[C@H]3C2)cc1",
+                  "exo": "Cc1ccc(N2C(=O)[C@@H]3[C@H](C2=O)[C@H]2C=C[C@@H]3C2)cc1"}
+_PRODUCT_CPD = "[CH1]1=[CH1][CH1][CH2][CH1]1"     # the CPD-derived norbornene carbons
 DISTANCE_KINDS = ("centers", "max_forming", "screen")
+
+
+def _embed(smiles, seed):
+    """RDKit molecule with hydrogens, embedded (ETKDG) and relaxed with MMFF94."""
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+    molecule = Chem.AddHs(Chem.MolFromSmiles(smiles))
+    if AllChem.EmbedMolecule(molecule, randomSeed=seed) != 0:
+        raise RuntimeError(f"RDKit could not embed {smiles}")
+    AllChem.MMFFOptimizeMolecule(molecule, maxIters=2000)
+    return molecule
 
 
 def rdkit_templates(seed=61453):
@@ -56,20 +76,57 @@ def rdkit_templates(seed=61453):
     Deterministic for a given seed. A geometry relaxed with your production
     model (e.g. UMA) can be passed to build_pair instead.
     """
-    from rdkit import Chem
-    from rdkit.Chem import AllChem
     templates = []
     for formula, smiles in SMILES.items():
-        molecule = Chem.AddHs(Chem.MolFromSmiles(smiles))
-        if AllChem.EmbedMolecule(molecule, randomSeed=seed) != 0:
-            raise RuntimeError(f"RDKit could not embed {formula}")
-        AllChem.MMFFOptimizeMolecule(molecule, maxIters=2000)
+        molecule = _embed(smiles, seed)
         atoms = Atoms([a.GetSymbol() for a in molecule.GetAtoms()],
                       positions=molecule.GetConformer().GetPositions())
         if atoms.get_chemical_formula() != formula:
             raise RuntimeError(f"RDKit template has formula {atoms.get_chemical_formula()}, expected {formula}")
         templates.append(atoms)
     return tuple(templates)
+
+
+def product_template(approach, seed=61453, *, scale=1.3):
+    """The endo or exo Diels-Alder adduct (RDKit ETKDG + MMFF94, Angstrom) as (Atoms, measured PairGeometry).
+
+    Rows are laid out like build_pair: the CPD-derived atoms first (five ring
+    carbons, then their six hydrogens), then the N4T-derived atoms, with
+    global_index and pair_role arrays. Measuring the two parts with the pair
+    equations (forming bonds = the two new C-C bonds) must give the requested
+    approach type; info records the measured metrics.
+    """
+    from rdkit import Chem
+    if approach not in PRODUCT_SMILES:
+        raise ValueError(f"approach must be one of {sorted(PRODUCT_SMILES)}")
+    molecule = _embed(PRODUCT_SMILES[approach], seed)
+    ring = molecule.GetSubstructMatch(Chem.MolFromSmarts(_PRODUCT_CPD))
+    cpd = list(ring) + [n.GetIdx() for i in ring for n in molecule.GetAtomWithIdx(i).GetNeighbors()
+                        if n.GetSymbol() == "H"]
+    order = cpd + [i for i in range(molecule.GetNumAtoms()) if i not in set(cpd)]
+    symbols = [molecule.GetAtomWithIdx(i).GetSymbol() for i in order]
+    xyz = molecule.GetConformer().GetPositions()[order]
+    if len(cpd) != CPD_SIZE or len(order) != CPD_SIZE + DIENOPHILE_SIZE:
+        raise RuntimeError("Product does not split into a C5H6 and a C11H9NO2 part")
+
+    # The pair equations on the two parts; the bonding of each part is its own, so the forming bonds are excluded.
+    ends, diene, bridge = _template_sites(Atoms(symbols[:CPD_SIZE], xyz[:CPD_SIZE]), CPD_SIZE, _cpd_sites, scale)
+    cc, plane, nitrogen = _template_sites(Atoms(symbols[CPD_SIZE:], xyz[CPD_SIZE:]), DIENOPHILE_SIZE,
+                                          _dienophile_sites, scale)
+    sites = (tuple(ends), tuple(diene), bridge, tuple(int(i) + CPD_SIZE for i in cc),
+             tuple(int(i) + CPD_SIZE for i in plane), int(nitrogen) + CPD_SIZE)
+    ci, mi = np.arange(CPD_SIZE), np.arange(CPD_SIZE, len(order))
+    geometry = _measure_placed_pair(ci, xyz[ci], mi, xyz[mi], sites, {i: i for i in range(len(order))})
+    if geometry.approach_type != approach:
+        raise RuntimeError(f"Embedded {approach} product measures as {geometry.approach_type}")
+
+    atoms = Atoms(symbols, positions=xyz)
+    atoms.new_array("global_index", np.arange(len(atoms)))
+    atoms.new_array("pair_role", np.array(["CPD"] * CPD_SIZE + ["MAL"] * DIENOPHILE_SIZE))
+    metrics = get_pair_model("cpd_n4t").metrics(geometry)
+    atoms.info.update(structure="product", smiles=PRODUCT_SMILES[approach], approach_type=geometry.approach_type,
+                      **{f"measured_{name}": float(value) for name, value in metrics.items()})
+    return atoms, geometry
 
 
 def templates_from_frame(atoms, *, scale=1.3):
