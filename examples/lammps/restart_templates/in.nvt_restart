@@ -1,6 +1,6 @@
 # UMA NVT continuation (no shear) from a restart file
 # Types: 1=C 2=H 3=N 4=O
-# Requires fairchem-lammps + uma-s-1p1; charge/spin are set in the fairchem config (spin: 1)
+# Requires fairchem-lammps + uma-s-1p2p1; charge/spin are set in the fairchem config (spin: 1)
 # No pair_style / bonded force-field terms
 
 # ---- Edit these values ------------------------------------------------------

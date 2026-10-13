@@ -2,7 +2,7 @@
 # Types: 1=C 2=H 3=N 4=O; edit the element mapping if needed.
 # Use the same external fairchem-lammps driver, UMA checkpoint, task,
 # charge, spin and inference settings as the NPT simulation.
-# Collaboration configuration: uma-s-1p1 / omol; model loading is external.
+# Collaboration configuration: uma-s-1p2p1 / omol; model loading is external.
 # See docs/nvt_from_npt.md for editable settings and validation.
 
 # INPUT: chosen NPT restart; preserves positions, velocities and step number.

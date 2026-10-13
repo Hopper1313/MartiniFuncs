@@ -2,7 +2,7 @@
 # Types: 1=C 2=H 3=N 4=O; change dump_modify if your type order differs.
 # Launch with the same fairchem-lammps driver, UMA checkpoint, task, charge,
 # spin and inference settings used for the NPT trajectory.
-# Collaboration model: uma-s-1p1, task omol (model loading is external).
+# Collaboration model: uma-s-1p2p1, task omol (model loading is external).
 # This file does not configure a potential or evaluate forces on its own.
 # See docs/nve_from_npt.md for editable settings and energy checks.
 

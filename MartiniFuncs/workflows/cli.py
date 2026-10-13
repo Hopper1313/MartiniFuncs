@@ -278,7 +278,7 @@ def build_parser():
     recompute.add_argument("--molecules", action="store_true",
                            help="also evaluate each pair member alone: per-molecule forces, member energies and "
                                 "interaction energy E_pair - E_first - E_second (single-point, relax-fragments)")
-    recompute.add_argument("--checkpoint", type=Path, required=True, help="local UMA checkpoint, e.g. uma-s-1p1.pt")
+    recompute.add_argument("--checkpoint", type=Path, required=True, help="local UMA checkpoint, e.g. uma-s-1p2p1.pt")
     recompute.add_argument("--model-task", default="omol", help="UMA task head (default omol)")
     recompute.add_argument("--device", choices=["cpu", "cuda"], default="cuda")
     recompute.add_argument("--inference-settings",

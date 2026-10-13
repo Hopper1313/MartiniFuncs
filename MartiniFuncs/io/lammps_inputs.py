@@ -1,7 +1,7 @@
 """LAMMPS metal-unit run templates for the collaboration's external UMA driver.
 
 These files do not configure a potential. Launch with the existing fairchem
-driver and a locally licensed uma-s-1p1 model using task omol. Plain LAMMPS alone
+driver and a locally licensed uma-s-1p2p1 model using task omol. Plain LAMMPS alone
 does not supply UMA forces. The final executable command is always run.
 """
 import re
@@ -71,7 +71,7 @@ def render_lammps_input(*, data_file, type_symbols, ensemble, steps,
     types = type_symbol_list(type_symbols)
     if not types or len(set(types)) != len(types) or any(s not in atomic_numbers or s == "X" for s in types):
         raise ValueError("type_symbols must be distinct chemical symbols in data-file type order")
-    lines = ["# Requires external fairchem driver: uma-s-1p1, task omol.",
+    lines = ["# Requires external fairchem driver: uma-s-1p2p1, task omol.",
              "# This input does not install a LAMMPS potential or load model weights.",
              "# Keep run as the final executable command for the external driver.",
              "units metal", "atom_style atomic", "boundary p p p", "atom_modify map array",

@@ -203,11 +203,11 @@ periodic snapshots before extraction or relaxation. Tests under
 `tests/test_force_comparison.py` only exercise the comparison code with an
 analytic calculator; they do not run or require UMA.
 
-Provide a local **uma-s-1p1** checkpoint, a LAMMPS dump containing `fx fy fz`, and
+Provide a local **uma-s-1p2p1** checkpoint, a LAMMPS dump containing `fx fy fz`, and
 optionally the LAMMPS input and data files. `input_file` supplies literal units
 and provenance; `datafile` supplies fallback species mapping. Checkpoint weights
-are never included or downloaded. The model has been confirmed as uma-s-1p1;
-the uma-s-1p2 comment in the supplied input is not used as configuration.
+are never included or downloaded. The model is whatever checkpoint you pass; a
+model comment in a LAMMPS input is not used as configuration.
 
 The confirmed MD inference settings are applied explicitly by default:
 
@@ -232,7 +232,7 @@ For example, **if the full system is neutral and singlet**, from the repository
 root:
 
 ```sh
-python -m MartiniFuncs.workflows.force_validation tests/lammpsio_tests/multiple_frames.lammpstrj --input tests/lammpsio_tests/infile.in --checkpoint /path/outside/repo/uma-s-1p1.pt --charge 0 --spin 1 --atol 0.001 --output force_report.json
+python -m MartiniFuncs.workflows.force_validation tests/lammpsio_tests/multiple_frames.lammpstrj --input tests/lammpsio_tests/infile.in --checkpoint /path/outside/repo/uma-s-1p2p1.pt --charge 0 --spin 1 --atol 0.001 --output force_report.json
 ```
 
 The default checks only frame 0 using `omol`. Add `--indices 0 4 8` to check
@@ -248,7 +248,7 @@ from MartiniFuncs.workflows.force_validation import validate_forces
 
 report = validate_forces(
     dump="tests/lammpsio_tests/multiple_frames.lammpstrj",
-    checkpoint="/path/outside/repo/uma-s-1p1.pt",
+    checkpoint="/path/outside/repo/uma-s-1p2p1.pt",
     input_file="tests/lammpsio_tests/infile.in",
     indices=[0],  # start with one; increase after inspecting timing
     charge=0, spin=1,  # use the actual full-system charge and multiplicity
@@ -559,7 +559,7 @@ density. Its 400 K / 25000 bar NPT parameters illustrate the existing experiment
 they do not validate rapid compression from that dilute state.
 
 Run templates require the collaboration's **external fairchem driver**, the
-local **uma-s-1p1** model, and task **omol**. No driver invocation, model path,
+local **uma-s-1p2p1** model, and task **omol**. No driver invocation, model path,
 charge/spin settings, or inference settings are guessed or embedded in LAMMPS
 syntax. These must be configured in the existing launcher. The templates omit
 `pair_style` intentionally and cannot supply UMA forces in standalone LAMMPS.

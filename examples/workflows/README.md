@@ -121,7 +121,7 @@ plot label is not a substitute for rerunning with corrected physical settings.
   Local indices are rows of a particular Atoms object. Slicing/reordering changes
   rows, not persistent identity. Pair force arrays are exported in geometry order.
 - NPT/NVT/NVE inputs use `metal`: pressure bar, damping and timestep ps. Templates
-  require the external fairchem launcher with local **uma-s-1p1 / omol** settings.
+  require the external fairchem launcher with local **uma-s-1p2p1 / omol** settings.
   The example run inputs are independent starts, not a validated compression
   protocol or exact restart. The packing example cell is intentionally dilute.
 

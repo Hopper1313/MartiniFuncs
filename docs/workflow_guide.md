@@ -172,7 +172,7 @@ never on the login node:
 
 ```bash
 python -m MartiniFuncs.workflows.force_validation nve_2p5.lammpstrj \
-    --checkpoint /path/to/uma-s-1p1.pt --units metal --charge 0 --spin 1 \
+    --checkpoint /path/to/uma-s-1p2p1.pt --units metal --charge 0 --spin 1 \
     --atol 0.05 --indices 0 150000 300000 --device cuda --output force_check.json
 ```
 
@@ -898,7 +898,7 @@ Single points on the final clusters, pair mode:
 ```bash
 python -m MartiniFuncs recompute postprocess_v5_3.75cutoff/exports/final/clusters.extxyz \
     --output postprocess_v5_3.75cutoff/exports/final/clusters_fenv.extxyz \
-    --checkpoint /path/to/uma-s-1p1.pt --device cuda
+    --checkpoint /path/to/uma-s-1p2p1.pt --device cuda
 ```
 
 Pair and molecule decompositions with interaction energies:
@@ -906,7 +906,7 @@ Pair and molecule decompositions with interaction energies:
 ```bash
 python -m MartiniFuncs recompute postprocess_v5_3.75cutoff/exports/final/pairs.extxyz \
     --output postprocess_v5_3.75cutoff/exports/final/pairs_fenv_molecules.extxyz \
-    --checkpoint /path/to/uma-s-1p1.pt --device cuda --molecules
+    --checkpoint /path/to/uma-s-1p2p1.pt --device cuda --molecules
 ```
 
 Relax the isolated pair and both molecules (deformation energies):
@@ -914,7 +914,7 @@ Relax the isolated pair and both molecules (deformation energies):
 ```bash
 python -m MartiniFuncs recompute postprocess_v5_3.75cutoff/exports/final/pairs.extxyz \
     --output postprocess_v5_3.75cutoff/exports/final/pairs_relaxed.extxyz \
-    --checkpoint /path/to/uma-s-1p1.pt --device cuda --task relax-fragments --molecules \
+    --checkpoint /path/to/uma-s-1p2p1.pt --device cuda --task relax-fragments --molecules \
     --optimizer BFGS --fmax 0.05 --steps 500
 ```
 
@@ -923,7 +923,7 @@ Optimize each pair inside its frozen shell:
 ```bash
 python -m MartiniFuncs recompute postprocess_v5_3.75cutoff/exports/final/clusters.extxyz \
     --output postprocess_v5_3.75cutoff/exports/final/clusters_frozen_shell.extxyz \
-    --checkpoint /path/to/uma-s-1p1.pt --device cuda --task frozen-shell --fmax 0.05 --steps 1000
+    --checkpoint /path/to/uma-s-1p2p1.pt --device cuda --task frozen-shell --fmax 0.05 --steps 1000
 ```
 
 The default inference settings are the MD settings with `merge_mole` and
@@ -937,7 +937,7 @@ and on machines without a C++ compiler, e.g. Windows (`--device cpu`; about
 Testing on a laptop or workstation without a GPU works the same way:
 
 ```bash
-python -m MartiniFuncs recompute EXPORT/clusters.extxyz --output EXPORT/clusters_fenv_cpu.extxyz     --checkpoint /path/to/uma-s-1p1.pt --device cpu --molecules
+python -m MartiniFuncs recompute EXPORT/clusters.extxyz --output EXPORT/clusters_fenv_cpu.extxyz     --checkpoint /path/to/uma-s-1p2p1.pt --device cpu --molecules
 ```
 
 As a GPU batch job (adjust the GPU request to your cluster):
@@ -957,7 +957,7 @@ conda activate martini
 
 export_dir=postprocess_v5_3.75cutoff/exports/final
 python -m MartiniFuncs recompute "$export_dir/clusters.extxyz" --output "$export_dir/clusters_fenv.extxyz" \
-    --checkpoint /path/to/uma-s-1p1.pt --device cuda --molecules
+    --checkpoint /path/to/uma-s-1p2p1.pt --device cuda --molecules
 ```
 
 Outputs are never overwritten (choose a new `--output`), and a run that fails
@@ -974,7 +974,7 @@ from MartiniFuncs.recompute.driver import recompute_file
 from MartiniFuncs.recompute.evaluation import FragmentEvaluator, FragmentRelaxer, uma_calculator
 from MartiniFuncs.recompute.tasks import ForceDecomposition, FragmentRelaxation, FrozenShellOptimization
 
-calculator = uma_calculator("/path/to/uma-s-1p1.pt", task="omol", device="cuda")   # or device="cpu"
+calculator = uma_calculator("/path/to/uma-s-1p2p1.pt", task="omol", device="cuda")   # or device="cpu"
 evaluator = FragmentEvaluator(calculator, charge=0, spin=1)
 
 export = "postprocess_v5_3.75cutoff/exports/final"
@@ -1191,7 +1191,7 @@ node, as a batch job or inside an interactive session (`srun ... --pty bash`).
    ```bash
    python -m MartiniFuncs recompute postprocess_v5_3.75cutoff/exports/final/clusters.extxyz \
        --output postprocess_v5_3.75cutoff/exports/final/clusters_fenv.extxyz \
-       --checkpoint /path/to/uma-s-1p1.pt --device cuda --molecules
+       --checkpoint /path/to/uma-s-1p2p1.pt --device cuda --molecules
    ```
 
 8. Prepare reaction inputs (notebook 07);

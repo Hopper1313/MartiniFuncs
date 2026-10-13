@@ -1,6 +1,6 @@
 # UMA simple shear at constant pressure (NEMD) continuation from a restart file
 # Types: 1=C 2=H 3=N 4=O
-# Requires fairchem-lammps + uma-s-1p1; charge/spin are set in the fairchem config (spin: 1)
+# Requires fairchem-lammps + uma-s-1p2p1; charge/spin are set in the fairchem config (spin: 1)
 # No pair_style / bonded force-field terms
 # The restart must hold a triclinic box (the equilibration input runs change_box all triclinic).
 #

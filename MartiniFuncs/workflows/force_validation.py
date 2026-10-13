@@ -20,7 +20,7 @@ from MartiniFuncs._checks import plain
 from MartiniFuncs.io.lammps import iter_lammps_frames, read_lammps_input_settings
 
 
-# Confirmed settings for the collaboration's uma-s-1p1 MD runs.
+# Inference settings of the collaboration's MD launcher (fairchem-lammps config).
 MD_INFERENCE_SETTINGS = {
     "tf32": True,
     "merge_mole": True,
@@ -133,7 +133,7 @@ def validate_forces(dump, checkpoint, *, input_file=None, datafile=None, units=N
                     inference_settings=None):
     """Reproduce source forces for selected full periodic frames with UMA.
 
-    Supply a local uma-s-1p1 checkpoint and a dump with fx/fy/fz. Units come from
+    Supply a local uma-s-1p2p1 checkpoint and a dump with fx/fy/fz. Units come from
     ``input_file`` or the explicit ``units`` argument. Explicit units take
     precedence and bypass input parsing; no timestep is needed for force checks.
     Indices are zero-based nonnegative frame numbers, evaluated in file order.
@@ -198,7 +198,7 @@ def validate_forces(dump, checkpoint, *, input_file=None, datafile=None, units=N
     if missing:
         raise IndexError(f"Requested frames not found: {sorted(missing)}")
     return {
-        "model_label": "uma-s-1p1", "checkpoint": str(checkpoint),
+        "model_label": checkpoint.stem, "checkpoint": str(checkpoint),
         "checkpoint_sha256": digest.hexdigest(), "task": task, "device": device,
         "inference_settings": calculator.martini_inference_settings,
         "input_settings": input_settings, "requested_indices": requested,
