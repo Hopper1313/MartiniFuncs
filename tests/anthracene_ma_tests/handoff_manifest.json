@@ -1,0 +1,160 @@
+{
+  "reaction": "Anthracene + maleic anhydride Diels-Alder cycloaddition",
+  "combined_system": {
+    "formula": "C18H12O3",
+    "atom_count": 33,
+    "indexing": "zero_based",
+    "atom_order_is_consistent": true,
+    "fragments": {
+      "maleic_anhydride": [0, 1, 2, 3, 4, 5, 20, 21, 32],
+      "anthracene": [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+    },
+    "reactive_indices": {
+      "maleic_anhydride_alkene": [5, 20],
+      "anthracene_reactive_carbons": [6, 13],
+      "forming_bonds": [[5, 6], [20, 13]],
+      "anthracene_central_ring": [6, 7, 12, 13, 14, 19]
+    },
+    "one_based_equivalents": {
+      "maleic_anhydride_alkene": [6, 21],
+      "anthracene_reactive_carbons": [7, 14],
+      "forming_bonds": [[6, 7], [21, 14]],
+      "anthracene_central_ring": [7, 8, 13, 14, 15, 20]
+    }
+  },
+  "recommended_descriptors": {
+    "direct_pair_centroid": "distance(centroid([5,20]), centroid([6,13]))",
+    "central_ring_centroid": "distance(centroid([5,20]), centroid([6,7,12,13,14,19]))",
+    "forming_distances": ["distance(5,6)", "distance(20,13)"],
+    "concertedness": "abs(distance(5,6) - distance(20,13))",
+    "orientation_invariant_pairing": "min(max(d(5,6),d(20,13)), max(d(5,13),d(20,6)))"
+  },
+  "complete_method_sets": {
+    "dft_wB97M_D3BJ_def2_TZVPPD": {
+      "directory": "structures/dft",
+      "files": [
+        "anthracene.xyz",
+        "maleic_anhydride.xyz",
+        "reactant_complex.xyz",
+        "transition_state_provisional_2imag.xyz",
+        "product.xyz"
+      ],
+      "missing": ["IRC endpoints", "validated refined first-order-saddle TS"],
+      "status": "Refined TS job running; provisional TS has two imaginary modes."
+    },
+    "mace_omol": {
+      "directory": "structures/mace_omol",
+      "files": [
+        "anthracene.xyz",
+        "maleic_anhydride.xyz",
+        "reactant_complex.xyz",
+        "transition_state.xyz",
+        "irc_reactant_endpoint.xyz",
+        "irc_product_endpoint.xyz",
+        "product.xyz",
+        "summary.json"
+      ],
+      "reactant_irc_direction": "forward",
+      "product_irc_direction": "reverse",
+      "ts_assignment": "validated concerted first-order saddle"
+    },
+    "uma_s_1p2p1": {
+      "directory": "structures/uma_s_1p2p1",
+      "files": [
+        "anthracene.xyz",
+        "maleic_anhydride.xyz",
+        "reactant_complex.xyz",
+        "transition_state.xyz",
+        "irc_reactant_endpoint.xyz",
+        "irc_product_endpoint.xyz",
+        "product.xyz",
+        "summary.json"
+      ],
+      "reactant_irc_direction": "forward",
+      "product_irc_direction": "reverse",
+      "ts_assignment": "validated concerted first-order saddle"
+    }
+  },
+  "structures": [
+    {
+      "file": "structures/dft_anthracene.xyz",
+      "kind": "isolated reactant",
+      "method": "ORCA wB97M-D3BJ/def2-TZVPPD",
+      "energy_Eh": -539.903930389390,
+      "note": "Standalone 24-atom ordering; combined-system indices do not apply."
+    },
+    {
+      "file": "structures/dft_maleic_anhydride.xyz",
+      "kind": "isolated reactant",
+      "method": "ORCA wB97M-D3BJ/def2-TZVPPD",
+      "energy_Eh": -379.558316107320,
+      "note": "Standalone 9-atom ordering; alkene carbons are zero-based 5 and 6 in this standalone file."
+    },
+    {
+      "file": "structures/initial_reactant_pair.xyz",
+      "kind": "pre-reactive starting pair",
+      "method": "workflow starting geometry",
+      "note": "Useful as an MD/pre-reactive-pair seed."
+    },
+    {
+      "file": "structures/dft_reactant_complex.xyz",
+      "kind": "reactant complex",
+      "method": "ORCA wB97M-D3BJ/def2-TZVPPD TightOpt",
+      "energy_Eh": -919.477323268030,
+      "note": "Optimization accepted without completing its expensive final Hessian."
+    },
+    {
+      "file": "structures/dft_ts_provisional_2imag.xyz",
+      "kind": "provisional concerted transition state",
+      "method": "ORCA wB97M-D3BJ/def2-TZVPPD",
+      "energy_Eh": -919.445546906236,
+      "note": "Approximately 2.192/2.193 A forming bonds. Has two imaginary modes; the extra approximately -95.19 cm^-1 mode is a twisting mode. Treat as near-TS, not a fully validated first-order saddle."
+    },
+    {
+      "file": "structures/dft_product.xyz",
+      "kind": "cycloadduct product",
+      "method": "ORCA wB97M-D3BJ/def2-TZVPPD",
+      "energy_Eh": -919.516129418647
+    },
+    {
+      "file": "structures/omol_reactant_complex.xyz",
+      "kind": "reactant complex",
+      "method": "MACE-OMOL"
+    },
+    {
+      "file": "structures/omol_ts_concerted.xyz",
+      "kind": "validated concerted transition state",
+      "method": "MACE-OMOL + Sella",
+      "note": "One significant imaginary mode, approximately 548.7i cm^-1; forming bonds 2.208/2.205 A."
+    },
+    {
+      "file": "structures/omol_irc_reactant_endpoint.xyz",
+      "kind": "reactant-side IRC endpoint",
+      "method": "MACE-OMOL + Sella IRC",
+      "irc_direction": "forward"
+    },
+    {
+      "file": "structures/omol_irc_product_endpoint.xyz",
+      "kind": "product-side IRC endpoint",
+      "method": "MACE-OMOL + Sella IRC",
+      "irc_direction": "reverse"
+    },
+    {
+      "file": "structures/omol_product.xyz",
+      "kind": "cycloadduct product",
+      "method": "MACE-OMOL"
+    },
+    {
+      "file": "structures/mh1_omat_pbe_ts_asynchronous.xyz",
+      "kind": "validated asynchronous transition state",
+      "method": "MACE-MH1 OMAT-PBE + Sella",
+      "note": "One significant imaginary mode, approximately 477.4i cm^-1; forming bonds 3.590/1.900 A. Useful as an asynchronous contrast."
+    },
+    {
+      "file": "structures/uma_s_1p2p1_ts_concerted.xyz",
+      "kind": "validated concerted transition state",
+      "method": "UMA-S-1p2p1 + Sella",
+      "note": "One significant imaginary mode, approximately 581.5i cm^-1; forming bonds 2.222/2.228 A."
+    }
+  ]
+}

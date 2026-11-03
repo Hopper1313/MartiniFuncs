@@ -52,6 +52,7 @@ All commands are `python -m MartiniFuncs <command> ...` (the installed
 | `report` | no, cache only | about 1 minute, 1 CPU | statistics for any selection and frame window; repeat freely |
 | `extract` | yes, selected frames only | minutes to hours, depending on the selection; `--workers` | `.extxyz` pair and pair+shell structures with forces |
 | `collect` | yes, every frame | like `run` + `extract` | structures straight from the dump in one pass, no report; rarely needed |
+| `trajectories` | yes, selected frames | like `extract` over the whole window; `--workers` | one periodic `.extxyz` trajectory per pair, every frame flagged collected/accepted |
 
 Measured on the NVT_noshear trajectory (300,001 frames, 1,360 atoms, 43 GB
 dump, 3.75 Angstrom collection with about 4.8 million pair detections): a full
@@ -92,6 +93,7 @@ for everyone.
 | `git fetch/merge`, `pip install -e`, editing scripts, `--help`, `sbatch`, `squeue` | login node | directly |
 | `run`, `collect` | compute node, batch | `sbatch` script with many CPUs (Step 1) |
 | `extract` | compute node, batch | `sbatch` script with `--workers` (Step 4) |
+| `trajectories` | compute node, batch | `sbatch` script like Step 4's, with `--workers` |
 | `report`, `examples/diffusion_from_report.py` | compute node, small | batch job, or an interactive session (below) |
 | Python exploration, notebooks 04/05/08/09 | compute node | interactive session, or the cluster's Jupyter service on a compute node |
 | Force validation (UMA), notebook 06 | GPU compute node | batch job requesting a GPU |
@@ -215,7 +217,7 @@ output_dir="./postprocess_v5_${cutoff}cutoff/"    # new folder for new package c
 units='metal'
 timestep_ps='0.0005'
 
-python -m MartiniFuncs run "$run_dir" \
+python -m MartiniFuncs run "$run_dir" --pair-model cpd_n4t \
     --output "$output_dir" \
     --units "$units" \
     --timestep-ps "$timestep_ps" \
@@ -246,9 +248,10 @@ sbatch postprocess.slurm --max-ring-dihedral-deviation 30 --report-name ring30
 | Flag | Meaning | Advice |
 |---|---|---|
 | `--units metal` | LAMMPS unit style of the dump | required; only `metal` is supported for analysis |
+| `--pair-model cpd_n4t` | the pair chemistry (a model from `MartiniFuncs.chemistry`) | required unless `--no-pairs`; there is no default |
 | `--timestep-ps 0.0005` | ps per MD step (not per saved frame) | must match the simulation input |
 | `--workers N --batch-size B` | N local processes, B frames per task | `--workers` may not exceed `SLURM_CPUS_PER_TASK` |
-| `--reactive-radius R` | collection radius, Angstrom (default 3.25); the cache holds only pairs below it | set it to the largest radius you will ever want to select |
+| `--reactive-radius R` | collection radius, Angstrom (default: the model's, 3.25 for `cpd_n4t`); the cache holds only pairs below it | set it to the largest radius you will ever want to select |
 | `--temperature-dof 3N-3` | degrees of freedom for the temperature column | omit to skip temperature |
 | `--no-export-pairs` | skip the structure export pass | recommended; use `extract` later |
 | `--orientations` | also cache each molecule's long axis and ring normal | needed for rotational dynamics; doubles the COM storage |
@@ -256,7 +259,7 @@ sbatch postprocess.slurm --max-ring-dihedral-deviation 30 --report-name ring30
 | `--max-frames N` | read only the first N frames | quick previews of a new trajectory |
 | `--reaction-events record\|stop\|off` | topology-change (reaction) detection | default `record`; `stop` ends the analysis before the first event |
 | `--pair-backend cached\|reference` | reuse first-frame topology, or rebuild every frame | keep `cached` for nonreactive runs |
-| `--no-pairs` | molecular statistics only | for systems without CPD/N4T pairs |
+| `--no-pairs` | molecular statistics only | for systems without a pair model |
 | `--max-*`, `--geometry-required` | selection for this run's own report/export only | the cache keeps every collected pair regardless |
 | `--startframe`, `--endframe` | frame window for this run's report/export only | the cache always covers all frames read |
 
@@ -274,7 +277,7 @@ This is a separate full pass over the dump into its own folder; it does not
 add to the existing cache:
 
 ```bash
-python -m MartiniFuncs run ./ --output ./postprocess_v5_4.0cutoff \
+python -m MartiniFuncs run ./ --pair-model cpd_n4t --output ./postprocess_v5_4.0cutoff \
     --units metal --timestep-ps 0.0005 --workers 64 --reactive-radius 4.0 \
     --temperature-dof 3N-3 --orientations --no-export-pairs
 ```
@@ -289,21 +292,21 @@ A quick preview of a new trajectory (first 2,000 frames, few workers), sent to
 a compute node with `srun`:
 
 ```bash
-srun -n1 -c8 --mem=16G -t 00:30:00 python -m MartiniFuncs run ./ --output ./preview \
+srun -n1 -c8 --mem=16G -t 00:30:00 python -m MartiniFuncs run ./ --pair-model cpd_n4t --output ./preview \
     --units metal --timestep-ps 0.0005 --workers 8 --max-frames 2000 --no-export-pairs
 ```
 
 Keep every 10th frame (smaller cache, coarser lag statistics):
 
 ```bash
-python -m MartiniFuncs run ./ --output ./postprocess_v5_stride10 \
+python -m MartiniFuncs run ./ --pair-model cpd_n4t --output ./postprocess_v5_stride10 \
     --units metal --timestep-ps 0.0005 --workers 64 --frame-stride 10 --no-export-pairs
 ```
 
 Stop cleanly before the first reaction, so every statistic is pre-reaction:
 
 ```bash
-python -m MartiniFuncs run ./ --output ./postprocess_v5_prereaction \
+python -m MartiniFuncs run ./ --pair-model cpd_n4t --output ./postprocess_v5_prereaction \
     --units metal --timestep-ps 0.0005 --workers 64 --reaction-events stop --no-export-pairs
 ```
 
@@ -313,7 +316,7 @@ new report. Every setting that is not a selection or frame-window flag must
 match the original run, or `run` refuses to reuse the cache:
 
 ```bash
-python -m MartiniFuncs run ./ --output ./postprocess_v5_3.75cutoff \
+python -m MartiniFuncs run ./ --pair-model cpd_n4t --output ./postprocess_v5_3.75cutoff \
     --units metal --timestep-ps 0.0005 --workers 64 --reactive-radius 3.75 \
     --temperature-dof 3N-3 --orientations --no-export-pairs \
     --report-name forming4 --max-forming-distance 4.0
@@ -1023,9 +1026,65 @@ reusable cache, and you choose the selection after looking at the data. Use
 Like `run`, it reads the whole dump: put the command in a batch script.
 
 ```bash
-python -m MartiniFuncs collect ./ --output ./collect_ring30 --units metal --timestep-ps 0.0005 \
+python -m MartiniFuncs collect ./ --pair-model cpd_n4t --output ./collect_ring30 --units metal --timestep-ps 0.0005 \
     --workers 64 --reactive-radius 3.25 --shell-radius 3.0 --max-ring-dihedral-deviation 30 \
     --startframe 100000
+```
+
+---
+
+## `trajectories`: one trajectory per pair
+
+`extract` writes one structure per accepted pair per frame, all pairs of a frame
+together. `trajectories` instead follows each pair through time: one periodic
+Extended XYZ file per pair, with **every** selected frame, whether or not the
+pair passes the criteria in that frame.
+
+- **Pairs:** every distinct (CPD, N4T) pair collected (inside the cache's
+  reactive radius) in at least one selected frame.
+- **Frames:** every selected frame in `[--startframe, --endframe)`, including
+  frames where the two molecules are far apart. `--every N` keeps every Nth
+  cached frame of the selection.
+- **Flags on every frame:** `collected` (inside the reactive radius that frame)
+  and `accepted` (collected *and* passing the selection flags; with no flags,
+  `accepted` equals `collected`). The candidate metrics (`screen_distance`,
+  `ring_dihedral`, ...) are on every frame, `nan` when not collected. The flags
+  come from the cache; the dump is read only for coordinates and forces.
+- **Geometry:** the full cell (`Lattice`, `pbc="T T T"`) and whole molecules.
+  The CPD follows its unwrapped COM from the cache, so it moves continuously
+  with no jumps at the box edge; the N4T is the periodic image nearest the CPD.
+  Per-atom arrays as in `extract`: `global_index`, `lammps_id`, `pair_role`,
+  `lammps_forces`, `velocities`, plus `accepted_binary`: the frame's `accepted`
+  flag as 0/1 on every atom, for coloring in OVITO (which colors only numeric
+  arrays). The candidate metrics are also written as per-atom arrays (the same
+  value on every atom of the pair, `nan` when not collected).
+
+**Mind the size.** Each structure is about 6.7 kB. On NVT_noshear (71 collected
+pairs, 300,001 frames) every frame would be about 140 GB; `--every 10` (5 fs ->
+50 fs spacing) gives about 14 GB, `--every 100` about 1.4 GB. Narrow the window
+or thin it before running the whole trajectory.
+
+```bash
+python -m MartiniFuncs trajectories postprocess_v5_3.75cutoff/cache --output postprocess_v5_3.75cutoff/traj_ring30     --startframe 100000 --every 10 --max-screen-distance 3.25 --max-ring-dihedral-deviation 30 --workers 32
+```
+
+The output folder holds `pair_0000_cpd6_mal9.extxyz`, ... (pair id, then the
+two molecule indices), `pairs.csv` (one row per pair: molecules, atom IDs,
+frames written/collected/accepted, first and last collected/accepted frame,
+file name), `all_pairs.extxyz` (every pair's structure of a frame concatenated
+into one frame, with a numeric per-atom `pair_id` and `accepted_binary` for
+coloring; a molecule in two pairs appears twice) and `manifest.json`. As with `extract`, an existing folder with
+different settings is never overwritten.
+
+```python
+import pandas as pd
+from ase.io import read
+
+pairs = pd.read_csv("postprocess_v5_3.75cutoff/traj_ring30/pairs.csv")
+best = pairs.sort_values("frames_accepted", ascending=False).iloc[0]
+frames = read(f"postprocess_v5_3.75cutoff/traj_ring30/{best.file}", index=":")
+accepted = [atoms.info["accepted"] for atoms in frames]
+time_ps = [atoms.info["time_ps"] for atoms in frames]
 ```
 
 ---
@@ -1075,6 +1134,76 @@ from MartiniFuncs.io.lammps import read_lammps_frame
 frame_cpd, frame_n4t = templates_from_frame(read_lammps_frame("nve_2p5.lammpstrj", index=0, units="metal").atoms)
 atoms, geometry = build_pair(frame_cpd, frame_n4t, distance=3.2, distance_kind="max_forming", ring_dihedral=180)
 print(max(geometry.forming_distances))               # 3.2
+```
+
+---
+
+## Another system: anthracene + maleic anhydride
+
+Everything in this guide that does not name a pair model works for any
+molecules: molecular statistics, diffusion, reaction (topology) events, reports.
+Pair analysis needs a model for the chemistry; the anthracene + maleic
+anhydride model (`--pair-model anthracene_ma`) is not built yet, so until then
+analyze these runs with `--no-pairs`.
+
+**Starting box.** `examples/build_from_smiles.py` packs molecules given as
+SMILES (RDKit templates, rigid random insertion: dilute, not equilibrated) and
+writes `initial.data`, its `.json` identity sidecar, `initial.extxyz` and
+`npt.in`/`nvt.in`/`nve.in`. Build it in its own setup folder, not inside a run
+folder you will analyze. It is light work and fine on a laptop:
+
+```bash
+python -m examples.build_from_smiles --output ../anthracene_ma_start \
+    --species anthracene "c1ccc2cc3ccccc3cc2c1" 40 \
+    --species maleic_anhydride "O=C1OC(=O)C=C1" 40 --box-length 50
+```
+
+**Atom types.** There is no nitrogen: the data file's types are `1=C 2=H 3=O`
+(alphabetical by default; `--type-order` changes it). The generated inputs
+already dump with `element C H O`; in the restart templates set
+`variable element_list string "C H O"`. The UMA references for this system
+used charge 0 and spin 1; set the same in the fairchem config.
+
+**Analysis.** Molecular statistics and reaction events, with the adduct
+(C18H12O3, 33 atoms) detected as a new molecule:
+
+```bash
+python -m MartiniFuncs run ./ --output ./postprocess_no_pairs --units metal --timestep-ps 0.0005 \
+    --no-pairs --temperature-dof 3N-3 --workers 2
+```
+
+`--reaction-events record` (the default) logs the frame where an adduct forms
+and keeps going; `stop` ends the analysis cleanly before it. The older
+product-size screen is `--reaction-atom-counts 24 9` (anthracene 24 atoms +
+maleic anhydride 9 atoms): it aborts at the first 33-atom molecule.
+
+**Pair builder.** `MartiniFuncs.chemistry.anthracene_ma.build` places a rigid
+maleic anhydride against an anthracene fixed in its own frame (origin at the
+central-ring centroid, x the long axis, y from C9 to C10, z the ring normal).
+`height` and `offset_x/y` put the MA C=C midpoint; `twist` (in-plane turn of the
+C=C), `roll` (C=C out of plane) and `fold` (anhydride ring hinged about the C=C)
+set its orientation; all 0 is the stacked, reactive pose. `distance_kind`
+`"centers"` or `"max_forming"` sets the distance instead of the height.
+`measure_placement` reads the same parameters off any structure: the UMA
+reactant complex is the stacked pose at 3.17 Angstrom, the UMA TS the stacked
+pose at 2.33 Angstrom with the ring folded 15 degrees.
+
+```python
+from MartiniFuncs.chemistry.anthracene_ma.build import (build_pair, measure_placement, reference_structure,
+                                                        structure_metrics)
+
+atoms, geometry = build_pair(distance=3.0, distance_kind="max_forming", twist=30, fold=15)
+atoms.write("anthracene_ma_tw30.xyz")
+print(measure_placement(reference_structure("transition_state")))
+print(structure_metrics(reference_structure("transition_state")))     # the shared Diels-Alder metrics
+```
+
+The interactive version (sliders for every parameter, live metrics, XYZ
+download, the matching `build_pair` call; molecules rendered with
+Psience/McUtils, needs an internet connection for x3dom):
+
+```bash
+python -m MartiniFuncs.chemistry.anthracene_ma.viewer anthracene_ma_pair_builder.html
 ```
 
 ---
@@ -1145,7 +1274,7 @@ node, as a batch job or inside an interactive session (`srun ... --pty bash`).
    compute node (about 10 minutes):
 
    ```bash
-   srun -n1 -c8 --mem=16G -t 00:30:00 python -m MartiniFuncs run ./ --output ./preview \
+   srun -n1 -c8 --mem=16G -t 00:30:00 python -m MartiniFuncs run ./ --pair-model cpd_n4t --output ./preview \
        --units metal --timestep-ps 0.0005 --workers 8 --max-frames 2000 --no-export-pairs
    ```
 

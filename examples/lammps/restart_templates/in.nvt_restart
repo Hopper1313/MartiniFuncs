@@ -1,5 +1,5 @@
 # UMA NVT continuation (no shear) from a restart file
-# Types: 1=C 2=H 3=N 4=O
+# Atom types: set element_list below to the element of each type, in the data file's type order
 # Requires fairchem-lammps + uma-s-1p2p1; charge/spin are set in the fairchem config (spin: 1)
 # No pair_style / bonded force-field terms
 
@@ -13,6 +13,7 @@ variable        dump_every     equal 10          # trajectory frame interval, st
 variable        restart_every  equal 100000      # checkpoint interval, steps
 variable        run_label      string nvt_cont1  # label of this run (part of every output name)
 variable        restart_infile_name string equilibrated_T400K_P25000bar.restart   # restart to continue from
+variable        element_list   string "C H N O"   # type order of the data file (CPD + N4T: C H N O; anthracene + MA: C H O)
 # ----------------------------------------------------------------------------
 
 # Output names (edit only to choose different names)
@@ -21,7 +22,6 @@ variable        dumpfile_name        string ${tag}.lammpstrj
 variable        restart_outfile_name string ${tag}.restart
 variable        data_output_name     string ${tag}.data
 variable        checkpoint_dir       string restart_checkpoints
-variable        element_list         string "C H N O"                          # element of each atom type, in type order
 
 # Number of MD steps for run_time_ps (derived; do not edit)
 variable        run_steps            equal round(${run_time_ps}/${dt_ps})

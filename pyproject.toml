@@ -28,3 +28,6 @@ martini-postprocess = "MartiniFuncs.workflows.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["MartiniFuncs*"]
+
+[tool.setuptools.package-data]
+"MartiniFuncs.chemistry.anthracene_ma" = ["data/*.xyz"]

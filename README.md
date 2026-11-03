@@ -13,14 +13,17 @@ barrier validation are future pipeline stages.
 | `MartiniFuncs.trajectory` | `analysis` (`analyze_run`, `analyze_segments`), `parallel` (indexed frame chunks), `reactions` (topology-change events) |
 | `MartiniFuncs.statistics` | `md` (molecular observables, FFT lag MSD/correlations), `dynamics`, `diffusion`, `stability` |
 | `MartiniFuncs.pairs` | chemistry-independent pair machinery: `model` (`PairModel`, `PairCriteria`, registry), `assessment` (per-frame screen/measurement), `candidates` (cached candidates, `select_pairs`), `lifetimes`, `screening`, `structures` (pair/shell clusters, Extended XYZ), `topology` (cached fixed-topology evaluator) |
-| `MartiniFuncs.chemistry.cpd_n4t` | the CPD + N4T Diels-Alder model: `model` (`CpdN4tModel`, `CpdN4tCriteria`), `pairs` (molecule classes, pair screen), `selection` (reactive sites and geometry), `visualization` |
+| `MartiniFuncs.chemistry` | everything specific to a reaction system: `diels_alder` (geometry, criteria and model base class shared by Diels-Alder pairs), and one subpackage per system |
+| `MartiniFuncs.chemistry.anthracene_ma` | anthracene + maleic anhydride: `sites` (C9/C10, central ring, anhydride C=C), `build` (pair builder with distance, offsets, twist/roll/fold; `measure_placement`, `structure_metrics`, UMA reference structures), `viewer` (interactive HTML builder page) |
+| `MartiniFuncs.chemistry.cpd_n4t` | the CPD + N4T Diels-Alder model: `model` (`CpdN4tModel`, `CpdN4tCriteria`), `pairs` (molecule classes, pair screen), `selection` (reactive sites and geometry), `build`, `visualization`, `legacy` (superseded helpers) |
 | `MartiniFuncs.recompute` | recompute exported pairs/clusters with a calculator (UMA): `fragments`, `evaluation` (isolated single points, optimizations), `tasks` (`ForceDecomposition` for F_isolated/F_env and energies, `FragmentRelaxation`, `FrozenShellOptimization`), `driver` (`recompute_file`) |
-| `MartiniFuncs.workflows` | `cli` (`python -m MartiniFuncs`), `postprocess` (cache/report/export), `progress`, `force_validation` |
-| `MartiniFuncs.legacy` | superseded helpers kept for reference only |
+| `MartiniFuncs.workflows` | `cli` (`python -m MartiniFuncs`), `postprocess` (cache/report/export, per-pair trajectories), `progress`, `force_validation` |
 
-Pair chemistry is a pluggable [pair model](docs/pair_models.md) (default `cpd_n4t`).
+Pair chemistry is a pluggable [pair model](docs/pair_models.md), named for every pair analysis
+(`--pair-model cpd_n4t`, `pair_model="cpd_n4t"`); there is no default.
 Common entry points are also importable lazily from the top level, e.g.
-`from MartiniFuncs import analyze_run, select_pairs, CpdN4tCriteria`.
+`from MartiniFuncs import analyze_run, select_pairs`; model classes come from their
+chemistry subpackage, e.g. `from MartiniFuncs.chemistry.cpd_n4t import CpdN4tCriteria`.
 
 ## Post-simulation CLI and Slurm
 
@@ -325,7 +328,7 @@ stays in the original frame; live calculator results are not copied. Alignment
 requires finite, unwrapped structures, not periodic frames. Collinear fits
 cannot determine a unique orientation.
 
-The existing `legacy.geom_utils.align_atoms` keeps row correspondence and its two-value
+The existing `chemistry.cpd_n4t.legacy.align_atoms` keeps row correspondence and its two-value
 return, but now rotates stored vectors and rejects periodic inputs. Extract a
 finite cluster before using it. Neither alignment API reorders atoms.
 

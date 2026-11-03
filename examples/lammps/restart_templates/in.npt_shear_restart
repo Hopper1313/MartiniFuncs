@@ -1,5 +1,5 @@
 # UMA simple shear at constant pressure (NEMD) continuation from a restart file
-# Types: 1=C 2=H 3=N 4=O
+# Atom types: set element_list below to the element of each type, in the data file's type order
 # Requires fairchem-lammps + uma-s-1p2p1; charge/spin are set in the fairchem config (spin: 1)
 # No pair_style / bonded force-field terms
 # The restart must hold a triclinic box (the equilibration input runs change_box all triclinic).
@@ -22,6 +22,7 @@ variable        dump_every       equal 10          # trajectory frame interval, 
 variable        restart_every    equal 100000      # checkpoint interval, steps
 variable        run_label        string npt_shear_cont1   # label of this run (part of every output name)
 variable        restart_infile_name string equilibrated_T400K_P25000bar.restart   # restart to continue from
+variable        element_list   string "C H N O"   # type order of the data file (CPD + N4T: C H N O; anthracene + MA: C H O)
 # ----------------------------------------------------------------------------
 
 # Derived values (do not edit)
@@ -34,7 +35,6 @@ variable        dumpfile_name        string ${tag}.lammpstrj
 variable        restart_outfile_name string ${tag}.restart
 variable        data_output_name     string ${tag}.data
 variable        checkpoint_dir       string restart_checkpoints
-variable        element_list         string "C H N O"                          # element of each atom type, in type order
 
 # Restores units, atom style, box (triclinic), atoms, masses, velocities and the step counter
 read_restart    ${restart_infile_name}
