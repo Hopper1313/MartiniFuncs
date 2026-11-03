@@ -31,8 +31,8 @@ def __getattr__(name):
 def ase_atoms_to_molecule(ase_atoms, charge=0, energy_evaluator=("aimnet2", None)):
     """Convert ASE coordinates in Angstrom to Psience coordinates in Bohr.
 
-    energy_evaluator=None attaches no evaluator (geometry only); this is what
-    chemistry.cpd_n4t.visualization.to_display_molecule uses. The default,
+    energy_evaluator=None attaches no evaluator (geometry only), as the
+    chemistry visualization helpers use it. The default,
     ('aimnet2', None), keeps the historical behaviour of attaching Psience's
     'aimnet2' evaluator; ('aimnet2', model_path) selects a model file.
 

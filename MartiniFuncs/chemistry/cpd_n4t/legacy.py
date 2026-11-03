@@ -1,6 +1,6 @@
 """Legacy helpers kept for compatibility; nothing else in the package imports them.
 
-Superseded by MartiniFuncs.pairs and MartiniFuncs.chemistry.cpd_n4t. They are
+Superseded by MartiniFuncs.pairs and the rest of chemistry.cpd_n4t. They are
 still exercised by the test suite, but new features are not added here.
 """
 from __future__ import annotations

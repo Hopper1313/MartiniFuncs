@@ -48,6 +48,7 @@ from MartiniFuncs.chemistry.cpd_n4t.model import CPD_SIZE, DIENOPHILE_SIZE
 from MartiniFuncs.chemistry.cpd_n4t.selection import _cpd_sites, _dienophile_sites, _measure_placed_pair
 from MartiniFuncs.pairs.model import get_pair_model
 from MartiniFuncs.structure import graph as mfg
+from MartiniFuncs.structure.molecules import embed_smiles
 
 # Cyclopentadiene and N-(p-tolyl)maleimide (N4T, C11H9NO2).
 SMILES = {"C5H6": "C1C=CC=C1", "C11H9NO2": "Cc1ccc(cc1)N1C(=O)C=CC1=O"}
@@ -59,17 +60,6 @@ _PRODUCT_CPD = "[CH1]1=[CH1][CH1][CH2][CH1]1"     # the CPD-derived norbornene c
 DISTANCE_KINDS = ("centers", "max_forming", "screen")
 
 
-def _embed(smiles, seed):
-    """RDKit molecule with hydrogens, embedded (ETKDG) and relaxed with MMFF94."""
-    from rdkit import Chem
-    from rdkit.Chem import AllChem
-    molecule = Chem.AddHs(Chem.MolFromSmiles(smiles))
-    if AllChem.EmbedMolecule(molecule, randomSeed=seed) != 0:
-        raise RuntimeError(f"RDKit could not embed {smiles}")
-    AllChem.MMFFOptimizeMolecule(molecule, maxIters=2000)
-    return molecule
-
-
 def rdkit_templates(seed=61453):
     """(CPD, N4T) templates: RDKit 3D embedding (ETKDG) relaxed with MMFF94, in Angstrom.
 
@@ -78,7 +68,7 @@ def rdkit_templates(seed=61453):
     """
     templates = []
     for formula, smiles in SMILES.items():
-        molecule = _embed(smiles, seed)
+        molecule = embed_smiles(smiles, seed)
         atoms = Atoms([a.GetSymbol() for a in molecule.GetAtoms()],
                       positions=molecule.GetConformer().GetPositions())
         if atoms.get_chemical_formula() != formula:
@@ -99,7 +89,7 @@ def product_template(approach, seed=61453, *, scale=1.3):
     from rdkit import Chem
     if approach not in PRODUCT_SMILES:
         raise ValueError(f"approach must be one of {sorted(PRODUCT_SMILES)}")
-    molecule = _embed(PRODUCT_SMILES[approach], seed)
+    molecule = embed_smiles(PRODUCT_SMILES[approach], seed)
     ring = molecule.GetSubstructMatch(Chem.MolFromSmarts(_PRODUCT_CPD))
     cpd = list(ring) + [n.GetIdx() for i in ring for n in molecule.GetAtomWithIdx(i).GetNeighbors()
                         if n.GetSymbol() == "H"]

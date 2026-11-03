@@ -47,8 +47,10 @@ class RecomputeTests(unittest.TestCase):
         pairs, shifts = get_all_prereactive_pairs(atoms)
         clusters = get_pair_shell_clusters(atoms, pairs, shifts, shell_radius=3.0)
         cls.clusters_file, cls.pairs_file = cls.root / "clusters.extxyz", cls.root / "pairs.extxyz"
-        pair_data_to_extxyz(get_cluster_positions_and_forces(atoms, frame, clusters), cls.clusters_file)
-        pair_data_to_extxyz(get_pair_positions_and_forces(atoms, frame, pairs, shifts), cls.pairs_file)
+        pair_data_to_extxyz(get_cluster_positions_and_forces(atoms, frame, clusters), cls.clusters_file,
+                            role_labels=("CPD", "MAL"))
+        pair_data_to_extxyz(get_pair_positions_and_forces(atoms, frame, pairs, shifts), cls.pairs_file,
+                            role_labels=("CPD", "MAL"))
         cls.clusters = read(cls.clusters_file, index=":")
         cls.pairs = read(cls.pairs_file, index=":")
         cls.evaluator = FragmentEvaluator(EMT())

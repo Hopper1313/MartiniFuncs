@@ -8,10 +8,10 @@ trajectory  streaming analysis, parallel frames, reaction events
 statistics  MD observables, lag statistics, dynamics and diffusion diagnostics
 pairs       chemistry-independent pair machinery: pair models, screening,
             candidates, selection, lifetimes, structures
-chemistry   pair models for specific chemistry (cpd_n4t)
+chemistry   everything system-specific: pair models (shared Diels-Alder geometry,
+            one subpackage per reaction system) and their builders/plots
 recompute   isolated-fragment forces/energies (F_env) and optimizations of exported structures
 workflows   CLI, cache/report/export, force validation
-legacy      superseded helpers kept for reference
 
 The names below are re-exported lazily (importing MartiniFuncs stays cheap).
 """
@@ -27,9 +27,7 @@ _API = {
     "get_pair_lifetime": "pairs.lifetimes",
     "PairModel": "pairs.model", "PairCollection": "pairs.model", "PairCriteria": "pairs.model",
     "get_pair_model": "pairs.model",
-    "register_pair_model": "pairs.model",
-    "CpdN4tCollection": "chemistry.cpd_n4t.model", "CpdN4tCriteria": "chemistry.cpd_n4t.model",
-    "CpdN4tModel": "chemistry.cpd_n4t.model",
+    "register_pair_model": "pairs.model", "pair_model_names": "pairs.model",
 }
 
 __all__ = sorted(_API)

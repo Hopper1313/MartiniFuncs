@@ -108,7 +108,8 @@ def plot_pair_geometry(atoms, *, disk_radius=2.0, transparency=0.5,
     """
     import McUtils.Plots as plt
     from MartiniFuncs.structure import graph as mfg
-    from MartiniFuncs.chemistry.cpd_n4t.selection import _sites, _normal
+    from MartiniFuncs.chemistry.cpd_n4t.selection import _sites
+    from MartiniFuncs.chemistry.diels_alder import plane_normal
 
     if atoms.pbc.any():
         raise ValueError("Supply an extracted, whole, nonperiodic pair or cluster")
@@ -131,8 +132,8 @@ def plot_pair_geometry(atoms, *, disk_radius=2.0, transparency=0.5,
     xyz = dict(zip(ids, atoms.positions))
     cpd_center = np.mean([xyz[i] for i in ends], axis=0)
     dienophile_center = np.mean([xyz[i] for i in cc], axis=0)
-    cpd_normal = _normal(np.array([xyz[i] for i in diene]))
-    dienophile_normal = _normal(np.array([xyz[i] for i in dienophile_plane]))
+    cpd_normal = plane_normal(np.array([xyz[i] for i in diene]))
+    dienophile_normal = plane_normal(np.array([xyz[i] for i in dienophile_plane]))
     fig = plot_cluster(atoms, units="Angstroms", **plot_kwargs)
     plt.Disk(cpd_center, disk_radius, normal=cpd_normal, color=cpd_color,
              transparency=transparency).plot(fig)

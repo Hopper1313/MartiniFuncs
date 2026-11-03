@@ -190,7 +190,7 @@ class LammpsIOTests(unittest.TestCase):
         clusters = structures.get_pair_shell_clusters(frame.atoms, pairs, shifts, scale=1.3)
         records = structures.get_cluster_positions_and_forces(frame.atoms, frame, clusters)
         stream = io.StringIO()
-        structures.pair_data_to_extxyz(records, stream)
+        structures.pair_data_to_extxyz(records, stream, role_labels=("CPD", "MAL"))
         stream.seek(0)
         images = read(stream, format="extxyz", index=":")
         for i, image in enumerate(images):

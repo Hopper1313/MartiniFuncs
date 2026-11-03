@@ -341,7 +341,7 @@ def pmf_1d(values, *, temperature_K, edges, jacobian=None):
     radial distance (reference 4 pi r^2); None for no reference. Bins with no
     samples are +inf. This is a free energy only for the sampled ensemble:
     pair geometries exist only inside the analysis's collection radius
-    (reactive_radius, 3.25 Angstrom by default for cpd_n4t), so it is a
+    (reactive_radius, set by the pair model's collection), so it is a
     conditional PMF there.
     """
     x = np.asarray(values, dtype=float)

@@ -318,7 +318,7 @@ def get_cluster_positions_and_forces(atoms: Atoms, mylammpsread, clusters):
     return data
 
 
-def pair_data_to_extxyz(data, filename, *, role_labels=None):
+def pair_data_to_extxyz(data, filename, *, role_labels):
     """Write pair/cluster records as an ASE Extended XYZ trajectory.
 
     Each extracted cluster is converted to an :class:`ase.Atoms` object and
@@ -339,8 +339,8 @@ def pair_data_to_extxyz(data, filename, *, role_labels=None):
 
     ``pair_role``
         role_labels[0] for the first pair member, role_labels[1] for the
-        second (default: the default pair model's labels, cpd_n4t: ``"CPD"``
-        and ``"MAL"``), and ``"shell"`` for atoms only in the surrounding shell.
+        second (the pair model's role_labels), and ``"shell"`` for atoms only
+        in the surrounding shell.
 
     ``lammps_forces`` / ``velocities``
         Three-component vectors from the record's forces/velocities fields.
@@ -355,10 +355,6 @@ def pair_data_to_extxyz(data, filename, *, role_labels=None):
     record has eV/Angstrom forces and ASE internal velocities; legacy tuples
     retain raw source units. The stored velocities array is not ASE momenta.
     """
-    if role_labels is None:
-        from MartiniFuncs.pairs.model import get_pair_model
-        role_labels = get_pair_model().role_labels
-
     images = []
     nclusters = len(data)
 
@@ -473,7 +469,7 @@ def pair_data_to_extxyz(data, filename, *, role_labels=None):
         # Extended XYZ header/comment line.
         cluster.info["cluster_index"] = int(i)
         cluster.info["n_clusters"] = int(nclusters)
-        # n_<label> per role (cpd_n4t: n_cpd, n_mal), then n_shell.
+        # n_<label> per role (lower-case role labels), then n_shell.
         cluster.info[f"n_{role_labels[0].lower()}"] = int(len(first_local))
         cluster.info[f"n_{role_labels[1].lower()}"] = int(len(second_local))
         cluster.info["n_shell"] = int(natoms - len(first_local) - len(second_local))

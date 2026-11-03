@@ -18,7 +18,7 @@ dump; they are not recomputed. This is one-node postprocessing, not MPI.
 ## Pair lifetimes, pairs and shells without lag statistics
 
 ```bash
-martini-postprocess run ./ --output ./postprocess --units metal --timestep-ps 0.0005 --shell-radius 3.0 --no-lag-statistics --workers 8 --batch-size 32
+martini-postprocess run ./ --pair-model cpd_n4t --output ./postprocess --units metal --timestep-ps 0.0005 --shell-radius 3.0 --no-lag-statistics --workers 8 --batch-size 32
 ```
 
 This processes the entire trajectory, writes frame summaries and pair lifetimes,
@@ -79,7 +79,7 @@ Python APIs accept `progress=callback`; the CLI supplies the timed stage wrapper
 ## Analyze a finished simulation
 
 ```console
-martini-postprocess run /scratch/my_run --output /scratch/my_run_analysis --units metal --timestep-ps 0.0005 --temperature-dof 3N-3 --workers 2
+martini-postprocess run /scratch/my_run --pair-model cpd_n4t --output /scratch/my_run_analysis --units metal --timestep-ps 0.0005 --temperature-dof 3N-3 --workers 2
 ```
 
 The run directory supplies the input, dump, and data file through shared discovery.
@@ -89,8 +89,8 @@ Units and timestep are mandatory; temperature DOF is explicit and optional.
 
 ### Pairs in two stages: collection, then selection
 
-The pair chemistry comes from a pair model (`--pair-model`, default `cpd_n4t`;
-see [pair models](pair_models.md)).
+The pair chemistry comes from a pair model (`--pair-model`, required unless
+`--no-pairs`; built in: `cpd_n4t`; see [pair models](pair_models.md)).
 
 1. **Collection** (`run`/`collect`, `--reactive-radius`): every CPD/dienophile
    pair whose screen distance (CPD COM to dienophile C=C COM, minimum image) is
@@ -105,7 +105,7 @@ see [pair models](pair_models.md)).
 
 ```sh
 # collect once with a generous radius
-python -m MartiniFuncs run RUN_DIR --output ANALYSIS --units metal --timestep-ps 0.0005 --reactive-radius 4.0 --no-export-pairs
+python -m MartiniFuncs run RUN_DIR --pair-model cpd_n4t --output ANALYSIS --units metal --timestep-ps 0.0005 --reactive-radius 4.0 --no-export-pairs
 # recompute counts, distributions and lifetimes for any selection
 python -m MartiniFuncs report ANALYSIS/cache --output R3p0 --max-screen-distance 3.0
 python -m MartiniFuncs report ANALYSIS/cache --output R3p5_axis30 --max-screen-distance 3.5 --max-axis-angle 30
@@ -193,8 +193,8 @@ enable optional thresholds. `--max-ring-dihedral-deviation 30` keeps pairs whose
 CH2 - termini midpoint - C=C midpoint - imide N dihedral is within 30 degrees of
 0 (exo) or of 180 (endo); the signed dihedral is stored as `ring_dihedral`.
 Angles are degrees; distances are Angstrom. These are screening choices, not TS
-predictions. Pair chemistry comes from `--pair-model` (only `cpd_n4t` is built
-in; [pair models](pair_models.md) explains how to add one). Use **`--no-pairs`**
+predictions. Pair chemistry comes from `--pair-model` (required; only `cpd_n4t`
+is built in; [pair models](pair_models.md) explains how to add one). Use **`--no-pairs`**
 for generic molecular statistics on other systems.
 
 Add `--shell-radius 3.0` to also export whole-molecule environments around each

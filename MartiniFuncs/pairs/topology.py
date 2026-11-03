@@ -41,7 +41,7 @@ class FixedPairTopology:
     second_molecules: list
 
     @classmethod
-    def from_frame(cls, atoms, graph, components, model=None):
+    def from_frame(cls, atoms, graph, components, model):
         """Identify each molecule's role, screen atoms and sites once; do not cache coordinates."""
         model = get_pair_model(model)
         ids = atoms.arrays["global_index"]

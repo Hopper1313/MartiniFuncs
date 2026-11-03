@@ -27,7 +27,8 @@ class ReactionCliTests(unittest.TestCase):
         self.run_dir.mkdir()
         # CPD bonded to a dienophile from frame 4 on, plus a one-frame contact at frame 2.
         dynamics_tests.TopologySegmentTests().make_reacting_dump(self.run_dir)
-        self.common = ["--units", "metal", "--timestep-ps", ".0005", "--quiet", "--reaction-persistence", "3"]
+        self.common = ["--units", "metal", "--timestep-ps", ".0005", "--quiet", "--reaction-persistence", "3",
+                       "--pair-model", "cpd_n4t"]
 
     def test_run_records_events_and_exports_everything(self):
         out = self.root / "run"

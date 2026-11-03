@@ -92,8 +92,9 @@ def topology_change(atoms, groups, molecule_sizes, *, bond_scale=1.3):
 def find_possible_products(atoms, *, reactant_atom_counts, bond_scale=1.3):
     """Find components with size sum(reactant_atom_counts) in one current frame.
 
-    For CPD C5H6 (11 atoms) and the N4T maleimide dienophile C11H9NO2 (23 atoms),
-    the target is 34. Supply counts for the actual molecules, including all hydrogens.
+    The target is the sum of the two reactants' atom counts (n_A + n_B for an
+    A + B adduct). Supply counts for the actual molecules, including all
+    hydrogens.
     Rebuild the periodic bond graph using distance <= bond_scale*(r_cov_i+r_cov_j)
     in Angstrom, then examine connected components. Do not use LAMMPS molecule
     IDs or the initial topology: those may stay unchanged after a reaction.

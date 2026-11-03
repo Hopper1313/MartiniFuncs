@@ -20,7 +20,8 @@ from MartiniFuncs.workflows.postprocess import cache_analysis, load_analysis_cac
 class PostprocessingTests(unittest.TestCase):
     def test_lifetimes_shells_without_lag_calculations(self):
         args = ['run', self.run, '--output', self.output, '--units', 'metal',
-                '--timestep-ps', '.0005', '--shell-radius', '2', '--no-lag-statistics', '--quiet']
+                '--timestep-ps', '.0005', '--shell-radius', '2', '--no-lag-statistics', '--quiet',
+                '--pair-model', 'cpd_n4t']
         # All np.mean lag reductions must be skipped, not merely hidden in output.
         with patch('MartiniFuncs.trajectory.analysis.np.mean', side_effect=AssertionError('lag reduction called')):
             status, errors = self.call(args)
@@ -48,7 +49,7 @@ class PostprocessingTests(unittest.TestCase):
     def test_parallel_full_frames_and_shells_match_serial(self):
         """Worker count/chunk boundaries must not change any scientific output."""
         from MartiniFuncs.trajectory.analysis import analyze_run
-        options = dict(units='metal', timestep_ps=.0005, compute_pairs=True,
+        options = dict(units='metal', timestep_ps=.0005, compute_pairs=True, pair_model='cpd_n4t',
                        reaction_atom_counts=(11, 23), degrees_of_freedom='3N-3')
         serial = analyze_run(self.run, **options)
         parallel = analyze_run(self.run, pair_workers=2, pair_batch_size=3, **options)
@@ -66,6 +67,114 @@ class PostprocessingTests(unittest.TestCase):
         for name in ('pairs.extxyz', 'clusters.extxyz', 'index.jsonl', 'frames.csv'):
             self.assertEqual((self.root / 'export1' / name).read_bytes(),
                              (self.root / 'export2' / name).read_bytes(), name)
+
+    def test_pair_trajectories_flag_every_frame(self):
+        """One periodic file per collected pair, every selected frame, flags from the cached criteria."""
+        from MartiniFuncs.pairs.candidates import candidate_mask
+        from MartiniFuncs.pairs.model import get_pair_model
+        cache = self.output / 'cache'
+        cache_analysis(self.run, cache, units='metal', timestep_ps=.0005, compute_pairs=True, pair_model='cpd_n4t',
+                       progress=None)
+        result, _ = load_analysis_cache(cache)
+        candidates = result['pair_candidates']
+        criteria = get_pair_model('cpd_n4t').criteria_class(max_screen_distance=3.1)
+        status, errors = self.call(['trajectories', cache, '--output', self.root / 'traj', '--quiet',
+                                    '--max-screen-distance', '3.1', '--workers', '2', '--batch-size', '4'])
+        self.assertEqual(status, 0, errors)
+        export_pairs(cache, self.root / 'plain', progress=None)
+        plain = read(self.root / 'plain/pairs.extxyz', index=':')
+        # Expected flags straight from the cached candidates.
+        accepted = candidate_mask(candidates, criteria)
+        expected = {}
+        for frame, (lo, hi) in enumerate(zip(candidates['offsets'][:-1], candidates['offsets'][1:])):
+            for row in range(lo, hi):
+                expected[(frame, *candidates['molecules'][row].tolist())] = bool(accepted[row])
+        summary = (self.root / 'traj/pairs.csv').read_text().splitlines()
+        files = sorted((self.root / 'traj').glob('pair_*.extxyz'))
+        self.assertEqual(len(files), len({key[1:] for key in expected}))
+        self.assertEqual(len(summary), len(files) + 1)
+        center = np.asarray(result['cell_angstrom'][0]).sum(axis=0) / 2 + result['cell_origin_angstrom'][0]
+        for path in files:
+            first, second = (int(part.lstrip('cpdmal')) for part in path.stem.split('_')[2:])
+            frames = read(path, index=':')
+            self.assertEqual([a.info['frame'] for a in frames], list(range(9)))
+            for atoms in frames:
+                key = (atoms.info['frame'], first, second)
+                self.assertTrue(atoms.pbc.all())
+                assert_allclose(atoms.cell.array, result['cell_angstrom'][atoms.info['frame']])
+                self.assertEqual(atoms.info['collected'], key in expected)
+                self.assertEqual(atoms.info['accepted'], expected.get(key, False))
+                self.assertEqual(atoms.arrays['accepted_binary'].tolist(), [int(expected.get(key, False))] * len(atoms))
+                self.assertEqual(np.isnan(atoms.info['screen_distance']), key not in expected)
+                for name in ('screen_distance', 'plane_angle', 'ring_dihedral', 'geometry_ok'):
+                    assert_allclose(atoms.arrays[name], np.full(len(atoms), atoms.info[name]), equal_nan=True)
+                # The first member follows its cached unwrapped COM (masses differ slightly from the cache's).
+                role = atoms.arrays['pair_role'] == 'CPD'
+                masses = atoms.get_masses()[role]
+                com = masses @ atoms.positions[role] / masses.sum()
+                assert_allclose(com, result['com_angstrom'][atoms.info['frame']][first] + center, atol=.1)
+                if key in expected:
+                    # Same structure as extract, up to one lattice translation of the whole pair.
+                    match, = [p for p in plain if p.info['frame_index'] == key[0]
+                              and set(p.arrays['global_index']) == set(atoms.arrays['global_index'])]
+                    order = {g: i for i, g in enumerate(match.arrays['global_index'])}
+                    rows = [order[g] for g in atoms.arrays['global_index']]
+                    shift = atoms.positions - match.positions[rows]
+                    assert_allclose(shift, np.broadcast_to(shift[0], shift.shape), atol=1e-9)
+                    fractional = shift[0] @ np.linalg.inv(atoms.cell.array)
+                    assert_allclose(fractional, np.rint(fractional), atol=1e-9)
+                    assert_allclose(atoms.arrays['lammps_forces'], match.arrays['lammps_forces'][rows])
+        # all_pairs.extxyz: per frame, every pair's structure concatenated in pair order, labelled by pair_id.
+        together = read(self.root / 'traj/all_pairs.extxyz', index=':')
+        per_pair = [read(path, index=':') for path in files]
+        self.assertEqual(len(together), 9)
+        for t, atoms in enumerate(together):
+            parts = [frames[t] for frames in per_pair]
+            self.assertEqual(atoms.info['frame'], t)
+            self.assertEqual(atoms.info['n_accepted'], sum(p.info['accepted'] for p in parts))
+            assert_allclose(atoms.positions, np.vstack([p.positions for p in parts]))
+            self.assertEqual(atoms.arrays['pair_id'].tolist(), [i for i, p in enumerate(parts) for _ in p])
+            self.assertEqual(atoms.arrays['accepted_binary'].tolist(),
+                             [b for p in parts for b in p.arrays['accepted_binary'].tolist()])
+            assert_allclose(atoms.arrays['screen_distance'],
+                            np.concatenate([p.arrays['screen_distance'] for p in parts]), equal_nan=True)
+        status, _ = self.call(['trajectories', cache, '--output', self.root / 'traj', '--quiet', '--every', '2'])
+        self.assertEqual(status, 2)        # existing output with different settings is never overwritten
+        status, errors = self.call(['trajectories', cache, '--output', self.root / 'thin', '--quiet', '--every', '3',
+                                    '--startframe', '1'])
+        self.assertEqual(status, 0, errors)
+        thinned = read(next((self.root / 'thin').glob('pair_*.extxyz')), index=':')
+        self.assertEqual([a.info['frame'] for a in thinned], [1, 4, 7])
+
+    def test_exports_read_a_moved_dump(self):
+        """A cache made elsewhere exports from a same-size copy of its dump; other files are refused."""
+        from MartiniFuncs.workflows.postprocess import export_pair_trajectories
+        cache = self.output / 'cache'
+        cache_analysis(self.run, cache, units='metal', timestep_ps=.0005, compute_pairs=True, pair_model='cpd_n4t',
+                       progress=None)
+        export_pairs(cache, self.root / 'original', progress=None)
+        moved = self.root / 'laptop' / 'copy.lammpstrj'
+        moved.parent.mkdir()
+        shutil.move(self.dump, moved)
+        with self.assertRaises(FileNotFoundError):
+            export_pairs(cache, self.root / 'refused', progress=None)
+        export_pairs(cache, self.root / 'moved', dump_file=moved, progress=None)
+        # Identical structures; only the recorded source path differs.
+        original = read(self.root / 'original/pairs.extxyz', index=':')
+        moved_pairs = read(self.root / 'moved/pairs.extxyz', index=':')
+        self.assertEqual(len(original), len(moved_pairs))
+        for a, b in zip(original, moved_pairs):
+            a.info.pop('source'), b.info.pop('source')
+            self.assertEqual(a.info.keys(), b.info.keys())
+            for key in a.arrays:
+                np.testing.assert_array_equal(a.arrays[key], b.arrays[key])
+        status, errors = self.call(['trajectories', cache, '--output', self.root / 'traj', '--quiet',
+                                    '--dump-file', moved])
+        self.assertEqual(status, 0, errors)
+        truncated = self.root / 'laptop' / 'short.lammpstrj'
+        truncated.write_bytes(moved.read_bytes()[:-10])
+        with self.assertRaisesRegex(ValueError, 'not the same trajectory'):
+            export_pair_trajectories(cache, self.root / 'short', dump_file=truncated, progress=None)
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -85,7 +194,7 @@ class PostprocessingTests(unittest.TestCase):
     def test_cli_run_exports_forces_shells_and_reusable_reports(self):
         args = ["run", self.run, "--output", self.output, "--units", "metal", "--timestep-ps", ".0005",
                 "--temperature-dof", "3N-3", "--shell-radius", "2", "--rdf-bins", "10",
-                "--stability", "--max-lag-ps", "1.5", "--fit-ps", ".5", "1.5", "--quiet"]
+                "--stability", "--max-lag-ps", "1.5", "--fit-ps", ".5", "1.5", "--quiet", "--pair-model", "cpd_n4t"]
         status, errors = self.call(args)
         self.assertEqual(status, 0, errors)
         cache = self.output / "cache"
@@ -154,7 +263,7 @@ class PostprocessingTests(unittest.TestCase):
 
     def test_process_workers_and_lifetime_window(self):
         args = ["run", self.run, "--output", self.output, "--units", "metal", "--timestep-ps", ".0005",
-                "--workers", "2", "--batch-size", "2", "--no-export-pairs", "--quiet"]
+                "--workers", "2", "--batch-size", "2", "--no-export-pairs", "--quiet", "--pair-model", "cpd_n4t"]
         status, message = self.call(args)
         self.assertEqual(status, 0, message)
         self.assertTrue((self.output / "reports/default/pair_lifetimes.csv").exists())
@@ -167,7 +276,7 @@ class PostprocessingTests(unittest.TestCase):
 
     def test_run_selection_applies_to_reports_and_exports_but_not_cache(self):
         args = ["run", self.run, "--output", self.output, "--units", "metal", "--timestep-ps", ".0005",
-                "--startframe", "0", "--endframe", "5", "--quiet"]
+                "--startframe", "0", "--endframe", "5", "--quiet", "--pair-model", "cpd_n4t"]
         status, message = self.call(args)
         self.assertEqual(status, 0, message)
         result, _ = load_analysis_cache(self.output / "cache")
@@ -192,7 +301,7 @@ class PostprocessingTests(unittest.TestCase):
     def test_collect_all_frames_parallel_identity_and_shell_forces(self):
         args = ["collect", self.run, "--output", self.output, "--units", "metal",
                 "--timestep-ps", ".0005", "--shell-radius", "2", "--workers", "2",
-                "--batch-size", "2", "--quiet"]
+                "--batch-size", "2", "--quiet", "--pair-model", "cpd_n4t"]
         status, errors = self.call(args)
         self.assertEqual(status, 0, errors)
         self.assertFalse((self.output/"reports").exists())
@@ -228,7 +337,8 @@ class PostprocessingTests(unittest.TestCase):
 
     def test_collect_zero_pairs_still_records_every_frame(self):
         status, errors = self.call(["collect", self.run, "--output", self.output, "--units", "metal",
-            "--timestep-ps", ".0005", "--shell-radius", "2", "--max-forming-distance", "0", "--quiet"])
+            "--timestep-ps", ".0005", "--shell-radius", "2", "--max-forming-distance", "0", "--quiet",
+            "--pair-model", "cpd_n4t"])
         self.assertEqual(status, 0, errors)
         import pandas as pd
         coverage = pd.read_csv(self.output/"pairs/frames.csv")

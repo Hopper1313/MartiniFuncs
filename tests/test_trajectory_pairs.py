@@ -40,7 +40,7 @@ class TrajectoryPairTests(unittest.TestCase):
     def compare_frame(self, atoms, radius=3.25):
         bonded = graph.build_bond_graph(atoms, scale=1.3)
         components = graph.connected_components(bonded, atom_ids=graph.atom_ids(atoms))
-        topology = FixedPairTopology.from_frame(atoms, bonded, components)
+        topology = FixedPairTopology.from_frame(atoms, bonded, components, "cpd_n4t")
         whole = whole_positions(atoms, bonded, components)
         reference_pairs, reference_shifts = get_all_prereactive_pairs(atoms, reactive_radius=radius)
         for criteria in (None, CpdN4tCriteria(), CpdN4tCriteria(require_geometry=True),
@@ -93,7 +93,7 @@ class TrajectoryPairTests(unittest.TestCase):
             bonded = graph.build_bond_graph(atoms, scale=1.3)
             components = graph.connected_components(bonded, atom_ids=graph.atom_ids(atoms))
             if topology is None:
-                topology = FixedPairTopology.from_frame(atoms, bonded, components)
+                topology = FixedPairTopology.from_frame(atoms, bonded, components, "cpd_n4t")
             whole = whole_positions(atoms, bonded, components)
             pairs, shifts, reports = topology.evaluate(whole, atoms.cell.array, atoms.pbc, criteria=CpdN4tCriteria())
             rp, rs = get_all_prereactive_pairs(atoms)
@@ -118,7 +118,7 @@ class TrajectoryPairTests(unittest.TestCase):
     def test_process_order_striding_and_lifetimes(self):
         with tempfile.TemporaryDirectory() as directory:
             shutil.copyfile(FIXTURES / "multiple_frames.lammpstrj", Path(directory) / "trajectory.lammpstrj")
-            options = dict(units="metal", timestep_ps=.0005, compute_pairs=True, frame_stride=2)
+            options = dict(units="metal", timestep_ps=.0005, compute_pairs=True, frame_stride=2, pair_model="cpd_n4t")
             criteria = CpdN4tCriteria(max_axis_angle=60)
             reference = analyze_run(directory, pair_backend="reference", **options)
             for workers, backend in ((1, 'cached'), (2, 'cached'), (2, 'reference')):

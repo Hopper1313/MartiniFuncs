@@ -4,21 +4,23 @@ A pair model says which molecules can form a pair (two roles, e.g. diene and
 dienophile), where each molecule's screen center is, which reactive sites it
 has, and how a placed pair is measured. Everything else is generic and lives
 in MartiniFuncs.pairs: the periodic center-distance screen, candidate caching,
-selection after the fact, lifetimes and structure export.
+selection after the fact, lifetimes and structure export. Models themselves
+live in MartiniFuncs.chemistry; nothing here names a particular system.
 
 A pair analysis has two stages, each with its own settings class:
 
-1. Collection (PairCollection; cpd_n4t: CpdN4tCollection) decides what an
-   analysis measures and caches: every pair whose screen centers are closer
-   than reactive_radius, with all of the model's metrics. It is the only pair
+1. Collection (a model's PairCollection subclass) decides what an analysis
+   measures and caches: every pair whose screen centers are closer than
+   reactive_radius, with all of the model's metrics. It is the only pair
    setting recorded in a cache.
-2. Selection (PairCriteria; cpd_n4t: CpdN4tCriteria) picks pairs from what was
+2. Selection (a model's PairCriteria subclass) picks pairs from what was
    collected: optional upper thresholds on the screen distance and the model's
    metrics. It never changes a cache; reports and exports apply it.
 
-Models are registered by name. The name is recorded with an analysis, so
-report/extract use the model that produced a cache. Built-in models are
-imported on first use; register_pair_model adds others.
+Models are registered by name and there is no default: every pair analysis
+names its model, and the name is recorded with it, so report/extract use the
+model that produced a cache. Built-in models (chemistry.BUILTIN_PAIR_MODELS)
+are imported on first use; register_pair_model adds others.
 """
 from __future__ import annotations
 
@@ -30,11 +32,13 @@ from types import MappingProxyType
 
 import numpy as np
 
-DEFAULT_PAIR_MODEL = "cpd_n4t"
-
 _REGISTRY: dict = {}
-# Built-in models, imported lazily: name -> "module:attribute".
-_BUILTIN = {"cpd_n4t": "MartiniFuncs.chemistry.cpd_n4t.model:CpdN4tModel"}
+
+
+def _builtin():
+    """Built-in models, imported lazily: name -> "module:attribute" (defined in MartiniFuncs.chemistry)."""
+    from MartiniFuncs.chemistry import BUILTIN_PAIR_MODELS
+    return BUILTIN_PAIR_MODELS
 
 
 SCREEN_METRIC = "screen_distance"
@@ -141,7 +145,7 @@ class PairModel(ABC):
     ----------------
     name            registry key, recorded with every analysis
     roles           identifiers of the two pair members, used in column and
-                    field names (e.g. "cpd_molecule", "cpd_shift")
+                    field names (e.g. "<role>_molecule", "<role>_shift")
     role_labels     per-atom pair_role labels written in structure exports
     collection_class
                     the PairCollection subclass for stage 1 (its reactive_radius
@@ -213,10 +217,10 @@ class PairModel(ABC):
         return _restore_pair_model, (self.name, type(self))
 
 
-def get_collection(model=None, collection=None):
+def get_collection(model, collection=None):
     """The stage-1 PairCollection for a model: collection, or the model's default when None.
 
-    model is a PairModel, a registered name or None (the default model).
+    model is a PairModel or a registered name.
     Raises ValueError when collection is not the model's collection_class, or
     when None is given and the model's collection has no default radius.
     """
@@ -233,7 +237,7 @@ def get_collection(model=None, collection=None):
     return collection
 
 
-def default_reactive_radius(model=None):
+def default_reactive_radius(model):
     """The model's default collection radius in Angstrom, or None if it has none (for help text)."""
     try:
         return get_collection(model).reactive_radius
@@ -242,7 +246,7 @@ def default_reactive_radius(model=None):
 
 
 def _restore_pair_model(name, cls):
-    if name in _REGISTRY or name in _BUILTIN:
+    if name in _REGISTRY or name in _builtin():
         return get_pair_model(name)
     return register_pair_model(cls())
 
@@ -255,13 +259,16 @@ def register_pair_model(model):
     return model
 
 
-def get_pair_model(model=None):
-    """A PairModel from an instance, a registered name, or None (the default model)."""
+def get_pair_model(model):
+    """A PairModel from an instance or a registered name; there is no default model."""
     if isinstance(model, PairModel):
         return model
-    name = DEFAULT_PAIR_MODEL if model is None else model
-    if name not in _REGISTRY and name in _BUILTIN:
-        module, attribute = _BUILTIN[name].split(":")
+    if model is None:
+        raise ValueError(f"No pair model given; name one of: {', '.join(pair_model_names())}")
+    name = model
+    builtin = _builtin()
+    if name not in _REGISTRY and name in builtin:
+        module, attribute = builtin[name].split(":")
         register_pair_model(getattr(import_module(module), attribute)())
     if name not in _REGISTRY:
         raise ValueError(f"Unknown pair model {name!r}; available: {', '.join(pair_model_names())}")
@@ -270,7 +277,7 @@ def get_pair_model(model=None):
 
 def pair_model_names():
     """Names of the built-in and registered pair models."""
-    return sorted(set(_BUILTIN) | set(_REGISTRY))
+    return sorted(set(_builtin()) | set(_REGISTRY))
 
 
 # Active only inside site_cache(); see model_sites.

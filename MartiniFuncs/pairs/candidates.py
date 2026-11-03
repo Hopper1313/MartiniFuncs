@@ -30,7 +30,7 @@ def metric_columns(candidates_or_model):
     return ("screen_distance", *names, "geometry_ok")
 
 
-def frame_candidates(rows, model=None):
+def frame_candidates(rows, model):
     """Pack a frame's candidate rows [(first_mol, second_mol, shift, metrics), ...] into arrays."""
     width = len(metric_columns(model))
     molecules = np.array([r[:2] for r in rows], dtype=np.int32).reshape(-1, 2)
@@ -39,7 +39,7 @@ def frame_candidates(rows, model=None):
     return {"molecules": molecules, "shifts": shifts, "metrics": metrics}
 
 
-def concatenate(per_frame, radius, model=None):
+def concatenate(per_frame, radius, model):
     """Join per-frame candidate dicts into the stored form; radius is the collected reactive_radius."""
     model = get_pair_model(model)
     counts = [len(c["molecules"]) for c in per_frame]
@@ -113,8 +113,8 @@ def select_pairs(result, criteria=None):
 def candidate_table(result, criteria=None):
     """All collected candidates (optionally only a selection by criteria) as a pandas DataFrame.
 
-    Columns: frame, time_ps, <role>_molecule for the model's two roles (for
-    cpd_n4t: cpd_molecule, dienophile_molecule), shift_x/y/z and the metric
+    Columns: frame, time_ps, <role>_molecule for each of the model's two
+    roles (e.g. diene_molecule, dienophile_molecule), shift_x/y/z and the metric
     columns. Use it for distributions (e.g. histogram screen_distance).
     """
     import pandas as pd

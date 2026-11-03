@@ -35,7 +35,7 @@ class PairAssessment:
         return not self.reasons
 
 
-def measure_pair(atoms, pair, shift, model=None, *, graph, elements=None, frame_rows=None):
+def measure_pair(atoms, pair, shift, model, *, graph, elements=None, frame_rows=None):
     """Identify both members' sites, place the pair jointly and measure it with the model.
 
     The first member is translated by shift @ cell; both are made whole along
@@ -54,7 +54,7 @@ def measure_pair(atoms, pair, shift, model=None, *, graph, elements=None, frame_
     return model.measure(fi, fx, si, sx, first_sites, second_sites, frame_rows)
 
 
-def assess_pairs(atoms, pairs, shifts, model=None, *, criteria=None, scale=1.3, graph=None,
+def assess_pairs(atoms, pairs, shifts, model, *, criteria=None, scale=1.3, graph=None,
                  screen_distances=None):
     """Measurements and selection for every candidate, in input order.
 
@@ -96,7 +96,7 @@ def _screen_center(atoms, graph, elements, model, component, role):
     return mfg.component_center_of_mass(atoms, graph, component, subset=site)
 
 
-def screen_frame(atoms, model=None, *, scale=1.3, collection=None, criteria=None, return_candidates=False):
+def screen_frame(atoms, model, *, scale=1.3, collection=None, criteria=None, return_candidates=False):
     """One frame's pairs: collect by the screen, then optionally select by criteria.
 
     collection (the model's PairCollection; None: its default) collects every

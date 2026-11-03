@@ -36,7 +36,8 @@ def main():
         start = perf_counter()
         result = analyze_run(args.directory, units=args.units, timestep_ps=args.timestep_ps,
                              input_file=args.input_file, dump_file=args.dump_file, data_file=args.data_file,
-                             max_frames=args.max_frames, compute_pairs=True, pair_collection=CpdN4tCollection(),
+                             max_frames=args.max_frames, compute_pairs=True, pair_model="cpd_n4t",
+                             pair_collection=CpdN4tCollection(),
                              pair_backend=backend, pair_workers=workers, pair_batch_size=args.batch_size)
         elapsed = perf_counter() - start
         times = [r["time_ps"] for r in result["frames"]]

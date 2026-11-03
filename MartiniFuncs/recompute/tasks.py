@@ -49,7 +49,7 @@ class ForceDecomposition:
 
     molecules=True also evaluates each pair member alone and adds
     molecule_isolated_forces / molecule_environment_forces (shell rows as above),
-    info energy_<role> (cpd_n4t: energy_CPD, energy_MAL) and
+    info energy_<role label> (one per pair member) and
     interaction_energy = energy_pair - energy_<first> - energy_<second>.
     """
 

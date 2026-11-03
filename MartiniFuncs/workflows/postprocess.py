@@ -23,6 +23,7 @@ from MartiniFuncs._checks import integer, plain as _plain
 from MartiniFuncs.pairs import lifetimes
 from MartiniFuncs.statistics import md
 from MartiniFuncs.structure import periodic
+from MartiniFuncs.chemistry import UNRECORDED_CACHE_PAIR_MODEL
 from MartiniFuncs.pairs.model import get_collection, get_pair_model
 from MartiniFuncs.trajectory.analysis import (analyze_run, molecular_window_statistics, resolve_run_files,
                                               select_frame_window)
@@ -87,6 +88,35 @@ def _fingerprints(files):
     return fingerprints
 
 
+def _export_sources(result, source, dump_file=None, data_file=None):
+    """(dump, data) paths an export reads, checked against the cache's source fingerprints.
+
+    By default the cached paths, which must be unchanged (path, size and
+    modification time). dump_file reads a copy of the dump elsewhere, e.g. a
+    cache made on a cluster and used on a laptop; the copy must have the cached
+    dump's byte size (copies do not keep modification times). data_file
+    overrides the data file the same way; without it, a cached data file that
+    does not exist here is skipped, and the dump's element/mass columns give
+    the species.
+    """
+    files = result["files"]
+    if dump_file is None and data_file is None:
+        if _fingerprints(files) != source["sources"]:
+            raise ValueError("Source files changed since caching; refuse to export mismatched structures/forces "
+                             "(a copy of the dump elsewhere can be given as dump_file / --dump-file)")
+        return files["dump"], files["data"]
+    dump = Path(dump_file if dump_file is not None else files["dump"]).expanduser().resolve()
+    if not dump.is_file():
+        raise ValueError(f"Dump not found: {dump}")
+    expected = source["sources"]["dump"]["size"]
+    if dump.stat().st_size != expected:
+        raise ValueError(f"{dump} has {dump.stat().st_size} bytes, but the cached dump had {expected}; "
+                         "it is not the same trajectory")
+    if data_file is None:
+        data_file = files["data"] if files["data"] is not None and Path(files["data"]).is_file() else None
+    return str(dump), None if data_file is None else str(Path(data_file).expanduser().resolve())
+
+
 def _manifest(cache_dir):
     """Read a completed cache manifest without loading any analysis data."""
     path = Path(cache_dir) / "manifest.json"
@@ -123,9 +153,11 @@ def _analysis_configuration(options):
               if name not in _UNRECORDED_OPTIONS}
     # None, a registered name and a PairModel instance all resolve to the model's name, and an
     # omitted collection to that model's default, so equivalent requests share one configuration.
-    config["pair_collection"] = (asdict(get_collection(config["pair_model"], config["pair_collection"]))
-                                 if config["compute_pairs"] else None)
-    config["pair_model"] = get_pair_model(config["pair_model"]).name
+    if config["compute_pairs"]:
+        config["pair_collection"] = asdict(get_collection(config["pair_model"], config["pair_collection"]))
+        config["pair_model"] = get_pair_model(config["pair_model"]).name
+    else:
+        config["pair_collection"] = config["pair_model"] = None
     config = _plain(config)
     try:
         json.dumps(config, allow_nan=False)
@@ -226,10 +258,10 @@ def _frame_columns(rows):
 
 
 def _save_pairs(cache_dir, result):
-    """Store pairs as molecule indices: frame offsets, (CPD, dienophile) index, shift.
+    """Store pairs as molecule indices: frame offsets, (first, second member) index, shift.
 
     Every cached pair molecule is one of molecule_atom_ids (fixed membership),
-    so 34 atom IDs per pair reduce to two indices. If a pair molecule is not an
+    so a pair's atom IDs reduce to two indices. If a pair molecule is not an
     initial molecule (possible with the reference backend after a reaction),
     pairs are kept as compact JSON instead. Returns the storage label.
     """
@@ -261,7 +293,7 @@ def _save_pairs(cache_dir, result):
 class _CachedPairFrames(Sequence):
     """Read-only per-frame view of compactly cached pairs.
 
-    Item f is that frame's list of [CPD atom IDs, dienophile atom IDs] pairs
+    Item f is that frame's list of [first-member atom IDs, second-member atom IDs] pairs
     (atom order of molecule_atom_ids), or of [sx, sy, sz] shifts when
     shifts=True. Rows are materialized on access; nothing is held per frame.
     """
@@ -312,8 +344,7 @@ def load_analysis_cache(cache_dir):
             values = [columns[name].tolist() for name in names]
         result["frames"] = [dict(zip(names, row)) for row in zip(*values)]
         radius = result.pop("pair_candidates_radius", None)
-        # Caches made before pair models were all cpd_n4t (the default model).
-        model = result.pop("pair_candidates_model", None)
+        model = result.pop("pair_candidates_model", None) or UNRECORDED_CACHE_PAIR_MODEL
         names = result.pop("pair_candidates_metrics", None)
         result["pair_candidates"] = None
         if radius is not None:
@@ -338,7 +369,7 @@ def load_analysis_cache(cache_dir):
     return result, manifest
 
 
-def cached_frame_offsets(cache_dir, result):
+def cached_frame_offsets(cache_dir, result, dump=None):
     """Dump frame byte offsets, computed once and saved in the cache.
 
     frame_offsets.npy is valid for the dump fingerprint recorded in the
@@ -349,7 +380,7 @@ def cached_frame_offsets(cache_dir, result):
     path = Path(cache_dir) / "frame_offsets.npy"
     if path.is_file():
         return np.load(path, allow_pickle=False)
-    offsets = frame_offsets(result["files"]["dump"])
+    offsets = frame_offsets(dump if dump is not None else result["files"]["dump"])
     temporary = path.with_name("frame_offsets.tmp.npy")
     np.save(temporary, offsets, allow_pickle=False)
     temporary.replace(path)
@@ -542,7 +573,7 @@ def _export_identity(records, frame, first_structure, time_ps):
 
 
 def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endframe=None, progress=print,
-                 workers=1, batch_size=32, preloaded=None, criteria=None):
+                 workers=1, batch_size=32, preloaded=None, criteria=None, dump_file=None, data_file=None):
     """Stream selected cached encounters into pair/shell Extended XYZ and an index.
 
     Select source frames in [startframe, endframe), defaulting to the entire
@@ -567,20 +598,22 @@ def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endf
     None exports every collected pair.
     Only selected frames are parsed (each from its own byte range), using
     frame offsets saved in the cache after the first export.
-    preloaded=(result, manifest) skips reading the cache again.
+    preloaded=(result, manifest) skips reading the cache again. dump_file /
+    data_file read copies of the source files elsewhere (see _export_sources).
     """
     integer(workers, "workers")
     integer(batch_size, "batch_size")
     result, source = preloaded if preloaded is not None else load_analysis_cache(cache_dir)
     if result["pairs_by_frame"] is None:
         raise ValueError("Cache contains no pair analysis; rerun analysis with pairs enabled")
-    if _fingerprints(result["files"]) != source["sources"]:
-        raise ValueError("Source files changed since caching; refuse to export mismatched structures/forces")
+    dump, data = _export_sources(result, source, dump_file, data_file)
     if shell_radius is not None and (not np.isfinite(shell_radius) or shell_radius <= 0):
         raise ValueError("shell_radius must be positive and finite")
     keep = select_frame_window(result, startframe=startframe, endframe=endframe)
     config = dict(cache=str(Path(cache_dir).resolve()), source=source, shell_radius=shell_radius,
                   startframe=startframe, endframe=endframe, software=_software())
+    if dump_file is not None or data_file is not None:
+        config.update(dump_file=dump, data_file=data)
     if criteria is not None:
         config.update(criteria=asdict(criteria))
     from MartiniFuncs.pairs.candidates import select_pairs
@@ -606,8 +639,8 @@ def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endf
             if selected:
                 if progress:
                     progress("Loading (or indexing once) source frame byte offsets for export...")
-                offsets = cached_frame_offsets(cache_dir, result)
-                reader_options = dict(units=options["units"], input_datafile=result["files"]["data"], type_symbols=mapping)
+                offsets = cached_frame_offsets(cache_dir, result, dump)
+                reader_options = dict(units=options["units"], input_datafile=data, type_symbols=mapping)
 
                 def tasks():
                     first_structure = 0
@@ -618,7 +651,7 @@ def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endf
                             raise ValueError("Source dump ended before every selected frame was exported")
                         ranges = [(i, int(offsets[i]), int(offsets[i+1])) for i in batch]
                         subset = {i: selected[i] for i in batch}
-                        yield (result["files"]["dump"], reader_options, ranges, subset, shell_radius, scale,
+                        yield (dump, reader_options, ranges, subset, shell_radius, scale,
                                first_structure, _pair_model(result).name)
                         first_structure += sum(len(selected[i][1]) for i in batch)
 
@@ -632,7 +665,7 @@ def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endf
                     frame_counts.extend(counts)
                     if progress:
                         progress(f"Exported {count} structures; completed {len(frame_counts)} selected frames")
-    if _fingerprints(result["files"]) != source["sources"]:
+    if _export_sources(result, source, dump_file, data_file) != (dump, data):
         raise ValueError("Source files changed during export; output is incomplete")
     if len(frame_counts) != len(selected):
         raise ValueError("Source dump ended before every selected frame was exported")
@@ -649,6 +682,218 @@ def export_pairs(cache_dir, output_dir, *, shell_radius=None, startframe=0, endf
     return output
 
 
+def export_pair_trajectories(cache_dir, output_dir, *, criteria=None, startframe=0, endframe=None, every=1,
+                             progress=print, workers=1, batch_size=32, preloaded=None, dump_file=None,
+                             data_file=None):
+    """Write one periodic Extended XYZ trajectory per collected pair, every selected frame flagged.
+
+    Pairs are every distinct (first, second) molecule pair collected (inside the
+    cache's reactive_radius) in at least one selected frame. Each pair's file
+    holds every selected frame in [startframe, endframe), thinned to every
+    every-th cached frame, including frames where the molecules are far apart.
+    Per-frame info: pair_id, frame, timestep, time_ps, collected (inside the
+    reactive radius), accepted (collected and passing criteria; None: every
+    collected frame), membership_changed and the candidate metrics (NaN when
+    not collected). Atoms carry the frame's cell with pbc, global_index,
+    lammps_id, pair_role, lammps_forces, (when dumped) velocities, and
+    accepted_binary (the frame's accepted flag as 0/1 on every atom); the
+    candidate metrics are also per-atom arrays, so viewers can color by them.
+
+    Positions are whole molecules. The first member follows its cached
+    unwrapped COM (com_angstrom plus the first cell's center), so it moves
+    continuously; the second member
+    is the periodic image whose COM is nearest the first's. Flags and metrics
+    come from the cache; only coordinates/forces are read from the dump.
+    pairs.csv summarizes each pair (molecules, atom IDs, frame counts, file).
+    all_pairs.extxyz holds, per frame, every pair's structure concatenated in
+    pair_id order, with a per-atom pair_id array and frame info (frame,
+    timestep, time_ps, n_pairs, n_collected, n_accepted). A molecule in two
+    pairs appears twice, once placed with each partner.
+    dump_file / data_file read copies of the source files elsewhere (see
+    _export_sources); preloaded=(result, manifest) skips reading the cache.
+    """
+    from MartiniFuncs.pairs.candidates import candidate_mask, metric_columns
+    integer(workers, "workers")
+    integer(batch_size, "batch_size")
+    integer(every, "every")
+    if every < 1:
+        raise ValueError("every must be a positive number of cached frames")
+    result, source = preloaded if preloaded is not None else load_analysis_cache(cache_dir)
+    candidates = result.get("pair_candidates")
+    if candidates is None:
+        raise ValueError("Cache has no pair candidates; rerun the analysis with pairs enabled")
+    if result["com_angstrom"] is None:
+        raise ValueError("Cache has no COM trajectory (non-periodic cell); pair trajectories need it")
+    dump, data = _export_sources(result, source, dump_file, data_file)
+    rows = np.flatnonzero(select_frame_window(result, startframe=startframe, endframe=endframe))[::every]
+    model = _pair_model(result)
+    config = dict(cache=str(Path(cache_dir).resolve()), source=source, startframe=startframe, endframe=endframe,
+                  every=every, criteria=asdict(criteria) if criteria is not None else None, software=_software())
+    if dump_file is not None or data_file is not None:
+        config.update(dump_file=dump, data_file=data)
+
+    # Candidate rows of the selected frames, and the distinct pairs among them.
+    offsets, molecules = candidates["offsets"], candidates["molecules"]
+    position = np.full(len(offsets) - 1, -1, dtype=np.int64)
+    position[rows] = np.arange(len(rows))
+    row_position = np.repeat(position, np.diff(offsets))
+    selected = np.flatnonzero((row_position >= 0) & np.all(molecules >= 0, axis=1))
+    skipped = int(np.count_nonzero((row_position >= 0) & np.any(molecules < 0, axis=1)))
+    count = len(result["molecule_atom_ids"])
+    keys = molecules[selected, 0].astype(np.int64) * count + molecules[selected, 1]
+    unique = np.unique(keys)
+    if not len(unique):
+        raise ValueError("No collected pairs in the selected frames")
+    pairs = np.column_stack((unique // count, unique % count))
+    # status[t, p]: candidate row of pair p in selected frame t, -1 when not collected.
+    status = np.full((len(rows), len(pairs)), -1, dtype=np.int64)
+    status[row_position[selected], np.searchsorted(unique, keys)] = selected
+    accepted = candidate_mask(candidates, criteria)
+
+    output, create = _begin_product(output_dir, config)
+    if not create:
+        return output
+    ids = [list(map(int, m)) for m in result["molecule_atom_ids"]]
+    labels = [label.lower() for label in model.role_labels]
+    names = [f"pair_{p:04d}_{labels[0]}{a}_{labels[1]}{b}.extxyz" for p, (a, b) in enumerate(pairs.tolist())]
+    collected = status >= 0
+    passed = collected & accepted[np.where(collected, status, 0)]
+    frames = np.asarray([r["frame"] for r in result["frames"]])[rows]
+    summary = []
+    for p, (a, b) in enumerate(pairs.tolist()):
+        hits, good = frames[collected[:, p]], frames[passed[:, p]]
+        summary.append({"pair_id": p, f"{model.roles[0]}_molecule": a, f"{model.roles[1]}_molecule": b,
+                        f"{model.roles[0]}_atom_ids": ids[a], f"{model.roles[1]}_atom_ids": ids[b],
+                        "frames_written": len(rows), "frames_collected": len(hits), "frames_accepted": len(good),
+                        "first_collected_frame": hits[0], "last_collected_frame": hits[-1],
+                        "first_accepted_frame": good[0] if len(good) else None,
+                        "last_accepted_frame": good[-1] if len(good) else None, "file": names[p]})
+    if progress:
+        progress(f"{len(pairs)} pairs x {len(rows)} frames = {len(pairs) * len(rows)} structures to write")
+        progress("Loading (or indexing once) source frame byte offsets for export...")
+    dump_offsets = cached_frame_offsets(cache_dir, result, dump)
+    options = source["configuration"]
+    mapping = options.get("type_symbols")
+    if mapping is not None:
+        mapping = {int(k): v for k, v in mapping.items()}
+    reader_options = dict(units=options["units"], input_datafile=data, type_symbols=mapping)
+    members = [(ids[a], ids[b]) for a, b in pairs.tolist()]
+    metrics, columns = np.asarray(candidates["metrics"]), metric_columns(candidates)
+    times = np.asarray([r["time_ps"] for r in result["frames"]])
+    # com_angstrom starts from the COMs wrapped about the first cell's center, relative to that center.
+    # Caches without cell_origin_angstrom predate it and assume the origin at 0.
+    origin = result["cell_origin_angstrom"]
+    center = (np.zeros(3) if origin is None else np.asarray(origin[0])) + np.asarray(result["cell_angstrom"][0]).sum(axis=0) / 2
+
+    def tasks():
+        for start in range(0, len(rows), batch_size):
+            chunk = rows[start:start + batch_size]
+            if frames[start + len(chunk) - 1] + 1 >= len(dump_offsets):
+                raise ValueError("Source dump ended before every selected frame was exported")
+            per_frame = []
+            for t, row in enumerate(chunk, start):
+                # Metrics (NaN when not collected) and the cached COM of each pair's first member.
+                state = status[t]
+                values = np.where((state >= 0)[:, None], metrics[np.maximum(state, 0)], np.nan)
+                per_frame.append((int(frames[t]), float(times[row]), state >= 0, passed[t], values,
+                                  np.asarray(result["com_angstrom"][row])[pairs[:, 0]] + center))
+            ranges = [(int(f), int(dump_offsets[f]), int(dump_offsets[f + 1])) for f in frames[start:start + len(chunk)]]
+            yield (dump, reader_options, ranges, per_frame, members, columns,
+                   model.role_labels, options.get("bond_scale", 1.3))
+
+    from MartiniFuncs.trajectory.parallel import ordered_tasks
+    done = 0
+    for texts, together in ordered_tasks(_trajectory_chunk, tasks(), workers):
+        for p, text in enumerate(texts):
+            with (output / names[p]).open("a", encoding="utf-8") as stream:
+                stream.write(text)
+        with (output / "all_pairs.extxyz").open("a", encoding="utf-8") as stream:
+            stream.write(together)
+        done += batch_size
+        if progress:
+            progress(f"Wrote {min(done, len(rows))} of {len(rows)} frames for {len(pairs)} pairs")
+    if _export_sources(result, source, dump_file, data_file) != (dump, data):
+        raise ValueError("Source files changed during export; output is incomplete")
+    _csv(output / "pairs.csv", summary)
+    _json(output / "manifest.json", {"schema_version": SCHEMA_VERSION, "configuration": config,
+                                     "pairs": len(pairs), "frames": len(rows), "summary": "pairs.csv",
+                                     "all_pairs_file": "all_pairs.extxyz",
+                                     "candidates_with_uninitial_molecules_skipped": skipped,
+                                     "frame_info": ["pair_id", "frame", "timestep", "time_ps", "collected",
+                                                    "accepted", "membership_changed", *columns],
+                                     "force_array": "lammps_forces", "force_units": "eV/Angstrom"})
+    return output
+
+
+def _trajectory_chunk(task):
+    """Serialize one chunk of selected source frames: (Extended XYZ texts by pair, all-pairs text)."""
+    from ase import Atoms
+    from MartiniFuncs.io.extxyz import write_extxyz
+    from MartiniFuncs.io.lammps import iter_lammps_frames
+    from MartiniFuncs.pairs.structures import _source_vectors
+    from MartiniFuncs.structure import graph
+    path, reader_options, ranges, per_frame, members, columns, role_labels, scale = task
+    streams, combined = [StringIO() for _ in members], StringIO()
+    frames = (frame for index, lower, upper in ranges
+              for frame in iter_lammps_frames(path, byte_range=(lower, upper), frame_offset=index, **reader_options))
+    for frame, (index, time_ps, collected, accepted, values, targets) in zip(frames, per_frame):
+        if frame.index != index:
+            raise ValueError(f"Read source frame {frame.index}, expected {index}")
+        if "lammps_forces" not in frame.atoms.arrays:
+            raise ValueError("Pair trajectory export requires source force columns")
+        with graph.frame_cache():
+            atoms, cell = frame.atoms, frame.atoms.cell.array
+            bonded = graph.build_bond_graph(atoms, scale=scale)
+            memberships = {frozenset(c) for c in graph.connected_components(bonded, atom_ids=graph.atom_ids(atoms))}
+            masses = atoms.get_masses()
+            together = None
+            for p, (first, second) in enumerate(members):
+                placed = []
+                anchor = targets[p]
+                for component in (first, second):
+                    component_ids, xyz, _ = graph.place_component(atoms, bonded, component)
+                    weights = masses[graph.local_indices(atoms, component_ids)]
+                    center = weights @ xyz / weights.sum()
+                    # The lattice translation that brings this COM nearest the anchor.
+                    xyz = xyz + (anchor - center) - periodic.minimum_image(anchor - center, cell)
+                    anchor = weights @ xyz / weights.sum()
+                    placed.append((component_ids, xyz))
+                atom_ids = np.concatenate([placed[0][0], placed[1][0]])
+                local = graph.local_indices(atoms, atom_ids)
+                vectors = _source_vectors(atoms, frame, atom_ids)
+                structure = Atoms(np.asarray(atoms.get_chemical_symbols())[local].tolist(),
+                                  positions=np.vstack([placed[0][1], placed[1][1]]), cell=cell, pbc=True)
+                structure.new_array("global_index", atom_ids)
+                structure.new_array("lammps_id", atoms.arrays["lammps_id"][local])
+                structure.new_array("pair_role", np.array([role_labels[0]] * len(first) + [role_labels[1]] * len(second)))
+                structure.new_array("lammps_forces", np.asarray(vectors["forces"], dtype=float))
+                if "velocities" in vectors:
+                    structure.new_array("velocities", np.asarray(vectors["velocities"], dtype=float))
+                # The frame's accepted flag on every atom, as 0/1 (viewers such as OVITO color by numeric arrays).
+                structure.new_array("accepted_binary", np.full(len(structure), int(accepted[p])))
+                # The frame's candidate metrics, likewise on every atom (NaN when not collected).
+                for name, value in zip(columns, values[p]):
+                    structure.new_array(name, np.full(len(structure), float(value)))
+                structure.info.update(pair_id=p, frame=index, timestep=frame.timestep, time_ps=time_ps,
+                                      collected=bool(collected[p]), accepted=bool(accepted[p]),
+                                      membership_changed=any(frozenset(c) not in memberships for c in (first, second)),
+                                      **{name: float(v) for name, v in zip(columns, values[p])})
+                write_extxyz([structure], streams[p])
+                # Every pair of the frame in one structure, each atom labelled with its pair_id.
+                part = structure.copy()
+                part.info = {}
+                part.new_array("pair_id", np.full(len(part), p))
+                if together is None:
+                    together = part
+                else:
+                    together.extend(part)
+            together.info.update(frame=index, timestep=frame.timestep, time_ps=time_ps, n_pairs=len(members),
+                                 n_collected=int(np.count_nonzero(collected)),
+                                 n_accepted=int(np.count_nonzero(accepted)))
+            write_extxyz([together], combined)
+    return [stream.getvalue() for stream in streams], combined.getvalue()
+
+
 def cache_pair_model(cache_dir):
     """The PairModel that produced a completed analysis cache (reads analysis.json only)."""
     _manifest(Path(cache_dir))
@@ -657,8 +902,8 @@ def cache_pair_model(cache_dir):
 
 
 def _pair_model(result):
-    """The pair model of an analysis (caches made before pair models: the default, cpd_n4t)."""
-    return get_pair_model((result.get("pair_analysis") or {}).get("model"))
+    """The pair model of an analysis (chemistry.UNRECORDED_CACHE_PAIR_MODEL for caches that predate recording it)."""
+    return get_pair_model((result.get("pair_analysis") or {}).get("model") or UNRECORDED_CACHE_PAIR_MODEL)
 
 
 def _export_frame_chunk(task):

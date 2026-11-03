@@ -54,7 +54,7 @@ class ReferencePlotNotebookTests(unittest.TestCase):
             dump = source/'trajectory.lammpstrj'
             shutil.copyfile(root/'tests/lammpsio_tests/multiple_frames.lammpstrj', dump)
             cache = directory/'cache'
-            cache_analysis(source, cache, units='metal', timestep_ps=.0005, progress=None)
+            cache_analysis(source, cache, units='metal', timestep_ps=.0005, pair_model='cpd_n4t', progress=None)
             dump.unlink()  # Cache-only plotting must not attempt to open this.
             for filename in ('02_plot_md_statistics.ipynb', '04_plot_md_statistics_from_directory.ipynb'):
                 with self.subTest(notebook=filename):

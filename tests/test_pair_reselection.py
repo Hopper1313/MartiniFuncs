@@ -19,7 +19,7 @@ from MartiniFuncs.workflows.cli import main
 from MartiniFuncs.workflows.postprocess import load_analysis_cache
 
 FIXTURES = Path(__file__).parent / "lammpsio_tests"
-OPTIONS = dict(units="metal", timestep_ps=.0005, compute_pairs=True)
+OPTIONS = dict(units="metal", timestep_ps=.0005, compute_pairs=True, pair_model="cpd_n4t")
 
 
 def collect(run_dir, radius, **options):
@@ -101,7 +101,7 @@ class PairReselectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "analysis"
             args = ["run", self.run_dir, "--output", out, "--units", "metal", "--timestep-ps", ".0005",
-                    "--reactive-radius", "5", "--no-export-pairs", "--max-lag-ps", ".002", "--quiet"]
+                    "--pair-model", "cpd_n4t", "--reactive-radius", "5", "--no-export-pairs", "--max-lag-ps", ".002", "--quiet"]
             with redirect_stdout(StringIO()), redirect_stderr(StringIO()) as errors:
                 status = main([str(a) for a in args])
             self.assertEqual(status, 0, errors.getvalue())
@@ -143,7 +143,7 @@ class PairReselectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "analysis"
             base = ["run", str(self.run_dir), "--output", str(out), "--units", "metal", "--timestep-ps", ".0005",
-                    "--reactive-radius", "5", "--no-export-pairs", "--max-lag-ps", ".002"]
+                    "--pair-model", "cpd_n4t", "--reactive-radius", "5", "--no-export-pairs", "--max-lag-ps", ".002"]
             reports, logs = {}, {}
             for name, flags in (("axis45", ["--max-axis-angle", "45"]), ("all", [])):
                 with redirect_stdout(StringIO()) as output, redirect_stderr(StringIO()) as errors:

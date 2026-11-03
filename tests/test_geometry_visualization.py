@@ -6,7 +6,7 @@ from numpy.testing import assert_allclose, assert_array_equal
 from ase import Atoms
 
 from MartiniFuncs.structure.alignment import align_geometry
-from MartiniFuncs.legacy.geom_utils import align_atoms
+from MartiniFuncs.chemistry.cpd_n4t.legacy import align_atoms
 from MartiniFuncs.chemistry.cpd_n4t.visualization import (force_arrow_displacements, to_display_molecule,
                                                           plot_cluster)
 

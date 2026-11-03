@@ -2,11 +2,12 @@
 
 Usage (also available as the installed martini-postprocess command)::
 
-    python -m MartiniFuncs run RUN_DIR --output ANALYSIS_DIR --units metal --timestep-ps 0.0005
-    python -m MartiniFuncs run RUN_DIR --output PAIR_ANALYSIS --units metal --timestep-ps 0.0005 --no-lag-statistics --shell-radius 3
+    python -m MartiniFuncs run RUN_DIR --pair-model MODEL --output ANALYSIS_DIR --units metal --timestep-ps 0.0005
+    python -m MartiniFuncs run RUN_DIR --pair-model MODEL --output PAIR_ANALYSIS --units metal --timestep-ps 0.0005 --no-lag-statistics --shell-radius 3
     python -m MartiniFuncs report ANALYSIS_DIR/cache --output REPORT_DIR --startframe 1000 --endframe 2000
     python -m MartiniFuncs extract ANALYSIS_DIR/cache --output PAIRS_DIR --startframe 1000 --endframe 2000 --shell-radius 3
-    python -m MartiniFuncs collect RUN_DIR --output PAIRS_DIR --units metal --timestep-ps 0.0005 --shell-radius 3
+    python -m MartiniFuncs collect RUN_DIR --pair-model MODEL --output PAIRS_DIR --units metal --timestep-ps 0.0005 --shell-radius 3
+    python -m MartiniFuncs trajectories ANALYSIS_DIR/cache --output TRAJ_DIR --every 10 --max-screen-distance 3.25
 
 collect uses the same indexed parallel frame processing as run, and writes both
 pairs.extxyz and clusters.extxyz without generating statistical reports; for
@@ -14,10 +15,9 @@ collect, --shell-radius is required. Default stride is 1 (all source frames).
 Reaction (topology) events are recorded by default and do not stop run or
 collect; --reaction-events stop ends the analysis cleanly before the first
 event and off disables the check (see also --reaction-persistence). All pairs
-means all accepted pair-model candidates (cpd_n4t: CPD + N4T dienophile) inside
-the --reactive-radius screen (default: the pair model's radius, 3.25 Angstrom for
-cpd_n4t) and optional criteria, not
-every possible Cartesian combination of molecules.
+means all candidates of the chosen pair model (--pair-model) inside the
+--reactive-radius screen (default: the pair model's radius) and optional
+criteria, not every possible Cartesian combination of molecules.
 
 Frame convention
 ----------------
@@ -49,6 +49,8 @@ creation or temporal unwrapping. Default reports/exports cover the entire cache.
 report calls write_report using only cached molecular arrays and pair identities;
 source simulation files are unnecessary. extract calls export_pairs and rereads
 the source dump for accepted pair coordinates, atomic forces and optional shells.
+trajectories calls export_pair_trajectories: one periodic trajectory per
+collected pair over the selected frames, each frame flagged collected/accepted.
 Completed matching products are reused; conflicting products are never overwritten.
 
 Units and resources
@@ -56,7 +58,8 @@ Units and resources
 Trajectory selection uses frames; lag and diffusion-fit intervals remain in ps.
 --timestep-ps is ps per MD integration step, not per dump frame. Temperature
 requires explicit --temperature-dof. Pairs use a pair model (--pair-model,
-default cpd_n4t: CPD + N4T dienophile) in two stages. Collection (run/collect,
+required for run/collect unless --no-pairs; see MartiniFuncs.chemistry) in two
+stages. Collection (run/collect,
 --reactive-radius) measures and caches every pair inside the radius.
 Selection (the --max-... threshold flags and --geometry-required) picks pairs
 from that cache: on run/collect it applies only to the report and export they
@@ -77,7 +80,7 @@ run/report support independent lag-statistic, lifetime and frame-summary choices
 CLI stages log timestamps, actual progress counts and 30-second elapsed heartbeats;
 --quiet suppresses these messages. Heartbeats are not completion estimates.
 Scientific equations live in trajectory.analysis, statistics.md, pairs and
-chemistry.cpd_n4t; persistence/export behavior lives in workflows.postprocess. See docs/postprocessing_cli.md
+the pair models in chemistry; persistence/export behavior lives in workflows.postprocess. See docs/postprocessing_cli.md
 for output schemas, cache reuse, and Slurm submission examples.
 """
 import argparse
@@ -87,8 +90,9 @@ import os
 from pathlib import Path
 import sys
 
-from MartiniFuncs.pairs.model import DEFAULT_PAIR_MODEL, default_reactive_radius, get_pair_model, pair_model_names
-from MartiniFuncs.workflows.postprocess import cache_analysis, cache_pair_model, export_pairs, write_report
+from MartiniFuncs.pairs.model import default_reactive_radius, get_pair_model, pair_model_names
+from MartiniFuncs.workflows.postprocess import (cache_analysis, cache_pair_model, export_pair_trajectories,
+                                                export_pairs, write_report)
 from MartiniFuncs.workflows.progress import log, run_stage
 
 
@@ -123,6 +127,13 @@ def _report_options(parser):
     parser.add_argument("--max-gap-frames", type=int, default=0, help="allowed missing retained samples within pair lifetimes")
     parser.add_argument("--stability", action="store_true", help="include scalar ACF (FFT) and batch-error summaries")
     parser.add_argument("--rdf-bins", type=int, help="include molecular COM RDFs with this many radial bins")
+
+
+def _source_options(parser):
+    """Read copies of the cached source files elsewhere (e.g. a cluster cache used on a laptop)."""
+    parser.add_argument("--dump-file", type=Path,
+                        help="the dump to read instead of the cached path; must have the cached dump's size")
+    parser.add_argument("--data-file", type=Path, help="the data file to read instead of the cached path")
 
 
 def _criteria_fields():
@@ -206,14 +217,14 @@ def _analysis_options(parser):
     parser.add_argument("--reaction-atom-counts", type=int, nargs=2, metavar=("A", "B"),
                         help="legacy screen, off by default: abort with an error at the first A+B-atom "
                              "component (prefer --reaction-events)")
-    parser.add_argument("--pair-model", choices=pair_model_names(), default=DEFAULT_PAIR_MODEL,
-                        help=f"pair chemistry (default {DEFAULT_PAIR_MODEL}: CPD + N4T dienophile)")
+    parser.add_argument("--pair-model", choices=pair_model_names(),
+                        help="pair chemistry (a pair model from MartiniFuncs.chemistry); required unless --no-pairs")
     parser.add_argument("--pair-backend", choices=["cached", "reference"], default="cached")
     radii = ", ".join(f"{name} {default_reactive_radius(name):g}" for name in pair_model_names()
                       if default_reactive_radius(name) is not None)
     parser.add_argument("--reactive-radius", type=float, default=None,
-                        help="collection radius in Angstrom: every pair whose screen centers are closer is "
-                             "measured and cached (cpd_n4t: CPD COM to C=C COM); default: the pair model's "
+                        help="collection radius in Angstrom: every pair whose screen centers (defined by the "
+                             "pair model) are closer is measured and cached; default: the pair model's "
                              f"collection ({radii}). report/extract can select within it (--max-screen-distance)")
     parser.add_argument("--orientations", action="store_true",
                         help="also cache each molecule's long axis and plane normal per frame (rotational dynamics)")
@@ -265,7 +276,21 @@ def build_parser():
     extract.add_argument("--quiet", action="store_true")
     extract.add_argument("--workers", type=int, default=1, help="local frame/export worker processes")
     extract.add_argument("--batch-size", type=int, default=32, help="selected frames per export chunk")
+    _source_options(extract)
     _selection_options(extract, "")
+
+    trajectories = commands.add_parser(
+        "trajectories", help="one periodic Extended XYZ trajectory per collected pair, each frame flagged accepted or not")
+    trajectories.add_argument("cache", type=Path)
+    trajectories.add_argument("--output", type=Path, required=True)
+    _frame_options(trajectories)
+    trajectories.add_argument("--every", type=int, default=1,
+                              help="write every Nth cached frame of the selection (default 1; mind the output size)")
+    trajectories.add_argument("--quiet", action="store_true")
+    trajectories.add_argument("--workers", type=int, default=1, help="local frame worker processes")
+    trajectories.add_argument("--batch-size", type=int, default=32, help="selected frames per worker task")
+    _source_options(trajectories)
+    _selection_options(trajectories, " (the accepted flag)")
 
     recompute = commands.add_parser(
         "recompute", help="recompute exported pairs/clusters with UMA: F_isolated, F_env and energies, or optimizations")
@@ -357,10 +382,16 @@ def main(argv=None):
             dof = args.temperature_dof
             if dof is not None and dof != "3N-3":
                 dof = float(dof)
-            model = get_pair_model(args.pair_model)
-            criteria = _criteria(args, model)
-            collection = (None if args.reactive_radius is None
-                          else model.collection_class(reactive_radius=args.reactive_radius))
+            if args.no_pairs:
+                model = criteria = collection = None
+            else:
+                if args.pair_model is None:
+                    raise ValueError(f"--pair-model is required for pair analysis (one of: "
+                                     f"{', '.join(pair_model_names())}); use --no-pairs for molecular statistics only")
+                model = get_pair_model(args.pair_model)
+                criteria = _criteria(args, model)
+                collection = (None if args.reactive_radius is None
+                              else model.collection_class(reactive_radius=args.reactive_radius))
             args.output.mkdir(parents=True, exist_ok=True)
             cache = args.output / "cache"
             # The in-memory result is reused by the report and export stages.
@@ -396,10 +427,16 @@ def main(argv=None):
                         **_selection_kwargs(args)))
         elif args.command == "recompute":
             print(stage('Recompute', _recompute, args))
+        elif args.command == "trajectories":
+            print(stage('Pair trajectories', export_pair_trajectories, args.cache, args.output,
+                        startframe=args.startframe, endframe=args.endframe, every=args.every,
+                        workers=args.workers, batch_size=args.batch_size, dump_file=args.dump_file,
+                        data_file=args.data_file, **_selection_kwargs(args)))
         else:
             print(stage('Pair/shell export', export_pairs, args.cache, args.output, shell_radius=args.shell_radius,
                                startframe=args.startframe, endframe=args.endframe,
-                               workers=args.workers, batch_size=args.batch_size, **_selection_kwargs(args)))
+                               workers=args.workers, batch_size=args.batch_size, dump_file=args.dump_file,
+                               data_file=args.data_file, **_selection_kwargs(args)))
     except (ValueError, OSError, KeyError, TypeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

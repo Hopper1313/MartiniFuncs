@@ -43,7 +43,7 @@ def main():
     if args.output:
         if not records:
             parser.error("No accepted candidates; no output was written")
-        pair_data_to_extxyz(records, args.output)
+        pair_data_to_extxyz(records, args.output, role_labels=("CPD", "MAL"))
 
 
 if __name__ == "__main__":

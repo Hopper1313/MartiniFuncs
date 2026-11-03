@@ -6,7 +6,7 @@ import numpy as np
 from numpy.testing import assert_allclose
 
 from MartiniFuncs.chemistry.cpd_n4t import CpdN4tCollection, CpdN4tCriteria
-from MartiniFuncs.chemistry.cpd_n4t.selection import _dihedral
+from MartiniFuncs.chemistry.diels_alder import signed_dihedral as _dihedral
 from MartiniFuncs.io.lammps import read_lammps_frame
 from MartiniFuncs.pairs.assessment import screen_frame
 from MartiniFuncs.pairs.candidates import candidate_mask, concatenate, frame_candidates

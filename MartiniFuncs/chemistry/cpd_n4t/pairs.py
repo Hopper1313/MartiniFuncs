@@ -17,11 +17,11 @@ from MartiniFuncs.statistics.md import validate_times
 def get_mal_CC(bond_graph, elements):
     """Return the maleimide (dienophile) C=C atoms: the H-C=C-H carbons inside an O=C-C=C-C=O path.
 
-    The same rule as the model's sites (selection.dienophile_cc_candidates), so
+    The same rule as the model's sites (diels_alder.cyclic_dienophile_chains), so
     the screen center and the measured C=C are always the same atoms.
     """
-    from MartiniFuncs.chemistry.cpd_n4t.selection import dienophile_cc_candidates
-    return {i for chain in dienophile_cc_candidates(bond_graph, elements) for i in chain[2:4]}
+    from MartiniFuncs.chemistry.diels_alder import cyclic_dienophile_chains
+    return {i for chain in cyclic_dienophile_chains(bond_graph, elements) for i in chain[2:4]}
 
 
 def get_all_prereactive_pairs(

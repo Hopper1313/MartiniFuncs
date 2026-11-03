@@ -4,7 +4,7 @@ From the environment containing MartiniFuncs, run this in PowerShell:
 
 ```powershell
 $run = "C:/Users/nicho/Documents/Martini collab/uma_data/smaller_system/continued_run"
-python -m MartiniFuncs collect "$run" --output "./pair_exports" --units metal --timestep-ps 0.0005 --shell-radius 3.0 --workers 4 --batch-size 32
+python -m MartiniFuncs collect "$run" --pair-model cpd_n4t --output "./pair_exports" --units metal --timestep-ps 0.0005 --shell-radius 3.0 --workers 4 --batch-size 32
 ```
 
 `martini-postprocess collect` is the installed equivalent. Choose your physical

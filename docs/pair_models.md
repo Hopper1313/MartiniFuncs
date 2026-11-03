@@ -9,10 +9,21 @@ The pair analysis has two parts:
   their screen points are, their reactive sites, and the measured metrics.
 
 The model is chosen per analysis. In the CLI it is `--pair-model`; in Python it
-is `analyze_run(pair_model=...)`. The default is `cpd_n4t`. The model name is
-recorded in the cache (`pair_analysis.model`, plus the candidate metric names),
-so `report` and `extract` always select with the model that made the cache.
-Caches written before pair models existed are cpd_n4t caches and load as such.
+is `analyze_run(pair_model=...)`. There is no default: every pair analysis
+names its model. The model name is recorded in the cache (`pair_analysis.model`,
+plus the candidate metric names), so `report` and `extract` always select with
+the model that made the cache. Caches written before pair models existed are
+cpd_n4t caches and load as such (`chemistry.UNRECORDED_CACHE_PAIR_MODEL`).
+
+Everything specific to a reaction system lives in `MartiniFuncs.chemistry`;
+the rest of the package only talks to the model interface.
+`chemistry.diels_alder` holds what every Diels-Alder pair shares: the
+`DielsAlderModel` base class, `DielsAlderCriteria` (forming distance, distance
+imbalance, axis/plane/approach angles) and `measure_diels_alder` (minimax
+forming-bond matching, plane normals, acute angles). A Diels-Alder model
+supplies only its chemistry: `classify`, `sites` in the form
+`(termini, diene_plane, ...)` / `(alkene, dienophile_plane, ...)`, `screen_atoms`
+and a collection radius; `cpd_n4t` adds its ring dihedral on top.
 
 ## The cpd_n4t model
 
@@ -109,8 +120,8 @@ must pass `pair_collection=PairCollection(reactive_radius=...)`.
 **Registration:**
 - Register the model in an importable module, not a notebook cell or `__main__`.
   Spawned workers rebuild the model from its class.
-- To make the model a built-in, add it to `_BUILTIN` in `pairs/model.py`, and
-  `--pair-model` will list it.
+- To make the model a built-in, add it to `BUILTIN_PAIR_MODELS` in
+  `MartiniFuncs/chemistry/__init__.py`, and `--pair-model` will list it.
 
 `tests/test_pair_models.py` runs a toy model through the whole pipeline: both
 backends, workers, selection, and the CLI.

@@ -37,7 +37,7 @@ class CacheFormatTests(unittest.TestCase):
         self.run.mkdir()
         shutil.copyfile(FIXTURES / "multiple_frames.lammpstrj", self.run / "trajectory.lammpstrj")
         self.cache = self.root / "cache"
-        self.result, self.manifest = cache_analysis(self.run, self.cache, units="metal", timestep_ps=.0005,
+        self.result, self.manifest = cache_analysis(self.run, self.cache, units="metal", timestep_ps=.0005, pair_model="cpd_n4t",
                                                     progress=None)
 
     def test_round_trip_is_exact_and_compact(self):

@@ -11,7 +11,7 @@ from MartiniFuncs.chemistry.cpd_n4t import selection
 from MartiniFuncs.trajectory import reactions
 from MartiniFuncs.trajectory import analysis
 from MartiniFuncs.chemistry.cpd_n4t import pairs as cpd_pairs
-from MartiniFuncs.legacy import geom_utils as legacy_geom
+from MartiniFuncs.chemistry.cpd_n4t import legacy as legacy_geom
 from MartiniFuncs.pairs import structures
 from MartiniFuncs.structure.packing import write_initial_data
 from MartiniFuncs.io.lammps_inputs import render_lammps_input

@@ -4,7 +4,6 @@ from dataclasses import dataclass
 import numpy as np
 from ase import Atoms
 
-from MartiniFuncs.pairs.model import get_pair_model
 from MartiniFuncs.structure import graph as mfg
 
 SHELL_LABEL = "shell"
@@ -15,7 +14,7 @@ class Fragments:
     """Row groups of one structure from pairs.extxyz or clusters.extxyz.
 
     first/second are the rows of the two pair members (pair_role equal to the
-    model's role_labels, cpd_n4t: "CPD" and "MAL"); shell holds one row array
+    pair model's role_labels, as written by the export); shell holds one row array
     per whole shell molecule (pair_role "shell"), found as connected components
     of the bond graph of the shell atoms. Rows index the structure as read.
     """
@@ -26,13 +25,19 @@ class Fragments:
 
     @classmethod
     def from_structure(cls, atoms, *, role_labels=None, scale=1.3):
-        """Fragments of a finite exported structure (needs the per-atom pair_role array)."""
-        role_labels = tuple(role_labels or get_pair_model().role_labels)
+        """Fragments of a finite exported structure (needs the per-atom pair_role array).
+
+        role_labels None reads them from the structure: the first two non-shell
+        pair_role labels in row order, which exports write first member first.
+        """
         if "pair_role" not in atoms.arrays:
             raise ValueError("Structure has no pair_role array; use pairs.extxyz / clusters.extxyz from extract")
         if np.any(atoms.pbc):
             raise ValueError("Expected a finite (nonperiodic) exported structure")
         roles = np.asarray(atoms.arrays["pair_role"]).astype(str)
+        if role_labels is None:
+            role_labels = tuple(dict.fromkeys(label for label in roles if label != SHELL_LABEL))[:2]
+        role_labels = tuple(role_labels)
         unknown = sorted(set(roles) - {*role_labels, SHELL_LABEL})
         if unknown:
             raise ValueError(f"Unknown pair_role labels {unknown}; expected {role_labels} or {SHELL_LABEL!r}")

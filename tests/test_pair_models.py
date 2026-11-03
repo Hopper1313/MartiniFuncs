@@ -79,7 +79,8 @@ class PairModelTests(unittest.TestCase):
     def test_registry_and_pickling(self):
         self.assertIn("cpd_n4t", pair_model_names())
         self.assertIn("toy_whole_molecules", pair_model_names())
-        self.assertIs(get_pair_model(), get_pair_model("cpd_n4t"))
+        with self.assertRaisesRegex(ValueError, "No pair model given"):     # there is no default model
+            get_pair_model(None)
         self.assertIs(pickle.loads(pickle.dumps(get_pair_model("toy_whole_molecules"))),
                       get_pair_model("toy_whole_molecules"))
         with self.assertRaisesRegex(ValueError, "Unknown pair model"):
@@ -138,7 +139,8 @@ class PairModelTests(unittest.TestCase):
 
     def test_wrong_collection_or_criteria_class_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "pair_collection must be CpdN4tCollection"):
-            analyze_run(self.run_dir, pair_collection=PairCollection(reactive_radius=4.0), **OPTIONS)
+            analyze_run(self.run_dir, pair_model="cpd_n4t", pair_collection=PairCollection(reactive_radius=4.0),
+                        **OPTIONS)
         with self.assertRaisesRegex(ValueError, "criteria must be ToyCriteria"):
             select_pairs(self.toy, CpdN4tCriteria(max_axis_angle=45))
         generic = select_pairs(self.toy, PairCriteria(max_screen_distance=4.0))[0]     # any model's screen
@@ -167,6 +169,21 @@ class PairModelTests(unittest.TestCase):
             self.assertEqual(status, 2)
             self.assertIn("has no threshold --max-axis-angle", errors.getvalue())
 
+    def test_pair_analysis_requires_a_named_model(self):
+        """There is no default model: pair analyses name one; --no-pairs needs none."""
+        with self.assertRaisesRegex(ValueError, "No pair model given"):
+            analyze_run(self.run_dir, **OPTIONS)
+        with tempfile.TemporaryDirectory() as tmp:
+            base = ["run", str(self.run_dir), "--units", "metal", "--timestep-ps", ".0005", "--no-export-pairs",
+                    "--max-lag-ps", ".002", "--quiet"]
+            with redirect_stdout(StringIO()), redirect_stderr(StringIO()) as errors:
+                status = main(base + ["--output", str(Path(tmp) / "unnamed")])
+            self.assertEqual(status, 2)
+            self.assertIn("--pair-model is required", errors.getvalue())
+            with redirect_stdout(StringIO()), redirect_stderr(StringIO()) as errors:
+                status = main(base + ["--output", str(Path(tmp) / "no_pairs"), "--no-pairs"])
+            self.assertEqual(status, 0, errors.getvalue())
+
     def test_collection_default_belongs_to_the_model(self):
         from MartiniFuncs.workflows.postprocess import _analysis_configuration
         self.assertIsInstance(get_collection("cpd_n4t"), CpdN4tCollection)
@@ -178,8 +195,11 @@ class PairModelTests(unittest.TestCase):
             get_collection("toy_whole_molecules")
         with self.assertRaisesRegex(ValueError, "has no default collection"):
             analyze_run(self.run_dir, pair_model="toy_whole_molecules", **OPTIONS)
-        # Omitted and explicit default collection (and model) record the same cache configuration.
-        omitted = _analysis_configuration(dict(units="metal", timestep_ps=.0005, compute_pairs=True))
+        # Omitted and explicit default collection record the same cache configuration; the model is required.
+        with self.assertRaisesRegex(ValueError, "No pair model given"):
+            _analysis_configuration(dict(units="metal", timestep_ps=.0005, compute_pairs=True))
+        omitted = _analysis_configuration(dict(units="metal", timestep_ps=.0005, compute_pairs=True,
+                                               pair_model="cpd_n4t"))
         explicit = _analysis_configuration(dict(units="metal", timestep_ps=.0005, compute_pairs=True,
                                                 pair_collection=CpdN4tCollection(reactive_radius=3.25),
                                                 pair_model=get_pair_model("cpd_n4t")))
@@ -187,8 +207,9 @@ class PairModelTests(unittest.TestCase):
         self.assertEqual((omitted["pair_collection"], omitted["pair_model"]), ({"reactive_radius": 3.25}, "cpd_n4t"))
         self.assertIsNone(_analysis_configuration(dict(units="metal", timestep_ps=.0005))["pair_collection"])
         # The default collection is the model's in the analysis itself.
-        default = analyze_run(self.run_dir, **OPTIONS)
-        stated = analyze_run(self.run_dir, pair_collection=CpdN4tCollection(reactive_radius=3.25), **OPTIONS)
+        default = analyze_run(self.run_dir, pair_model="cpd_n4t", **OPTIONS)
+        stated = analyze_run(self.run_dir, pair_model="cpd_n4t", pair_collection=CpdN4tCollection(reactive_radius=3.25),
+                             **OPTIONS)
         self.assertEqual(default["pair_candidates"]["reactive_radius"], 3.25)
         self.assertEqual(default["pair_analysis"]["collection"], {"reactive_radius": 3.25})
         self.assertEqual(default["pairs_by_frame"], stated["pairs_by_frame"])

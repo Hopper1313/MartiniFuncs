@@ -62,7 +62,7 @@ class ImageFlagTests(unittest.TestCase):
 
 class WriterTests(unittest.TestCase):
     def test_xyz_writer_optional_velocities_and_full_precision(self):
-        from MartiniFuncs.legacy.geom_utils import pair_data_to_xyz
+        from MartiniFuncs.chemistry.cpd_n4t.legacy import pair_data_to_xyz
         record = dict(positions=[[0., 0, 0], [1, 0, 0]], symbols=["H", "H"],
                       forces=[[1.23456789e-9, 0, 0], [0, 0, -2.5]])
         with tempfile.TemporaryDirectory() as tmp:

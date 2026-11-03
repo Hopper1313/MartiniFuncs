@@ -107,21 +107,22 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
     Temperature is 2*K/(f*k_B) without COM subtraction; '3N-3' specifies f only
     (see statistics.md.get_frame_temperature).
 
-    reaction_atom_counts=(11, 23) enables an exact-size possible-product screen
-    for the CPD + N4T dienophile system. It rebuilds connectivity on EVERY source frame,
+    reaction_atom_counts=(n_first, n_second), the atom counts of the two
+    reactants including hydrogens, enables an exact-size possible-product
+    screen. It rebuilds connectivity on EVERY source frame,
     before striding, and raises PossibleReactionError with atom IDs at the first
     candidate. This costs an additional graph calculation per source frame. None
     skips screening; fixed-connectivity analysis then assumes no new products.
 
-    pair_model (a registered name or a PairModel; default 'cpd_n4t', see
-    pairs.model) supplies the chemistry: which molecules pair, their screen
-    centers, reactive sites and geometry metrics.
+    pair_model (a registered name or a PairModel, see pairs.model and
+    MartiniFuncs.chemistry; required when compute_pairs) supplies the
+    chemistry: which molecules pair, their screen centers, reactive sites and
+    geometry metrics.
 
     Pairs are collected here and selected later. pair_collection (the model's
-    PairCollection, cpd_n4t: CpdN4tCollection; None: its default) collects
-    every pair whose screen centers (cpd_n4t: CPD COM to dienophile C=C COM)
-    are closer than its reactive_radius (Angstrom, minimum image; 3.25 for
-    cpd_n4t). pairs_by_frame and pair_candidates hold all of them, with their
+    PairCollection subclass; None: its default) collects every pair whose
+    screen centers (defined by the model) are closer than its reactive_radius
+    (Angstrom, minimum image). pairs_by_frame and pair_candidates hold all of them, with their
     measured metrics; pairs.candidates.select_pairs applies the model's
     PairCriteria afterwards without rereading the dump. Collect with a generous
     radius to explore.
@@ -167,8 +168,8 @@ def analyze_run(directory, *, input_file=None, dump_file=None, data_file=None,
     """
     if pair_backend not in {"cached", "reference"}:
         raise ValueError("pair_backend must be 'cached' or 'reference'")
-    pair_model = get_pair_model(pair_model)
     if compute_pairs:
+        pair_model = get_pair_model(pair_model)
         pair_collection = get_collection(pair_model, pair_collection)   # None: the model's default
     if on_topology_change not in {None, "record", "truncate"}:
         raise ValueError("on_topology_change must be None, 'record' or 'truncate'")

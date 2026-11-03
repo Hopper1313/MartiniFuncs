@@ -5,7 +5,7 @@ now use `--workers` for complete frame parsing/preparation and for structure
 export, rather than only for pair screening. No new selection flags are needed.
 
 ```bash
-martini-postprocess run ./ --output ./postprocess --units metal --timestep-ps 0.0005 --shell-radius 3 --reaction-atom-counts 11 23 --workers 8 --batch-size 32
+martini-postprocess run ./ --pair-model cpd_n4t --output ./postprocess --units metal --timestep-ps 0.0005 --shell-radius 3 --reaction-atom-counts 11 23 --workers 8 --batch-size 32
 ```
 
 Use `collect` instead of `run` to omit statistical reports. `extract` also accepts
