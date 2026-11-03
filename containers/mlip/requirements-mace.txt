@@ -1,0 +1,3 @@
+# /opt/envs/mace: MACE-OMOL; mace-torch pins e3nn to exactly 0.4.4, so it cannot share UMA's environment.
+mace-torch==0.3.17
+e3nn==0.4.4

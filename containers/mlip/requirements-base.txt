@@ -1,0 +1,15 @@
+# Base layer (system Python 3.12), shared by both model environments.
+# Versions as tested in WSL (November 2026). torch comes from the PyTorch CPU index.
+torch==2.13.0+cpu
+numpy==2.4.6
+scipy==1.18.1
+pandas==3.1.0
+networkx==3.7
+matplotlib==3.11.2
+ase==3.29.0
+sella==2.6.0
+geometric==1.1.1
+tblite==0.8.0
+rdkit==2026.9.1
+mccoygroup-mcutils==1.8.1
+mccoygroup-psience==1.6.1

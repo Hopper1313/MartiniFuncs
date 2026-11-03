@@ -1,0 +1,131 @@
+Bootstrap: docker
+From: python:3.12-slim
+
+# MLIP container: UMA, MACE-OMOL and AIMNet2 (CPU) with ASE, Sella, geomeTRIC, tblite,
+# McUtils/Psience and MartiniFuncs.
+#
+# Layout: one base layer (system Python 3.12: CPU torch, numpy/scipy, ASE, Sella, geomeTRIC,
+# tblite, RDKit, McUtils, Psience, MartiniFuncs) and two virtual environments that see it
+# (--system-site-packages) and add only their own packages:
+#   /opt/envs/uma   fairchem-core (UMA) + aimnet (AIMNet2), e3nn 0.6
+#   /opt/envs/mace  mace-torch (MACE-OMOL), e3nn 0.4.4 (MACE pins it; UMA needs >= 0.5)
+# torch and numpy are installed once (constraints.txt). Model weights are not in the image:
+# bind them to /models (see %help).
+#
+# Build from the repository root (no sudo; --ignore-subuid is needed under WSL2, where the
+# default fakeroot mode fails to mount binfmt_misc):
+#   apptainer build --fakeroot --ignore-subuid mlip.sif containers/mlip/mlip.def
+
+%files
+    containers/mlip/requirements-base.txt /opt/mlip/requirements-base.txt
+    containers/mlip/requirements-uma.txt /opt/mlip/requirements-uma.txt
+    containers/mlip/requirements-mace.txt /opt/mlip/requirements-mace.txt
+    containers/mlip/constraints.txt /opt/mlip/constraints.txt
+    containers/mlip/selftest.py /opt/mlip/selftest.py
+    containers/mlip/reference_energies.json /opt/mlip/reference_energies.json
+    MartiniFuncs /opt/src/MartiniFuncs/MartiniFuncs
+    pyproject.toml /opt/src/MartiniFuncs/pyproject.toml
+    README.md /opt/src/MartiniFuncs/README.md
+
+%post
+    set -eu
+    export DEBIAN_FRONTEND=noninteractive
+    # g++: torch.compile (used inside UMA and AIMNet2) needs a C++ compiler.
+    apt-get update
+    apt-get install -y --no-install-recommends g++
+    rm -rf /var/lib/apt/lists/*
+
+    CPU_INDEX=https://download.pytorch.org/whl/cpu
+    cd /opt/mlip
+    python -m pip install --no-cache-dir uv==0.9.5
+    export UV_NO_CACHE=1
+
+    # Base layer.
+    uv pip install --system --break-system-packages --index-url "$CPU_INDEX" "torch==2.13.0+cpu"
+    uv pip install --system --break-system-packages --extra-index-url "$CPU_INDEX" \
+        --index-strategy unsafe-best-match -c constraints.txt -r requirements-base.txt
+    find /opt/src/MartiniFuncs -name __pycache__ -prune -exec rm -rf {} +
+    uv pip install --system --break-system-packages --no-deps /opt/src/MartiniFuncs
+
+    # Model environments: pip (not uv) so packages already in the base layer count as installed.
+    for env in uma mace; do
+        python -m venv --system-site-packages "/opt/envs/$env"
+        "/opt/envs/$env/bin/pip" install --no-cache-dir --extra-index-url "$CPU_INDEX" \
+            -c constraints.txt -r "requirements-$env.txt"
+        # torch and numpy must come from the base layer, not a second copy.
+        for package in torch numpy; do
+            if [ -d "/opt/envs/$env/lib/python3.12/site-packages/$package" ]; then
+                echo "ERROR: $env env installed its own $package"; exit 1
+            fi
+        done
+    done
+
+    mkdir -p /models/uma /models/mace /models/aimnet
+    rm -rf /root/.cache
+
+%environment
+    export UMA_CHECKPOINT="${UMA_CHECKPOINT:-/models/uma/uma-s-1p2p1.pt}"
+    export MACE_MODEL="${MACE_MODEL:-/models/mace/MACE-omol-0-extra-large-1024.model}"
+    export AIMNET_MODEL="${AIMNET_MODEL:-/models/aimnet/aimnet2_2025_b973c_d3_0.jpt}"
+
+%apprun uma
+    exec /opt/envs/uma/bin/python "$@"
+
+%apprun mace
+    exec /opt/envs/mace/bin/python "$@"
+
+%apprun base
+    exec python "$@"
+
+%apprun server
+    # Interactive anthracene + MA builder with the optimizer: http://127.0.0.1:8000/ (--port to change).
+    exec python -m MartiniFuncs.optimize.server \
+        --page MartiniFuncs.chemistry.anthracene_ma.viewer:builder_page \
+        --worker uma=/opt/envs/uma/bin/python:uma,aimnet,gfn2,emt \
+        --worker mace=/opt/envs/mace/bin/python:mace "$@"
+
+%apprun selftest
+    status=0
+    /opt/envs/uma/bin/python /opt/mlip/selftest.py "$@" || status=1
+    /opt/envs/mace/bin/python /opt/mlip/selftest.py "$@" || status=1
+    exit $status
+
+%runscript
+    echo "MLIP container: UMA + AIMNet2 (app 'uma'), MACE-OMOL (app 'mace'), base tools (app 'base')."
+    echo "  apptainer run --app uma  mlip.sif script.py     # Python with fairchem/UMA and aimnet"
+    echo "  apptainer run --app mace mlip.sif script.py     # Python with mace-torch"
+    echo "  apptainer run --app selftest mlip.sif           # check all three models against reference energies"
+    echo "  apptainer run --app server mlip.sif             # builder page + optimizer at http://127.0.0.1:8000/"
+    echo "Bind model weights to /models (see: apptainer run-help mlip.sif)."
+
+%test
+    set -e
+    # fairchem creates a cache folder under $HOME on import; the build-time home is read-only.
+    export HOME="$(mktemp -d)"
+    /opt/envs/uma/bin/python -c "import torch, e3nn, fairchem.core, aimnet, ase, sella, geometric, tblite, McUtils, Psience, MartiniFuncs; print('uma env ok: torch', torch.__version__, 'e3nn', e3nn.__version__)"
+    /opt/envs/mace/bin/python -c "import torch, e3nn, mace, ase, sella, MartiniFuncs; print('mace env ok: torch', torch.__version__, 'e3nn', e3nn.__version__)"
+
+%labels
+    Description MLIP container: UMA, MACE-OMOL, AIMNet2 (CPU) with ASE, Sella, geomeTRIC, tblite, McUtils, Psience, MartiniFuncs
+    Torch 2.13.0+cpu
+
+%help
+    UMA, MACE-OMOL and AIMNet2 on CPU, with ASE, Sella, geomeTRIC, tblite, RDKit, McUtils,
+    Psience and MartiniFuncs.
+
+    Apps:
+      uma       Python with fairchem-core (UMA) and aimnet (AIMNet2)
+      mace      Python with mace-torch (MACE-OMOL)
+      base      Python with the shared tools only
+      selftest  energies of the anthracene + MA reference structures vs. the tested values
+      server    anthracene + MA builder page with constrained optimization (UMA, AIMNet2,
+                GFN2-xTB, EMT in the uma env; MACE-OMOL in the mace env) at
+                http://127.0.0.1:8000/ ; options: --port, --host
+
+    Model weights are bound in at run time, e.g. (WSL paths):
+      apptainer run --app selftest \
+        --bind "/mnt/c/Users/nicho/Documents/Martini collab/uma_data:/models/uma" \
+        --bind /mnt/c/Users/nicho/.cache/mace:/models/mace \
+        --bind "/mnt/c/Users/nicho/Documents/Martini collab/aimnet2_2025_b973c_d3_0.jpt:/models/aimnet/aimnet2_2025_b973c_d3_0.jpt" \
+        mlip.sif
+    Other locations: set UMA_CHECKPOINT, MACE_MODEL, AIMNET_MODEL (apptainer --env).

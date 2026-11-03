@@ -1,0 +1,7 @@
+# /opt/envs/uma: UMA (fairchem) and AIMNet2 (aimnetcentral "aimnet"); needs e3nn >= 0.5.
+# fairchem imports ray (Ray Serve) and wandb at load time, so they stay although unused here.
+fairchem-core==2.22.0
+aimnet==0.2.5
+e3nn==0.6.0
+ray[serve]==2.59.0
+wandb==0.31.0

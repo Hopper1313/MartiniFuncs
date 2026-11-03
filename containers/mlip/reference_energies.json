@@ -1,0 +1,31 @@
+{
+ "description": "Energies (eV) of the anthracene + MA UMA-s-1p2p1 reference structures (MartiniFuncs package data), charge 0, singlet, CPU, float64 for MACE; from the tested WSL environments, which match the Windows conda environments to <= 3e-6 eV.",
+ "models": {
+  "uma": "uma-s-1p2p1.pt (task omol)",
+  "mace": "MACE-omol-0-extra-large-1024.model",
+  "aimnet": "aimnet2_2025_b973c_d3_0.jpt"
+ },
+ "energies_eV": {
+  "uma": {
+   "anthracene": -14680.693528,
+   "maleic_anhydride": -10322.607072,
+   "reactant_complex": -25003.726784,
+   "transition_state": -25002.813974,
+   "product": -25004.900157
+  },
+  "mace": {
+   "anthracene": -14680.69464,
+   "maleic_anhydride": -10322.609018,
+   "reactant_complex": -25003.694816,
+   "transition_state": -25002.792293,
+   "product": -25004.881023
+  },
+  "aimnet": {
+   "anthracene": -14674.046507,
+   "maleic_anhydride": -10316.701298,
+   "reactant_complex": -24991.193283,
+   "transition_state": -24990.161222,
+   "product": -24991.863434
+  }
+ }
+}

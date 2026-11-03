@@ -1,0 +1,4 @@
+# Applied to every install, so the model environments reuse the base layer's torch and numpy
+# instead of installing their own copies.
+torch==2.13.0+cpu
+numpy==2.4.6
