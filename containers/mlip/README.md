@@ -24,13 +24,18 @@ You need Linux, or Windows with WSL2 (Ubuntu), and [Apptainer](https://apptainer
 (on Ubuntu/WSL2: `sudo add-apt-repository -y ppa:apptainer/ppa && sudo apt install -y apptainer`).
 Run everything below in a Linux / WSL terminal, from a clone of this repository.
 
-1. **Get the image.** Download `mlip.sif` and `mlip.sif.sha256` from the repository's GitHub
-   Releases, put them in `~/containers/`, and check the download:
+1. **Get the image** (release [mlip-bb6e1dc](https://github.com/Hopper1313/MartiniFuncs/releases/tag/mlip-bb6e1dc),
+   about 1 GB) into `~/containers/` and check the download:
    ```bash
    mkdir -p ~/containers && cd ~/containers
+   gh release download mlip-bb6e1dc --repo Hopper1313/MartiniFuncs --pattern 'mlip.sif*'
    sha256sum -c mlip.sif.sha256
    ```
-   Or build it yourself (see Build below).
+   `gh` (GitHub CLI) works while the repository is private, for anyone with access. For a public
+   repository, plain downloads work too:
+   `curl -LO https://github.com/Hopper1313/MartiniFuncs/releases/download/mlip-bb6e1dc/mlip.sif`
+   (and the same for `mlip.sif.sha256`). Or build the image yourself (see Build below); use the
+   release whose name matches the commit you have checked out.
 2. **Get the models** into `~/mlip_models` (choose another folder with `--models DIR` or `MLIP_MODELS`):
    ```bash
    export HF_TOKEN=hf_...                     # for UMA, see the table below
