@@ -163,6 +163,60 @@ class ServerTests(unittest.TestCase):
             call("/optimize", {"model": "uma", "symbols": ["C"], "positions": [[0, 0, 0]]})
         self.assertEqual(unknown.exception.code, 400)
 
+    def test_results_store(self):
+        """Saved results: POST/GET/DELETE over HTTP, one JSON file each, reloaded by a new store."""
+        import tempfile
+        from http.server import ThreadingHTTPServer
+        from MartiniFuncs.optimize.server import ResultStore, Service, make_handler
+        folder = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, folder, True)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(Service("<p>page</p>", [], ResultStore(folder))))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+
+        def call(path, body=None, method=None):
+            data = None if body is None else json.dumps(body).encode()
+            request = urllib.request.Request(base + path, data=data, method=method or ("GET" if body is None else "POST"),
+                                             headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return json.loads(response.read().decode())
+
+        state = call("/results")
+        self.assertEqual((state["persistent"], state["results"]), (True, []))
+        first = {"id": "r1", "name": "first", "created": "2026-11-03T10:00:00Z", "energy": -1.5, "positions": [[0, 0, 0]]}
+        second = {"id": "r0", "name": "second", "created": "2026-11-03T11:00:00Z"}
+        call("/results", first)
+        call("/results", second)
+        self.assertEqual([r["id"] for r in call("/results")["results"]], ["r1", "r0"])     # oldest first
+        call("/results", {**first, "name": "renamed"})
+        self.assertEqual(call("/results/r1")["name"], "renamed")
+        self.assertEqual(sorted(p.name for p in folder.glob("*.json")), ["r0.json", "r1.json"])
+        self.assertEqual(ResultStore(folder).get("r1")["name"], "renamed")
+        self.assertEqual(call("/results/r0", method="DELETE"), {"deleted": "r0"})
+        self.assertEqual([p.name for p in folder.glob("*.json")], ["r1.json"])
+        for path, body, method in (("/results", {"id": "../x"}, None), ("/results/r0", None, "DELETE"),
+                                   ("/results/nope", None, None)):
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                call(path, body, method)
+            self.assertEqual(error.exception.code, 400 if body else 404)
+        # Static assets (--assets): served from the folder only.
+        assets = folder / "assets"
+        (assets / "x3dom").mkdir(parents=True)
+        (assets / "x3dom" / "x3dom.js").write_text("var x3dom = {};", encoding="utf-8")
+        service = Service("<p>page</p>", [], ResultStore(), assets)
+        self.assertEqual(service.asset(["x3dom", "x3dom.js"])[0], b"var x3dom = {};")
+        self.assertIn("javascript", service.asset(["x3dom", "x3dom.js"])[1])
+        for parts in (["..", "r1.json"], ["x3dom", "missing.js"], ["x3dom"]):
+            self.assertIsNone(service.asset(parts), parts)
+        self.assertIsNone(Service("", []).asset(["x3dom", "x3dom.js"]))
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            call("/assets/x3dom/x3dom.js")          # this server has no --assets
+        self.assertEqual(error.exception.code, 404)
+        memory = ResultStore()
+        memory.save(first)
+        self.assertEqual(memory.state()["persistent"], False)
+
 
 if __name__ == "__main__":
     unittest.main()

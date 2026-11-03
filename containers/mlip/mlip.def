@@ -60,6 +60,24 @@ From: python:3.12-slim
         done
     done
 
+    # x3dom 1.8.3 (MIT or GPL-3.0) for the builder page, served at /assets/x3dom/, so the page needs no
+    # internet. From the npm registry, checked against the release tarball's SHA-256.
+    python - <<'PY'
+import hashlib, io, tarfile, urllib.request
+from pathlib import Path
+url = "https://registry.npmjs.org/x3dom/-/x3dom-1.8.3.tgz"
+expected = "d629fb629af8016b31d4da486b538af31062885172afca6091307b887c55c3c0"
+data = urllib.request.urlopen(url, timeout=120).read()
+if hashlib.sha256(data).hexdigest() != expected:
+    raise SystemExit(f"x3dom download checksum mismatch: {url}")
+target = Path("/opt/mlip/assets/x3dom")
+target.mkdir(parents=True, exist_ok=True)
+with tarfile.open(fileobj=io.BytesIO(data)) as archive:
+    for name in ("x3dom.js", "x3dom.css", "README.md"):
+        (target / name).write_bytes(archive.extractfile(f"package/{name}").read())
+(target / "LICENSE").write_text("x3dom 1.8.3, dual licensed MIT or GPL-3.0: https://github.com/x3dom/x3dom\n")
+PY
+
     mkdir -p /models/uma /models/mace /models/aimnet
     rm -rf /root/.cache
 
@@ -79,10 +97,14 @@ From: python:3.12-slim
 
 %apprun server
     # Interactive anthracene + MA builder with the optimizer: http://127.0.0.1:8000/ (--port to change).
+    # Saved results go to ./pair_builder_results (one JSON file each); --results DIR overrides.
+    # x3dom is served from the image (/opt/mlip/assets), so the page works offline.
     exec python -m MartiniFuncs.optimize.server \
         --page MartiniFuncs.chemistry.anthracene_ma.viewer:builder_page \
         --worker uma=/opt/envs/uma/bin/python:uma,aimnet,gfn2,emt \
-        --worker mace=/opt/envs/mace/bin/python:mace "$@"
+        --worker mace=/opt/envs/mace/bin/python:mace \
+        --assets /opt/mlip/assets \
+        --results "$PWD/pair_builder_results" "$@"
 
 %apprun selftest
     status=0
@@ -120,12 +142,15 @@ From: python:3.12-slim
       selftest  energies of the anthracene + MA reference structures vs. the tested values
       server    anthracene + MA builder page with constrained optimization (UMA, AIMNet2,
                 GFN2-xTB, EMT in the uma env; MACE-OMOL in the mace env) at
-                http://127.0.0.1:8000/ ; options: --port, --host
+                http://127.0.0.1:8000/ ; options: --port, --host, --results DIR (saved
+                optimization results; default ./pair_builder_results)
 
-    Model weights are bound in at run time, e.g. (WSL paths):
-      apptainer run --app selftest \
-        --bind "/mnt/c/Users/nicho/Documents/Martini collab/uma_data:/models/uma" \
-        --bind /mnt/c/Users/nicho/.cache/mace:/models/mace \
-        --bind "/mnt/c/Users/nicho/Documents/Martini collab/aimnet2_2025_b973c_d3_0.jpt:/models/aimnet/aimnet2_2025_b973c_d3_0.jpt" \
-        mlip.sif
+    Model weights are not in the image. From a clone of the repository:
+      containers/mlip/fetch_models.sh     # downloads them to ~/mlip_models (see its --help)
+      containers/mlip/run_server.sh       # binds them and starts the server app
+      containers/mlip/run_server.sh --selftest
+    or bind them yourself, e.g.
+      apptainer run --app selftest --bind ~/mlip_models/uma:/models/uma \
+        --bind ~/mlip_models/mace:/models/mace --bind ~/mlip_models/aimnet:/models/aimnet \
+        --env AIMNET_MODEL=/models/aimnet/aimnet2_2025_b973c_d3_0.pt mlip.sif
     Other locations: set UMA_CHECKPOINT, MACE_MODEL, AIMNET_MODEL (apptainer --env).

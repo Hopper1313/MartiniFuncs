@@ -18,3 +18,9 @@ dist/
 # Large local simulation data for testing (dumps + caches); not distributed.
 tests/NVT_shear/
 tests/NVT_noshear/
+*.model
+*.jpt
+# Container images are published as release assets, not committed.
+*.sif
+# Saved results of the pair-builder page (run_server.sh default folder).
+pair_builder_results/

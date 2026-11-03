@@ -11,7 +11,8 @@ from ase.io import read
 from numpy.testing import assert_allclose
 
 from MartiniFuncs.chemistry.anthracene_ma.build import (PairFrames, build_pair, measure_placement, rdkit_templates,
-                                                        reference_structure, structure_metrics, uma_templates)
+                                                        reference_energy, reference_structure, structure_metrics,
+                                                        to_builder_frame, uma_templates)
 from MartiniFuncs.chemistry.anthracene_ma.sites import anhydride_sites, anthracene_sites
 from MartiniFuncs.structure import graph
 
@@ -126,6 +127,44 @@ class BuilderTests(unittest.TestCase):
         self.assertAlmostEqual(structure_metrics(reference_structure("reactant_complex"))["screen_distance"], 3.169, 3)
         self.assertAlmostEqual(structure_metrics(reference_structure("transition_state"))["screen_distance"], 2.335, 3)
 
+    def test_product_reference(self):
+        """The adduct splits by the hand-off mapping: forming C-C ~1.56, screen ~1.90, the MA folded ~30 degrees."""
+        product = reference_structure("product")
+        self.assertEqual(list(np.flatnonzero(product.arrays["pair_role"] == "MA")), MA_ROWS)
+        metrics = structure_metrics(product)
+        self.assertAlmostEqual(metrics["max_forming_distance"], 1.556, delta=0.002)
+        self.assertAlmostEqual(metrics["screen_distance"], 1.901, delta=0.002)
+        self.assertAlmostEqual(measure_placement(product)["fold"], 30.1, delta=0.2)
+        # UMA energies of the hand-off (eV): barrier and reaction energy from the complex.
+        complex_energy = reference_energy("reactant_complex")
+        self.assertAlmostEqual(reference_energy("transition_state") - complex_energy, 0.9128, delta=1e-4)
+        self.assertAlmostEqual(reference_energy("product") - complex_energy, -1.1734, delta=1e-4)
+
+    def test_to_builder_frame(self):
+        """References in the builder's rows and frame: same geometry (metrics), template order, anthracene in place."""
+        frames = PairFrames()
+        template_symbols = frames.anthracene.get_chemical_symbols() + frames.anhydride.get_chemical_symbols()
+        for name in ("reactant_complex", "transition_state", "product"):
+            reference = reference_structure(name)
+            placed = to_builder_frame(reference, frames)
+            self.assertEqual(placed.get_chemical_symbols(), template_symbols, name)
+            self.assertEqual(sorted(placed.arrays["source_row"]), list(range(33)))
+            self.assertEqual(sorted(placed.arrays["source_row"][24:]), MA_ROWS)
+            before, after = structure_metrics(reference), structure_metrics(placed)
+            for key in before:
+                self.assertAlmostEqual(before[key], after[key], places=8, msg=(name, key))
+            assert_allclose(placed.positions[list(frames.central_ring)].mean(axis=0), 0, atol=1e-9)
+            self.assertGreater(placed.positions[24:, 2].mean(), 0, name)
+        complex_ = to_builder_frame(reference_structure("reactant_complex"), frames)
+        assert_allclose(complex_.positions[:24], frames.anthracene_xyz, atol=0.05)
+        # A builder pair (shuffled) maps back onto itself.
+        atoms, _ = build_pair(distance=3.1, twist=20, fold=10, frames=frames)
+        order = np.random.default_rng(3).permutation(len(atoms))
+        shuffled = atoms[order]
+        del shuffled.arrays["pair_role"]
+        back = to_builder_frame(shuffled, frames)
+        assert_allclose(back.positions, atoms.positions, atol=1e-8)
+
     def test_templates(self):
         for anthracene, anhydride in (uma_templates(), rdkit_templates()):
             self.assertEqual((anthracene.get_chemical_formula(), anhydride.get_chemical_formula()), ("C14H10", "C4H2O3"))
@@ -146,7 +185,18 @@ class ViewerTests(unittest.TestCase):
         self.assertEqual((len(data["anthracene"]["xyz"]), len(data["anhydride"]["xyz"])), (24, 9))
         names = [p["name"] for p in data["presets"]]
         self.assertIn("UMA TS (rigid)", names)
-        self.assertEqual([r["name"] for r in data["references"]], ["UMA reactant complex", "UMA TS"])
+        self.assertIn("UMA product (rigid)", names)
+        references = {r["key"]: r for r in data["references"]}
+        self.assertEqual([r["name"] for r in data["references"]],
+                         ["UMA reactant complex", "UMA TS", "UMA product", "UMA separated reactants"])
+        self.assertEqual(np.shape(references["product"]["positions"]), (33, 3))
+        self.assertIsNone(references["separated"]["positions"])
+        self.assertAlmostEqual(references["product"]["max_forming_distance"], 1.556, delta=0.002)
+        # Forming bonds: two hidden cylinders, styled after a C-C bond of the anthracene scene.
+        for k in (0, 1):
+            self.assertIn(f'<switch id="forming-bond-switch-{k}" whichChoice="-1">', page)
+            self.assertIn(f'<transform id="forming-bond-{k}"', page)
+        self.assertIn('id="results"', page)
 
 
 if __name__ == "__main__":

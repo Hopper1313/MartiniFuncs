@@ -63,6 +63,8 @@ SMILES = {"anthracene": "c1ccc2cc3ccccc3cc2c1", "maleic_anhydride": "O=C1OC(=O)C
 ROLE_LABELS = ("ANT", "MA")
 DISTANCE_KINDS = ("height", "centers", "max_forming")
 REFERENCES = ("anthracene", "maleic_anhydride", "reactant_complex", "transition_state", "product")
+# Maleic anhydride rows of the 33-atom references (hand-off atom order, as handoff_manifest.json); the rest is anthracene.
+REFERENCE_MA_ROWS = (0, 1, 2, 3, 4, 5, 20, 21, 32)
 # MA body axes (C=C, ring direction, normal) -> anthracene axes in the reference pose: a->y, b->x, c->-z.
 REFERENCE_POSE = np.array([[0., 1., 0.], [1., 0., 0.], [0., 0., -1.]])
 
@@ -72,13 +74,30 @@ def reference_structure(name):
 
     name: "anthracene", "maleic_anhydride" (relaxed isolated molecules),
     "reactant_complex", "transition_state" or "product" (33-atom structures).
+    The 33-atom structures carry a pair_role array ("ANT"/"MA", from the
+    hand-off atom mapping, REFERENCE_MA_ROWS), so the product, one bonded
+    adduct, splits into its two parts for structure_metrics and measure_placement.
     """
+    structure = _reference_file(name)
+    # Geometry only; standard masses (the files carry the reference calculation's isotope masses).
+    atoms = Atoms(structure.get_chemical_symbols(), positions=structure.positions)
+    if len(atoms) == ANTHRACENE_SIZE + ANHYDRIDE_SIZE:
+        roles = np.array([ROLE_LABELS[0]] * len(atoms))
+        roles[list(REFERENCE_MA_ROWS)] = ROLE_LABELS[1]
+        atoms.new_array("pair_role", roles)
+    return atoms
+
+
+def _reference_file(name):
     if name not in REFERENCES:
         raise ValueError(f"name must be one of {REFERENCES}")
     with resources.as_file(resources.files(__package__) / "data" / f"uma_{name}.xyz") as path:
-        structure = read(path)
-    # Geometry only; standard masses (the files carry the reference calculation's isotope masses).
-    return Atoms(structure.get_chemical_symbols(), positions=structure.positions)
+        return read(path)
+
+
+def reference_energy(name):
+    """The UMA-s-1p2p1 energy (eV; charge 0, spin 1) stored with a reference structure."""
+    return float(_reference_file(name).get_potential_energy())
 
 
 def uma_templates():
@@ -369,3 +388,87 @@ def measure_placement(atoms, *, scale=1.3):
                          "screen_distance": float(np.linalg.norm(position))}
             candidates.append(((round(abs(fold), 6), round(abs(twist), 6), round(abs(roll), 6)), placement))
     return min(candidates, key=lambda item: item[0])[1]
+
+
+def _fragment_graph(symbols, xyz, rows, scale):
+    """networkx graph of the rows of one fragment (nodes 0..len(rows)-1, attribute element); bonds by covalent radii."""
+    import networkx as nx
+    from ase.data import atomic_numbers, covalent_radii
+    radii = [covalent_radii[atomic_numbers[symbols[i]]] for i in rows]
+    graph = nx.Graph()
+    graph.add_nodes_from((a, {"element": symbols[i]}) for a, i in enumerate(rows))
+    for a in range(len(rows)):
+        for b in range(a + 1, len(rows)):
+            if np.linalg.norm(xyz[rows[a]] - xyz[rows[b]]) < scale * (radii[a] + radii[b]):
+                graph.add_edge(a, b)
+    return graph
+
+
+def _matchings(template, graph):
+    """Each element-preserving isomorphism template -> graph, as a list: template node t -> graph node."""
+    from networkx.algorithms import isomorphism
+    matcher = isomorphism.GraphMatcher(template, graph, node_match=lambda a, b: a["element"] == b["element"])
+    for mapping in matcher.isomorphisms_iter():
+        yield [mapping[t] for t in range(len(template))]
+
+
+def _kabsch_rmsd(moving, target):
+    """RMSD of moving onto target after the best rotation and translation."""
+    p, q = moving - moving.mean(axis=0), target - target.mean(axis=0)
+    u, _, vt = np.linalg.svd(p.T @ q)
+    d = np.sign(np.linalg.det(u @ vt))
+    rotation = u @ np.diag([1., 1., d]) @ vt
+    return float(np.sqrt(np.mean(np.sum((p @ rotation - q) ** 2, axis=1))))
+
+
+def to_builder_frame(atoms, frames=None, *, scale=1.3):
+    """Any anthracene + MA structure (33 atoms, any order) in the builder's rows and anthracene frame.
+
+    Rows are reordered to the templates' (frames: anthracene rows 0..23, then
+    MA rows 24..32, as build_pair and the builder page), matching each molecule
+    to its template by bonding (graph isomorphism within each molecule, so a
+    bonded adduct works when it has a pair_role array). Of the molecules'
+    symmetry-equivalent matchings, the anthracene one closest to the template
+    in the anthracene frame and the MA one closest to the template after
+    superposition are used. Coordinates are in the anthracene frame fitted to
+    the structure's own anthracene (anthracene_frame; a flat anthracene's z is
+    chosen so the MA lies on +z), so the geometry itself is unchanged.
+
+    Returns Atoms with pair_role ("ANT"/"MA") and source_row (the input row of
+    each atom) arrays.
+    """
+    frames = frames or PairFrames(scale=scale)
+    s = _pair_sites(atoms, scale)
+    xyz, symbols = s["xyz"], s["symbols"]
+    ant_rows, ma_rows = s["anthracene"], s["anhydride"]
+    ant_template = _fragment_graph(frames.anthracene.get_chemical_symbols(), frames.anthracene.positions,
+                                   list(range(ANTHRACENE_SIZE)), scale)
+    ma_template = _fragment_graph(frames.anhydride.get_chemical_symbols(), frames.anhydride.positions,
+                                  list(range(ANHYDRIDE_SIZE)), scale)
+    outer = _outer_carbons(frames.anthracene.get_chemical_symbols(), range(ANTHRACENE_SIZE), frames.central_ring)
+    best = None
+    for order in _matchings(ant_template, _fragment_graph(symbols, xyz, ant_rows, scale)):
+        rows = [ant_rows[k] for k in order]
+        origin, axes, bent = anthracene_frame(xyz[rows], frames.termini, frames.central_ring, outer)
+        local = (xyz - origin) @ axes.T
+        if not bent and local[ma_rows, 2].mean() < 0:
+            local = local * np.array([-1., 1., -1.])       # flat anthracene: the other face (C2 about y)
+        rmsd = float(np.sqrt(np.mean(np.sum((local[rows] - frames.anthracene_xyz) ** 2, axis=1))))
+        if best is None or rmsd < best[0] - 1e-9:
+            best = (rmsd, rows, local)
+    if best is None:
+        raise ValueError("The anthracene does not match the template's bonding")
+    _, ant_order, local = best
+    ma_best = None
+    for order in _matchings(ma_template, _fragment_graph(symbols, xyz, ma_rows, scale)):
+        rows = [ma_rows[k] for k in order]
+        rmsd = _kabsch_rmsd(local[rows], frames.anhydride_xyz)
+        if ma_best is None or rmsd < ma_best[0] - 1e-9:
+            ma_best = (rmsd, rows)
+    if ma_best is None:
+        raise ValueError("The maleic anhydride does not match the template's bonding")
+    order = list(ant_order) + list(ma_best[1])
+    out = Atoms([symbols[i] for i in order], positions=local[order])
+    out.new_array("pair_role", np.array([ROLE_LABELS[0]] * ANTHRACENE_SIZE + [ROLE_LABELS[1]] * ANHYDRIDE_SIZE))
+    out.new_array("source_row", np.array(order))
+    return out

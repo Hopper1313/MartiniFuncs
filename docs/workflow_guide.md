@@ -1198,9 +1198,18 @@ print(measure_placement(reference_structure("transition_state")))
 print(structure_metrics(reference_structure("transition_state")))     # the shared Diels-Alder metrics
 ```
 
+`reference_structure("product")` (the adduct) carries a `pair_role` array from
+the hand-off atom mapping, so its metrics work too (forming C-C 1.56, screen
+distance 1.90 Angstrom, the MA folded 30 degrees); `reference_energy(name)` gives
+the UMA energy and `to_builder_frame(atoms)` puts any anthracene + MA structure
+in the builder's atom order and frame.
+
 The interactive version (sliders for every parameter, live metrics, XYZ
-download, the matching `build_pair` call; molecules rendered with
-Psience/McUtils, needs an internet connection for x3dom):
+download, the matching `build_pair` call; the UMA complex, TS and product to
+show and compare against; forming C...C drawn as bonds once formed; molecules
+rendered with Psience/McUtils, needs an internet connection for x3dom). Served
+by `python -m MartiniFuncs.optimize.server` (or the MLIP container's `server`
+app) it also optimizes the shown pair and keeps every result for comparison:
 
 ```bash
 python -m MartiniFuncs.chemistry.anthracene_ma.viewer anthracene_ma_pair_builder.html

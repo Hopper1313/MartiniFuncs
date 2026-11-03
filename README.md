@@ -25,6 +25,15 @@ Common entry points are also importable lazily from the top level, e.g.
 `from MartiniFuncs import analyze_run, select_pairs`; model classes come from their
 chemistry subpackage, e.g. `from MartiniFuncs.chemistry.cpd_n4t import CpdN4tCriteria`.
 
+## Interactive pair builder and optimizer (container)
+
+The anthracene + maleic anhydride builder page with constrained UMA / AIMNet2 / MACE-OMOL /
+GFN2-xTB optimization runs from the MLIP Apptainer image (CPU only). Download the image from the
+Releases page, fetch the model weights with `containers/mlip/fetch_models.sh` (they are not
+redistributed; the script says where each comes from and what access it needs), then start
+`containers/mlip/run_server.sh` and open http://127.0.0.1:8000/. Details:
+[containers/mlip/README.md](containers/mlip/README.md).
+
 ## Post-simulation CLI and Slurm
 
 Start with the [workflow guide](docs/workflow_guide.md): the recommended order of
