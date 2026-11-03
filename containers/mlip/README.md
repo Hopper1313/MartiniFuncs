@@ -20,6 +20,8 @@ usable right away.
 
 ## Quick start (use the published image)
 
+Short version for collaborators: [docs/setup_collaborators.md](../../docs/setup_collaborators.md).
+
 You need Linux, or Windows with WSL2 (Ubuntu), and [Apptainer](https://apptainer.org/docs/admin/main/installation.html)
 (on Ubuntu/WSL2: `sudo add-apt-repository -y ppa:apptainer/ppa && sudo apt install -y apptainer`).
 Run everything below in a Linux / WSL terminal, from a clone of this repository.
