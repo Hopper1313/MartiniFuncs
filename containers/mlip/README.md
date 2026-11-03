@@ -28,14 +28,12 @@ Run everything below in a Linux / WSL terminal, from a clone of this repository.
    about 1 GB) into `~/containers/` and check the download:
    ```bash
    mkdir -p ~/containers && cd ~/containers
-   gh release download mlip-bb6e1dc --repo Hopper1313/MartiniFuncs --pattern 'mlip.sif*'
+   curl -LO https://github.com/Hopper1313/MartiniFuncs/releases/download/mlip-bb6e1dc/mlip.sif
+   curl -LO https://github.com/Hopper1313/MartiniFuncs/releases/download/mlip-bb6e1dc/mlip.sif.sha256
    sha256sum -c mlip.sif.sha256
    ```
-   `gh` (GitHub CLI) works while the repository is private, for anyone with access. For a public
-   repository, plain downloads work too:
-   `curl -LO https://github.com/Hopper1313/MartiniFuncs/releases/download/mlip-bb6e1dc/mlip.sif`
-   (and the same for `mlip.sif.sha256`). Or build the image yourself (see Build below); use the
-   release whose name matches the commit you have checked out.
+   Or build the image yourself (see Build below). Use the release whose name matches the commit
+   you have checked out.
 2. **Get the models** into `~/mlip_models` (choose another folder with `--models DIR` or `MLIP_MODELS`):
    ```bash
    export HF_TOKEN=hf_...                     # for UMA, see the table below
@@ -43,6 +41,17 @@ Run everything below in a Linux / WSL terminal, from a clone of this repository.
    ```
    Anything you skip (or can't get yet) is reported; the rest works. `fetch_models.sh uma` (or
    `mace`, `aimnet`) fetches one model later. At the end it runs the self-test (below).
+
+   **Not using UMA?** Every model is optional. Name the ones you want, e.g.
+   ```bash
+   containers/mlip/fetch_models.sh --accept-asl mace aimnet   # MACE-OMOL and AIMNet2
+   containers/mlip/fetch_models.sh aimnet                     # AIMNet2 only (no licence flag needed)
+   ```
+   Then no Hugging Face account or `HF_TOKEN` is needed. Models you don't fetch show as
+   "unavailable" in the page and are skipped by the self-test; GFN2-xTB is always available. The
+   page's built-in UMA references (complex, TS, product) still show and give metric differences,
+   but their energies only compare with UMA results: to see ΔE for MACE or AIMNet2 runs, pick one
+   of your own saved results as the reference.
 3. **Start the builder page with the optimizer:**
    ```bash
    containers/mlip/run_server.sh              # options: --port 8001, --results DIR, --models DIR, --sif FILE
