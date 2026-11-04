@@ -9,6 +9,12 @@ models, its weights file):
     gfn2     GFN2-xTB (tblite)
     emt      ASE EMT (crude; for testing without ML models)
 
+CPU threads: ModelCache(ncpus) sets the torch thread count for UMA, AIMNet2
+and MACE-OMOL; set_threads(n) sets the OpenMP/BLAS variables read by tblite and
+the linear algebra libraries (set them before those load). Finite-difference
+Hessians of the cheap models (GFN2-xTB, EMT) run their displaced force calls in
+parallel, one single-threaded process per CPU (ModelCache.parallel_columns).
+
 Charge and spin multiplicity are passed per run (atoms.info "charge"/"spin"
 for UMA and MACE; AIMNet2 and tblite take them as arguments).
 
@@ -35,7 +41,9 @@ modes, with translations and rotations projected out.
 """
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import importlib.util
+import multiprocessing
 import os
 from pathlib import Path
 
@@ -47,8 +55,8 @@ MODELS = {
     "uma": {"label": "UMA (uma-s-1p2p1, omol)", "package": "fairchem", "weights": "UMA_CHECKPOINT"},
     "aimnet": {"label": "AIMNet2", "package": "aimnet", "weights": "AIMNET_MODEL"},
     "mace": {"label": "MACE-OMOL", "package": "mace", "weights": "MACE_MODEL"},
-    "gfn2": {"label": "GFN2-xTB (tblite)", "package": "tblite", "weights": None},
-    "emt": {"label": "EMT (test only)", "package": "ase", "weights": None},
+    "gfn2": {"label": "GFN2-xTB (tblite)", "package": "tblite", "weights": None, "parallel_fd": True},
+    "emt": {"label": "EMT (test only)", "package": "ase", "weights": None, "parallel_fd": True},
 }
 OPTIMIZERS = ("BFGS", "LBFGS", "FIRE", "sella_min", "sella_ts")
 CONSTRAINT_MODES = ("none", "fix_atoms", "fix_distances", "restrain_distances")
@@ -74,16 +82,46 @@ def model_status(names=None):
     return status
 
 
-class ModelCache:
-    """Loads each model once; calculator(name, charge, spin) returns a ready ASE calculator."""
+THREAD_VARIABLES = ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS")
 
-    def __init__(self):
+
+def set_threads(n):
+    """OpenMP/BLAS thread counts for libraries loaded from now on (tblite, BLAS), and torch's if it is loaded."""
+    for name in THREAD_VARIABLES:
+        os.environ[name] = str(int(n))
+    torch = __import__("sys").modules.get("torch")
+    if torch is not None:
+        torch.set_num_threads(int(n))
+
+
+class ModelCache:
+    """Loads each model once; calculator(name, charge, spin) returns a ready ASE calculator.
+
+    ncpus: threads for the torch models (and the OpenMP/BLAS variables), and the
+    number of processes for parallel finite-difference Hessians.
+    """
+
+    def __init__(self, ncpus=1):
         self._loaded = {}
+        self.ncpus = max(1, int(ncpus))
+
+    def parallel_columns(self, name, *, charge=0, spin=1):
+        """A function computing finite-difference Hessian columns in ncpus processes, or None.
+
+        Only for models cheap to start in a fresh process (MODELS[...]["parallel_fd"]);
+        the torch models stay in this process with ncpus threads (or use their analytic Hessian).
+        """
+        if self.ncpus < 2 or not MODELS.get(name, {}).get("parallel_fd"):
+            return None
+        return _ParallelColumns(name, charge, spin, self.ncpus)
 
     def is_loaded(self, name):
         return name in self._loaded
 
     def _load(self, name):
+        if name in ("uma", "aimnet", "mace"):
+            import torch
+            torch.set_num_threads(self.ncpus)
         if name == "uma":
             from fairchem.core import FAIRChemCalculator, pretrained_mlip
             return FAIRChemCalculator(pretrained_mlip.load_predict_unit(os.environ["UMA_CHECKPOINT"], device="cpu"),
@@ -317,7 +355,7 @@ def _force_column(atoms, k, step):
 
 
 def hessian(symbols, positions, *, calculator, method="auto", analytic=None, step=0.005, charge=0, spin=1,
-            callback=None):
+            callback=None, columns=None):
     """(H, info): the Cartesian Hessian (3N x 3N, eV/Angstrom^2, symmetrized) of one structure.
 
     method "analytic" uses analytic (a function atoms -> Hessian, e.g.
@@ -326,7 +364,8 @@ def hessian(symbols, positions, *, calculator, method="auto", analytic=None, ste
     working, else finite differences. An analytic Hessian is checked against
     one finite-difference column (the coordinate with the largest diagonal
     element); a negated result is corrected, a mismatch is reported in
-    info["check"]. callback(message) reports progress and may raise Cancelled.
+    info["check"]. columns (ModelCache.parallel_columns) computes the
+    finite-difference columns in parallel processes instead of here. callback(message) reports progress and may raise Cancelled.
     info: {"method" (used), "requested", "step", "check", "note", "energy", "forces", "fmax"}.
     """
     if method not in HESSIAN_METHODS:
@@ -364,10 +403,18 @@ def hessian(symbols, positions, *, calculator, method="auto", analytic=None, ste
     if matrix is None:
         info["method"] = "finite_diff"
         matrix = np.zeros((n3, n3))
-        for k in range(n3):
-            if k % 6 == 0:
-                report(f"finite differences {k}/{n3} coordinates ({2 * k} force calls)")
-            matrix[:, k] = _force_column(atoms, k, step)
+        if columns is not None:
+            report(f"finite differences in {columns.ncpus} processes")
+            for done, (k, column) in enumerate(columns(symbols, atoms.positions, range(n3), step), start=1):
+                matrix[:, k] = column
+                if done % 6 == 0:
+                    report(f"finite differences {done}/{n3} coordinates ({2 * done} force calls, "
+                           f"{columns.ncpus} processes)")
+        else:
+            for k in range(n3):
+                if k % 6 == 0:
+                    report(f"finite differences {k}/{n3} coordinates ({2 * k} force calls)")
+                matrix[:, k] = _force_column(atoms, k, step)
     return 0.5 * (matrix + matrix.T), info
 
 
@@ -415,3 +462,37 @@ def vibrations(symbols, positions, matrix, *, masses=None):
             "reduced_masses": reduced.tolist(),
             "force_constants": (values * reduced * units._e / 1e-20 / 1e2).tolist(),   # J/m^2 -> mdyn/Angstrom
             "modes": modes, "masses": m.tolist()}
+
+
+_POOL = {}
+
+
+def _pool_start(name, charge, spin):
+    """Process-pool initializer: one thread per process, the model built once."""
+    set_threads(1)
+    _POOL["calculator"] = ModelCache().calculator(name, charge=charge, spin=spin)
+
+
+def _pool_column(symbols, positions, charge, spin, k, step):
+    return k, _force_column(_atoms(symbols, positions, charge, spin, _POOL["calculator"]), k, step)
+
+
+class _ParallelColumns:
+    """Finite-difference Hessian columns over ncpus fresh ("spawn") processes, yielded as (k, column) when done."""
+
+    def __init__(self, name, charge, spin, ncpus):
+        self.name, self.charge, self.spin, self.ncpus = name, charge, spin, ncpus
+
+    def __call__(self, symbols, positions, ks, step):
+        context = multiprocessing.get_context("spawn")
+        positions = np.asarray(positions, dtype=float)
+        with ProcessPoolExecutor(max_workers=self.ncpus, mp_context=context, initializer=_pool_start,
+                                 initargs=(self.name, self.charge, self.spin)) as pool:
+            futures = [pool.submit(_pool_column, list(symbols), positions, self.charge, self.spin, k, step)
+                       for k in ks]
+            try:
+                for future in as_completed(futures):
+                    yield future.result()
+            finally:                      # cancelled or failed: drop what has not started
+                for future in futures:
+                    future.cancel()

@@ -9,6 +9,8 @@
 #   --sif FILE       the container image                     [MLIP_SIF, default ~/containers/mlip.sif]
 #   --models DIR     model weights, as fetch_models.sh makes  [MLIP_MODELS, default ~/mlip_models]
 #   --results DIR    saved optimization results               [MLIP_RESULTS, default ./pair_builder_results]
+#   --ncpus N        CPU threads per model worker and processes for finite-difference Hessians
+#                                                            [MLIP_NCPUS, default: all CPUs]
 #   --source DIR     use this MartiniFuncs checkout instead of the copy in the image (development)
 #   --selftest       check the models against the reference energies instead of serving
 #   -h, --help
@@ -19,6 +21,7 @@ SIF="${MLIP_SIF:-$HOME/containers/mlip.sif}"
 MODELS="${MLIP_MODELS:-$HOME/mlip_models}"
 RESULTS="${MLIP_RESULTS:-$PWD/pair_builder_results}"
 SOURCE=""
+NCPUS="${MLIP_NCPUS:-$(nproc)}"
 APP=server
 PASS=()
 
@@ -31,6 +34,7 @@ while [ $# -gt 0 ]; do
         --models) MODELS="$2"; shift 2 ;;
         --results) RESULTS="$2"; shift 2 ;;
         --source) SOURCE="$2"; shift 2 ;;
+        --ncpus) NCPUS="$2"; shift 2 ;;
         --selftest) APP=selftest; shift ;;
         -h|--help) usage; exit 0 ;;
         *) PASS+=("$1"); shift ;;
@@ -84,5 +88,6 @@ mkdir -p "$RESULTS"
 RESULTS="$(cd "$RESULTS" && pwd)"
 BINDS+=(--bind "$RESULTS:$RESULTS")
 echo "Results: $RESULTS"
+echo "CPUs:    $NCPUS (--ncpus)"
 echo "Open http://127.0.0.1:8000/ (or your --port) when it says Serving; Ctrl+C stops it."
-exec apptainer run --app server "${BINDS[@]}" --env "$(IFS=,; echo "${ENVS[*]}")" "$SIF" --results "$RESULTS" "${PASS[@]}"
+exec apptainer run --app server "${BINDS[@]}" --env "$(IFS=,; echo "${ENVS[*]}")" "$SIF" --results "$RESULTS" --ncpus "$NCPUS" "${PASS[@]}"

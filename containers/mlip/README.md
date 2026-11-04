@@ -56,7 +56,7 @@ Run everything below in a Linux / WSL terminal, from a clone of this repository.
    of your own saved results as the reference.
 3. **Start the builder page with the optimizer:**
    ```bash
-   containers/mlip/run_server.sh              # options: --port 8001, --results DIR, --models DIR, --sif FILE
+   containers/mlip/run_server.sh              # options: --ncpus N, --port 8001, --results DIR, --models DIR, --sif FILE
    ```
    and open http://127.0.0.1:8000/ (from Windows too). Optimization results are saved as JSON
    files in `./pair_builder_results`. x3dom is served from the image, so the page needs no internet.
@@ -70,6 +70,11 @@ Run everything below in a Linux / WSL terminal, from a clone of this repository.
 
 Read each provider's terms yourself; the table is a pointer, not legal advice. Don't upload the
 weights to this repository or attach them to releases.
+
+`--ncpus N` (default: all CPUs, or `MLIP_NCPUS`) sets the CPU threads each model worker uses
+(torch for UMA / AIMNet2 / MACE-OMOL, OpenMP for GFN2-xTB) and the number of parallel processes for
+finite-difference Hessians of GFN2-xTB. The UMA and MACE workers each get N threads, so two jobs running
+at once on different workers share the CPUs.
 
 `run_server.sh` binds whichever files are present to `/models/...` in the container and sets
 `UMA_CHECKPOINT`, `MACE_MODEL` and `AIMNET_MODEL` accordingly; missing models show as

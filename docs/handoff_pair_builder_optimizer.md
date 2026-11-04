@@ -203,6 +203,13 @@ reference switch, reload from the results folder, import, offline file mode; no 
   finite differences); for restrained runs `restraint_hessian` adds the restraint term. Recorded in saved results
   (`sella_hessian`, `sella_hessian_every`, `hessian_method`) and copied by Settings.
 
+- CPUs: `--ncpus N` on `run_server.sh` (default `nproc`, env `MLIP_NCPUS`), the server and each worker. Workers
+  get `OMP_NUM_THREADS`/`MKL_NUM_THREADS`/`OPENBLAS_NUM_THREADS` = N and `torch.set_num_threads(N)` before the
+  torch models load. Finite-difference Hessians for GFN2-xTB/EMT (`MODELS[...]["parallel_fd"]`) run in N
+  single-threaded "spawn" processes (`ModelCache.parallel_columns`); torch models stay in-process (threads,
+  or their analytic Hessian). fairchem's `workers`/`ParallelMLIPPredictUnit` (ray, graph-parallel) is not used:
+  for 33 atoms it only adds overhead.
+
 ## Ideas not done
 
 - Delete/rename of built-in references is blocked; no "duplicate" or "compare two results side by side"

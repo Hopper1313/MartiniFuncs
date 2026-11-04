@@ -1,6 +1,9 @@
 """One optimization worker: serves the models of one Python environment over stdin/stdout.
 
-    python -m MartiniFuncs.optimize.worker --models uma,aimnet,gfn2
+    python -m MartiniFuncs.optimize.worker --models uma,aimnet,gfn2 [--ncpus N]
+
+--ncpus: CPU threads for the models (torch, OpenMP, BLAS) and processes for the
+parallel finite-difference Hessians (default: all CPUs).
 
 Protocol: one JSON object per line. The worker first prints
 {"type": "hello", "models": {name: {"label", "available", "reason"}}}, then reads
@@ -29,8 +32,8 @@ import traceback
 
 import numpy as np
 
-from MartiniFuncs.optimize.engine import (Cancelled, ModelCache, hessian, model_status, optimize, single_point,
-                                          vibrations)
+from MartiniFuncs.optimize.engine import (Cancelled, ModelCache, hessian, model_status, optimize, set_threads,
+                                          single_point, vibrations)
 
 _print_lock = threading.Lock()
 _channel = {}
@@ -89,7 +92,7 @@ def run_job(job, request, cache, cancel):
                 analytic = cache.analytic_hessian(model, charge=charge, spin=spin)
             matrix, info = hessian(request["symbols"], request["positions"], calculator=calculator, method=method,
                                    analytic=analytic, step=request.get("step", 0.005), charge=charge, spin=spin,
-                                   callback=progress)
+                                   callback=progress, columns=cache.parallel_columns(model, charge=charge, spin=spin))
             result = {**info, **vibrations(request["symbols"], request["positions"], matrix),
                       "hessian": np.round(matrix, 6).tolist()}
             frequencies = result["frequencies"]
@@ -114,7 +117,8 @@ def run_job(job, request, cache, cancel):
                 calls["n"] += 1
                 send({"type": "status", "job": job, "message": f"optimizing with {model}: model Hessian #{calls['n']}"})
                 matrix, _ = hessian(request["symbols"], atoms.positions, calculator=calculator, method=method,
-                                    analytic=analytic, charge=charge, spin=spin)
+                                    analytic=analytic, charge=charge, spin=spin,
+                                    columns=cache.parallel_columns(model, charge=charge, spin=spin))
                 return matrix
 
             if request.get("sella_hessian") == "every":
@@ -142,11 +146,14 @@ def run_job(job, request, cache, cancel):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--models", required=True, help="comma-separated models this worker serves")
+    parser.add_argument("--ncpus", type=int, default=os.cpu_count() or 1,
+                        help="CPU threads / parallel processes (default: all CPUs)")
     args = parser.parse_args(argv)
+    set_threads(args.ncpus)
     names = [name.strip() for name in args.models.split(",") if name.strip()]
     commands, _channel["replies"] = _private_channel()
     send({"type": "hello", "models": model_status(names)})
-    cache, current, cancels = ModelCache(), None, {}
+    cache, current, cancels = ModelCache(args.ncpus), None, {}
     for line in commands:
         if not line.strip():
             continue

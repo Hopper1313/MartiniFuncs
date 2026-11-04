@@ -152,6 +152,23 @@ class VibrationTests(unittest.TestCase):
         np.testing.assert_allclose(frames[0]["forces"], point["forces"], atol=1e-5)
 
 
+class ParallelTests(unittest.TestCase):
+    def test_parallel_finite_differences_match_serial(self):
+        atoms, _ = stacked_pair()
+        symbols = atoms.get_chemical_symbols()
+        cache = ModelCache(ncpus=3)
+        columns = cache.parallel_columns("emt")
+        self.assertEqual(columns.ncpus, 3)
+        self.assertIsNone(ModelCache(ncpus=1).parallel_columns("emt"))
+        self.assertIsNone(cache.parallel_columns("uma"))           # torch models: threads, not processes
+        messages = []
+        parallel, info = hessian(symbols, atoms.positions, calculator=EMT(), method="finite_diff", columns=columns,
+                                 callback=messages.append)
+        serial, _ = hessian(symbols, atoms.positions, calculator=EMT(), method="finite_diff")
+        np.testing.assert_allclose(parallel, serial, atol=1e-10)
+        self.assertTrue(any("3 processes" in m for m in messages))
+
+
 class SellaHessianTests(unittest.TestCase):
     def test_restraint_hessian_matches_finite_differences(self):
         from MartiniFuncs.optimize.engine import restraint_hessian

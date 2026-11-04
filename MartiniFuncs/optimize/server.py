@@ -2,7 +2,7 @@
 
     python -m MartiniFuncs.optimize.server --page MODULE:FUNCTION \\
         --worker uma=/opt/envs/uma/bin/python:uma,aimnet,gfn2 \\
-        --worker mace=/opt/envs/mace/bin/python:mace [--results DIR] [--assets DIR] \\
+        --worker mace=/opt/envs/mace/bin/python:mace [--results DIR] [--assets DIR] [--ncpus N] \\
         [--host 127.0.0.1] [--port 8000]
 
 --page names a function returning the page HTML (e.g. a chemistry submodule's
@@ -72,13 +72,17 @@ class Job:
 class Worker:
     """One optimize.worker process and the jobs it runs."""
 
-    def __init__(self, name, python, models):
+    def __init__(self, name, python, models, ncpus=None):
         self.name, self.models, self.status, self.active = name, list(models), {}, None
+        ncpus = int(ncpus or os.cpu_count() or 1)
         self.ready = threading.Event()
         environment = dict(os.environ)
         package_root = str(Path(MartiniFuncs.__file__).resolve().parents[1])
         environment["PYTHONPATH"] = os.pathsep.join(filter(None, [package_root, environment.get("PYTHONPATH")]))
-        self.process = subprocess.Popen([python, "-m", "MartiniFuncs.optimize.worker", "--models", ",".join(models)],
+        for variable in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+            environment[variable] = str(ncpus)
+        self.process = subprocess.Popen([python, "-m", "MartiniFuncs.optimize.worker", "--models", ",".join(models),
+                                         "--ncpus", str(ncpus)],
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
                                         env=environment)
         self.jobs, self.write_lock = {}, threading.Lock()
@@ -332,6 +336,9 @@ def main(argv=None):
                         help="folder for saved results (one JSON file each); default: server memory only")
     parser.add_argument("--assets", type=Path, default=None,
                         help="folder served at /assets/ (a local x3dom copy: assets/x3dom/x3dom.js, x3dom.css)")
+    parser.add_argument("--ncpus", type=int, default=os.cpu_count() or 1,
+                        help="CPU threads per worker (torch, OpenMP, BLAS) and processes for parallel "
+                             "finite-difference Hessians (default: all CPUs)")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args(argv)
@@ -339,7 +346,8 @@ def main(argv=None):
     print("Rendering the page...", flush=True)
     page = getattr(import_module(module), function)()
     specs = args.worker or [("local", sys.executable, list(MODELS))]
-    workers = [Worker(*spec) for spec in specs]
+    print(f"CPUs: {args.ncpus} per worker (--ncpus)", flush=True)
+    workers = [Worker(*spec, ncpus=args.ncpus) for spec in specs]
     results = ResultStore(args.results)
     print(f"Saved results: {results.directory} ({len(results.results)} loaded)" if results.directory
           else "Saved results: server memory only (use --results DIR to keep them)", flush=True)
