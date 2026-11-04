@@ -24,6 +24,14 @@ Optimizers: BFGS, LBFGS, FIRE (ASE), sella_min (Sella, minimum) and sella_ts
 (Sella, first-order saddle). ASE optimizers use ASE constraints (FixAtoms,
 FixBondLengths); Sella uses its own internal-coordinate constraints. Each step
 is reported through a callback; a callback may raise Cancelled to stop.
+
+Single points and vibrations: single_point gives energy and forces; hessian
+the Cartesian Hessian (eV/Angstrom^2) by method "analytic" (the model's own
+second derivatives: UMA, AIMNet2, MACE-OMOL; ModelCache.analytic_hessian),
+"finite_diff" (central differences of the forces, 6N force calls) or "auto"
+(analytic when the model has it, else finite differences); vibrations turns a
+Hessian into harmonic frequencies (cm^-1, imaginary as negative) and normal
+modes, with translations and rotations projected out.
 """
 from __future__ import annotations
 
@@ -32,7 +40,7 @@ import os
 from pathlib import Path
 
 import numpy as np
-from ase import Atoms
+from ase import Atoms, units
 from ase.calculators.calculator import Calculator, all_changes
 
 MODELS = {
@@ -44,6 +52,8 @@ MODELS = {
 }
 OPTIMIZERS = ("BFGS", "LBFGS", "FIRE", "sella_min", "sella_ts")
 CONSTRAINT_MODES = ("none", "fix_atoms", "fix_distances", "restrain_distances")
+HESSIAN_METHODS = ("auto", "analytic", "finite_diff")
+ANALYTIC_HESSIAN = ("uma", "aimnet", "mace")      # models with their own second derivatives
 
 
 class Cancelled(Exception):
@@ -87,6 +97,41 @@ class ModelCache:
         if name in ("gfn2", "emt"):
             return None   # cheap: built per run
         raise ValueError(f"Unknown model {name!r}; available: {sorted(MODELS)}")
+
+    def analytic_hessian(self, name, *, charge=0, spin=1):
+        """A function atoms -> (3N, 3N) Hessian (eV/Angstrom^2) from the model itself, or None if it has none.
+
+        UMA: a second predict unit with the untrained omol Hessian enabled
+        (loaded on first use); AIMNet2: AIMNet2ASE.get_hessian; MACE-OMOL:
+        MACECalculator.get_hessian. hessian() checks one column against finite
+        differences, so a shape or sign convention change shows up there.
+        """
+        if name not in ANALYTIC_HESSIAN:
+            return None
+        if name == "uma":
+            if "uma_hessian" not in self._loaded:
+                from fairchem.core import FAIRChemCalculator, pretrained_mlip
+                from fairchem.core.units.mlip_unit.api.inference import InferenceSettings
+                settings = InferenceSettings(predict_untrained_hessian={"omol"}, activation_checkpointing=False)
+                unit = pretrained_mlip.load_predict_unit(os.environ["UMA_CHECKPOINT"], device="cpu",
+                                                         inference_settings=settings)
+                self._loaded["uma_hessian"] = FAIRChemCalculator(unit, task_name="omol")
+            calculator = self._loaded["uma_hessian"]
+
+            def uma(atoms):
+                copy = atoms.copy()
+                copy.info.update(charge=int(charge), spin=int(spin))
+                copy.calc = calculator
+                return np.asarray(copy.calc.get_property("hessian", copy))
+            return uma
+        calculator = self.calculator(name, charge=charge, spin=spin)
+
+        def own(atoms):
+            copy = atoms.copy()
+            copy.info.update(charge=int(charge), spin=int(spin))
+            copy.calc = calculator
+            return np.asarray(calculator.get_hessian(copy))
+        return own
 
     def calculator(self, name, *, charge=0, spin=1):
         if name not in self._loaded:
@@ -197,7 +242,9 @@ def optimize(symbols, positions, *, calculator, constraint=None, optimizer="BFGS
         callback({"step": step["n"], "energy": float(atoms.get_potential_energy()),
                   "restraint_energy": float(atoms.calc.results.get("restraint_energy", 0.0)),
                   "fmax": float(np.sqrt((forces ** 2).sum(axis=1)).max()),
-                  "positions": np.round(atoms.positions, 6).tolist()})
+                  "positions": np.round(atoms.positions, 6).tolist(),
+                  # total forces (model + any restraint), before constraint projection
+                  "forces": np.round(atoms.get_forces(apply_constraint=False), 6).tolist()})
         step["n"] += 1
 
     if sella:
@@ -211,3 +258,131 @@ def optimize(symbols, positions, *, calculator, constraint=None, optimizer="BFGS
     runner.attach(report, interval=1)
     converged = bool(runner.run(fmax=float(fmax), steps=int(steps)))
     return atoms, converged, step["n"] - 1
+
+
+def _atoms(symbols, positions, charge, spin, calculator):
+    atoms = Atoms(list(symbols), positions=np.asarray(positions, dtype=float))
+    atoms.info.update(charge=int(charge), spin=int(spin))
+    atoms.calc = calculator
+    return atoms
+
+
+def single_point(symbols, positions, *, calculator, charge=0, spin=1):
+    """{"energy" (eV), "forces" (eV/Angstrom, N x 3), "fmax"} of one structure."""
+    atoms = _atoms(symbols, positions, charge, spin, calculator)
+    forces = atoms.get_forces()
+    return {"energy": float(atoms.get_potential_energy()), "forces": np.round(forces, 6).tolist(),
+            "fmax": float(np.sqrt((forces ** 2).sum(axis=1)).max())}
+
+
+def _force_column(atoms, k, step):
+    """-dF/dx_k by central differences: column k of the Hessian (eV/Angstrom^2)."""
+    i, axis = divmod(k, 3)
+    columns = []
+    for sign in (1., -1.):
+        displaced = atoms.copy()
+        displaced.calc = atoms.calc
+        displaced.positions[i, axis] += sign * step
+        columns.append(displaced.get_forces().ravel())
+    return -(columns[0] - columns[1]) / (2 * step)
+
+
+def hessian(symbols, positions, *, calculator, method="auto", analytic=None, step=0.005, charge=0, spin=1,
+            callback=None):
+    """(H, info): the Cartesian Hessian (3N x 3N, eV/Angstrom^2, symmetrized) of one structure.
+
+    method "analytic" uses analytic (a function atoms -> Hessian, e.g.
+    ModelCache.analytic_hessian), "finite_diff" central differences of the
+    forces with step (Angstrom; 6N force calls), "auto" analytic when given and
+    working, else finite differences. An analytic Hessian is checked against
+    one finite-difference column (the coordinate with the largest diagonal
+    element); a negated result is corrected, a mismatch is reported in
+    info["check"]. callback(message) reports progress and may raise Cancelled.
+    info: {"method" (used), "requested", "step", "check", "note", "energy", "forces", "fmax"}.
+    """
+    if method not in HESSIAN_METHODS:
+        raise ValueError(f"method must be one of {HESSIAN_METHODS}")
+    if method == "analytic" and analytic is None:
+        raise ValueError("this model has no analytic Hessian; use finite_diff or auto")
+    report = callback or (lambda message: None)
+    atoms = _atoms(symbols, positions, charge, spin, calculator)
+    n3 = 3 * len(atoms)
+    info = {"requested": method, "step": float(step), "check": None, "note": ""}
+    center = single_point(symbols, positions, calculator=calculator, charge=charge, spin=spin)
+    info.update(energy=center["energy"], forces=center["forces"], fmax=center["fmax"])
+    matrix = None
+    if method in ("analytic", "auto") and analytic is not None:
+        report("analytic Hessian")
+        try:
+            matrix = np.asarray(analytic(atoms), dtype=float).reshape(n3, n3)
+            info["method"] = "analytic"
+        except Exception as exc:          # auto falls back; analytic reports the failure
+            if method == "analytic":
+                raise
+            info["note"] = f"analytic Hessian failed ({type(exc).__name__}: {exc}); used finite differences"
+    if matrix is not None:
+        k = int(np.argmax(np.abs(np.diag(matrix))))
+        reference = _force_column(atoms, k, step)
+        scale = np.linalg.norm(reference) or 1.0
+        same, flipped = np.linalg.norm(matrix[:, k] - reference) / scale, np.linalg.norm(matrix[:, k] + reference) / scale
+        if flipped < same:
+            matrix, same = -matrix, flipped
+            info["note"] = "analytic Hessian had the opposite sign convention; negated"
+        info["check"] = float(same)
+        if same > 0.05:
+            info["note"] = (info["note"] + "; " if info["note"] else "") + \
+                f"analytic column differs from finite differences by {100 * same:.1f}%"
+    if matrix is None:
+        info["method"] = "finite_diff"
+        matrix = np.zeros((n3, n3))
+        for k in range(n3):
+            if k % 6 == 0:
+                report(f"finite differences {k}/{n3} coordinates ({2 * k} force calls)")
+            matrix[:, k] = _force_column(atoms, k, step)
+    return 0.5 * (matrix + matrix.T), info
+
+
+# sqrt(eV / (Angstrom^2 amu)) in cm^-1
+_WAVENUMBER = float(np.sqrt(units._e / (units._amu * 1e-20)) / (2 * np.pi * units._c * 100))
+
+
+def vibrations(symbols, positions, matrix, *, masses=None):
+    """Harmonic analysis of a Cartesian Hessian (eV/Angstrom^2); translations and rotations projected out.
+
+    Returns {"frequencies" (cm^-1, imaginary as negative, ascending),
+    "reduced_masses" (amu), "force_constants" (mdyn/Angstrom; both as Gaussian
+    reports them: mu = 1 / sum of the squared Cartesian components of the
+    mass-weighted unit mode, k = eigenvalue x mu), "modes"
+    (Cartesian displacements, N x 3 each, scaled so the largest atom moves 1),
+    "masses"}: 3N - 6 modes (3N - 5 for a linear structure).
+    """
+    xyz = np.asarray(positions, dtype=float)
+    n = len(xyz)
+    m = np.asarray(masses if masses is not None else Atoms(list(symbols)).get_masses(), dtype=float)
+    root = np.repeat(np.sqrt(m), 3)
+    weighted = np.asarray(matrix, dtype=float) / np.outer(root, root)
+    # translations and rotations about the centre of mass, mass-weighted
+    centred = xyz - (m[:, None] * xyz).sum(axis=0) / m.sum()
+    external = []
+    for axis in range(3):
+        t = np.zeros((n, 3))
+        t[:, axis] = 1.
+        external.append((t * np.sqrt(m)[:, None]).ravel())
+        r = np.cross(np.eye(3)[axis], centred)
+        external.append((r * np.sqrt(m)[:, None]).ravel())
+    u, singular, _ = np.linalg.svd(np.array(external).T, full_matrices=True)
+    rank = int((singular > 1e-6 * singular.max()).sum())
+    basis = u[:, rank:]                                   # internal coordinates, orthonormal
+    values, vectors = np.linalg.eigh(basis.T @ weighted @ basis)
+    weighted_modes = basis @ vectors                       # unit vectors in mass-weighted space
+    cartesian = weighted_modes / root[:, None]
+    reduced = 1.0 / (cartesian ** 2).sum(axis=0)
+    modes = []
+    for j in range(cartesian.shape[1]):
+        mode = cartesian[:, j].reshape(n, 3)
+        mode = mode / np.linalg.norm(mode, axis=1).max()
+        modes.append(np.round(mode, 5).tolist())
+    return {"frequencies": (np.sign(values) * np.sqrt(np.abs(values)) * _WAVENUMBER).tolist(),
+            "reduced_masses": reduced.tolist(),
+            "force_constants": (values * reduced * units._e / 1e-20 / 1e2).tolist(),   # J/m^2 -> mdyn/Angstrom
+            "modes": modes, "masses": m.tolist()}

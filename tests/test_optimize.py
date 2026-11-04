@@ -14,7 +14,8 @@ import numpy as np
 from ase.calculators.emt import EMT
 
 from MartiniFuncs.chemistry.anthracene_ma.build import PairFrames, build_pair
-from MartiniFuncs.optimize.engine import Cancelled, ModelCache, RestrainedCalculator, model_status, optimize
+from MartiniFuncs.optimize.engine import (Cancelled, ModelCache, RestrainedCalculator, hessian, model_status,
+                                          optimize, single_point, vibrations)
 
 ROOT = str(Path(__file__).resolve().parents[1])
 
@@ -98,6 +99,59 @@ class EngineTests(unittest.TestCase):
         self.assertIsNone(ModelCache()._load("emt"))
 
 
+class VibrationTests(unittest.TestCase):
+    def test_diatomic_frequency_matches_the_energy_curvature(self):
+        from ase import Atoms
+        from ase.optimize import BFGS
+        dimer = Atoms("N2", positions=[[0, 0, 0], [0, 0, 1.12]])
+        dimer.calc = EMT()
+        BFGS(dimer, logfile=None).run(fmax=1e-6)
+        r, h = dimer.get_distance(0, 1), 1e-3
+
+        def energy(x):
+            other = Atoms("N2", positions=[[0, 0, 0], [0, 0, x]])
+            other.calc = EMT()
+            return other.get_potential_energy()
+
+        k = (energy(r + h) - 2 * energy(r) + energy(r - h)) / h ** 2
+        matrix, info = hessian(["N", "N"], dimer.positions, calculator=EMT(), method="finite_diff", step=0.002)
+        result = vibrations(["N", "N"], dimer.positions, matrix)
+        self.assertEqual((info["method"], len(result["frequencies"])), ("finite_diff", 1))      # linear: 3N - 5
+        from MartiniFuncs.optimize.engine import _WAVENUMBER
+        expected = np.sqrt(k / (dimer.get_masses()[0] / 2)) * _WAVENUMBER
+        self.assertAlmostEqual(result["frequencies"][0], expected, delta=0.5)
+        # reduced mass and force constant in Gaussian's convention (1 / sum of squared Cartesian mode components)
+        self.assertAlmostEqual(result["reduced_masses"][0], dimer.get_masses()[0], places=4)
+        np.testing.assert_allclose(np.abs(result["modes"][0]), [[0, 0, 1], [0, 0, 1]], atol=1e-6)
+
+    def test_pair_modes_and_analytic_checks(self):
+        atoms, _ = stacked_pair()
+        symbols, xyz = atoms.get_chemical_symbols(), atoms.positions
+        point = single_point(symbols, xyz, calculator=EMT())
+        self.assertEqual(np.shape(point["forces"]), (33, 3))
+        reference, info = hessian(symbols, xyz, calculator=EMT(), method="finite_diff")
+        np.testing.assert_allclose(reference, reference.T)
+        result = vibrations(symbols, xyz, reference)
+        self.assertEqual(len(result["frequencies"]), 3 * 33 - 6)
+        self.assertEqual(result["frequencies"], sorted(result["frequencies"]))
+        # analytic: a negated convention is corrected; a failure falls back (auto) or raises (analytic)
+        flipped, info = hessian(symbols, xyz, calculator=EMT(), method="auto", analytic=lambda a: -reference)
+        np.testing.assert_allclose(flipped, reference, atol=1e-9)
+        self.assertEqual(info["method"], "analytic")
+        self.assertLess(info["check"], 1e-4)
+        self.assertIn("negated", info["note"])
+        _, info = hessian(symbols, xyz, calculator=EMT(), method="auto", analytic=lambda a: 1 / 0)
+        self.assertEqual(info["method"], "finite_diff")
+        self.assertIn("ZeroDivisionError", info["note"])
+        with self.assertRaises(ValueError):
+            hessian(symbols, xyz, calculator=EMT(), method="analytic", analytic=None)
+        # optimization frames carry their forces
+        frames = []
+        optimize(symbols, xyz, calculator=EMT(), steps=2, callback=frames.append)
+        self.assertEqual(np.shape(frames[0]["forces"]), (33, 3))
+        np.testing.assert_allclose(frames[0]["forces"], point["forces"], atol=1e-5)
+
+
 class WorkerTests(unittest.TestCase):
     def test_protocol(self):
         env = dict(os.environ, PYTHONPATH=os.pathsep.join(filter(None, [ROOT, os.environ.get("PYTHONPATH")])))
@@ -159,6 +213,21 @@ class ServerTests(unittest.TestCase):
         np.testing.assert_allclose([np.linalg.norm(final[i] - final[j]) for i, j in pairs],
                                    [atoms.get_distance(*p) for p in pairs], atol=1e-6)
         self.assertEqual(call(f"/jobs/{job}?since={state['count']}")["frames"], [])
+        # single point and Hessian tasks
+        for task, body in (("forces", {}), ("hessian", {"method": "auto"})):
+            job = call(f"/{task}", {"model": "emt", "symbols": atoms.get_chemical_symbols(),
+                                     "positions": atoms.positions.tolist(), **body})["job"]
+            for _ in range(600):
+                state = call(f"/jobs/{job}")
+                if state["status"] in ("done", "cancelled", "error"):
+                    break
+                time.sleep(0.1)
+            self.assertEqual(state["status"], "done", state["message"])
+            self.assertEqual(np.shape(state["result"]["forces"]), (33, 3))
+            if task == "hessian":
+                self.assertEqual(state["result"]["method"], "finite_diff")      # EMT has no analytic Hessian
+                self.assertEqual(len(state["result"]["frequencies"]), 93)
+                self.assertEqual(np.shape(state["result"]["hessian"]), (99, 99))
         with self.assertRaises(urllib.error.HTTPError) as unknown:
             call("/optimize", {"model": "uma", "symbols": ["C"], "positions": [[0, 0, 0]]})
         self.assertEqual(unknown.exception.code, 400)

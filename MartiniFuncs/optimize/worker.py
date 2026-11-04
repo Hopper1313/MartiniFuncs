@@ -5,15 +5,19 @@
 Protocol: one JSON object per line. The worker first prints
 {"type": "hello", "models": {name: {"label", "available", "reason"}}}, then reads
 
-    {"type": "run", "job": ID, "request": {"model", "symbols", "positions", "charge",
-                                           "spin", "constraint", "optimizer", "fmax", "steps"}}
+    {"type": "run", "job": ID, "request": {"task", "model", "symbols", "positions", "charge", "spin", ...}}
+
+task "optimize" (default; "constraint", "optimizer", "fmax", "steps"), "forces"
+(a single point) or "hessian" ("method": auto | analytic | finite_diff, "step");
     {"type": "cancel", "job": ID}
     {"type": "quit"}
 
 and prints {"type": "status", "job", "message"}, one {"type": "frame", "job", ...} per
 optimization step (engine.optimize's frames) and finally
-{"type": "done", "job", "status": "converged" | "not_converged" | "cancelled" | "error",
- "message", "steps"}. Models load on first use and stay loaded. One job runs at a time.
+{"type": "done", "job", "status": "converged" | "not_converged" | "done" | "cancelled" | "error",
+ "message", "steps", "result"}: result is the single point ({"energy", "forces", "fmax"}) or the
+Hessian with its harmonic analysis (engine.hessian info + engine.vibrations + "hessian").
+Models load on first use and stay loaded. One job runs at a time.
 """
 import argparse
 import json
@@ -22,7 +26,10 @@ import sys
 import threading
 import traceback
 
-from MartiniFuncs.optimize.engine import Cancelled, ModelCache, model_status, optimize
+import numpy as np
+
+from MartiniFuncs.optimize.engine import (Cancelled, ModelCache, hessian, model_status, optimize, single_point,
+                                          vibrations)
 
 _print_lock = threading.Lock()
 _channel = {}
@@ -58,6 +65,40 @@ def run_job(job, request, cache, cancel):
         if not cache.is_loaded(model):
             send({"type": "status", "job": job, "message": f"loading {model} (first use; can take ~30 s)"})
         calculator = cache.calculator(model, charge=request.get("charge", 0), spin=request.get("spin", 1))
+        task = request.get("task", "optimize")
+        charge, spin = request.get("charge", 0), request.get("spin", 1)
+        if task == "forces":
+            send({"type": "status", "job": job, "message": f"forces with {model}"})
+            result = single_point(request["symbols"], request["positions"], calculator=calculator,
+                                  charge=charge, spin=spin)
+            send({"type": "done", "job": job, "status": "done", "steps": 0, "result": result,
+                  "message": f"forces with {model}: max {result['fmax']:.4f} eV/Å"})
+            return
+        if task == "hessian":
+            method = request.get("method", "auto")
+
+            def progress(message):
+                if cancel.is_set():
+                    raise Cancelled()
+                send({"type": "status", "job": job, "message": f"{model}: {message}"})
+
+            analytic = None
+            if method != "finite_diff":
+                progress("preparing the analytic Hessian" + (" (loads UMA again on first use)" if model == "uma" else ""))
+                analytic = cache.analytic_hessian(model, charge=charge, spin=spin)
+            matrix, info = hessian(request["symbols"], request["positions"], calculator=calculator, method=method,
+                                   analytic=analytic, step=request.get("step", 0.005), charge=charge, spin=spin,
+                                   callback=progress)
+            result = {**info, **vibrations(request["symbols"], request["positions"], matrix),
+                      "hessian": np.round(matrix, 6).tolist()}
+            frequencies = result["frequencies"]
+            imaginary = sum(f < 0 for f in frequencies)
+            send({"type": "done", "job": job, "status": "done", "steps": 0, "result": result,
+                  "message": f"Hessian ({info['method'].replace('_', ' ')}) with {model}: {len(frequencies)} modes, "
+                             f"{imaginary} imaginary" + (f"; {info['note']}" if info["note"] else "")})
+            return
+        if task != "optimize":
+            raise ValueError(f"unknown task {task!r}")
         send({"type": "status", "job": job, "message": f"optimizing with {model}"})
 
         def frame(data):

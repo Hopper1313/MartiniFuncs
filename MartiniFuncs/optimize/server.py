@@ -23,7 +23,8 @@ Endpoints (JSON):
     GET  /                      the page
     GET  /models                {model: {"label", "available", "reason", "worker"}}
     POST /optimize              request (see optimize.worker) -> {"job": ID}
-    GET  /jobs/ID?since=N       {"status", "message", "frames": frames N.., "count", ...}
+    POST /forces, /hessian      the same for a single point / a Hessian ("method", "step")
+    GET  /jobs/ID?since=N       {"status", "message", "frames": frames N.., "count", "result" (when done), ...}
     POST /jobs/ID/cancel        cancel a running job
     GET  /results               {"persistent", "location", "results": [result, ...]} (oldest first)
     GET  /results/ID            one result
@@ -50,19 +51,22 @@ import uuid
 import MartiniFuncs
 from MartiniFuncs.optimize.engine import MODELS
 
-FINAL = ("converged", "not_converged", "cancelled", "error")
+FINAL = ("converged", "not_converged", "done", "cancelled", "error")
 
 
 class Job:
     def __init__(self, model, worker):
         self.id, self.model, self.worker = uuid.uuid4().hex[:10], model, worker
-        self.status, self.message, self.frames, self.steps = "queued", "queued", [], None
+        self.status, self.message, self.frames, self.steps, self.result = "queued", "queued", [], None, None
         self.lock = threading.Lock()
 
     def state(self, since=0):
         with self.lock:
-            return {"job": self.id, "model": self.model, "status": self.status, "message": self.message,
-                    "steps": self.steps, "count": len(self.frames), "frames": self.frames[since:]}
+            state = {"job": self.id, "model": self.model, "status": self.status, "message": self.message,
+                     "steps": self.steps, "count": len(self.frames), "frames": self.frames[since:]}
+            if self.result is not None:
+                state["result"] = self.result
+            return state
 
 
 class Worker:
@@ -101,6 +105,7 @@ class Worker:
                     job.frames.append({k: v for k, v in message.items() if k not in ("type", "job")})
                 elif kind == "done":
                     job.status, job.message, job.steps = message["status"], message["message"], message.get("steps")
+                    job.result = message.get("result")
             if kind == "done" and self.active is job:
                 self.active = None
         self.ready.set()
@@ -288,7 +293,8 @@ def make_handler(service):
                 except OSError as exc:
                     return self._reply(500, {"error": f"could not write the result: {exc}"})
                 return self._reply(200, {"saved": body["id"]})
-            if parts == ["optimize"]:
+            if parts in (["optimize"], ["forces"], ["hessian"]):
+                body["task"] = parts[0]
                 try:
                     job = service.worker_for(body.get("model")).submit(body)
                 except LookupError as exc:

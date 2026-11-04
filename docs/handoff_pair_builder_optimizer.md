@@ -176,6 +176,27 @@ reference switch, reload from the results folder, import, offline file mode; no 
   reference energy (the self-test will tell).
 - Release: `gh release create` with `mlip.sif` + `mlip.sif.sha256` (README, "Publishing a release").
 
+## Forces and vibrations (2026-11-04)
+
+- Engine: `single_point`, `hessian(method="auto"|"analytic"|"finite_diff", analytic=..., step=0.005)`,
+  `vibrations(symbols, positions, H)` (mass-weighted, translations/rotations projected out by SVD of the
+  6 external vectors, cm⁻¹ with imaginary as negative, Gaussian-convention reduced mass and force constant,
+  modes scaled so the largest atom moves 1). Analytic Hessians via `ModelCache.analytic_hessian`: UMA = a second
+  predict unit with `InferenceSettings(predict_untrained_hessian={"omol"}, activation_checkpointing=False)`
+  (loads the checkpoint again on first use), AIMNet2 `AIMNet2ASE.get_hessian`, MACE `get_hessian` ((3N, N, 3)
+  reshaped). Every analytic Hessian is checked against one finite-difference column (largest diagonal): a negated
+  convention is corrected, a mismatch > 5 % is reported in `note`; `auto` falls back to finite differences if
+  the analytic call fails. Optimization frames now carry `forces` (model + restraint, before constraint projection).
+- Worker/server: request `task` = optimize | forces | hessian; `POST /forces`, `POST /hessian`; status `done`
+  and `result` in the job state; Hessian progress/cancel every 6 coordinates.
+- Page: "Forces & vibrations" panel (Calculate forces / Calculate Hessian + method). Results attach to the shown
+  saved result as `analysis.forces` / `analysis.vib` (final frame, same model/charge/spin), otherwise a new
+  "single point" result is saved and shown. Force arrows (auto scale: longest 1.5 Å), max |F| / RMS row; modes
+  list (first imaginary selected), amplitude, play/pause animation (per-atom, ~30 fps), mode arrows (3 × amplitude),
+  warning when max |F| > 0.05 eV/Å. Arrows: `force-arrow-*`, `mode-arrow-*` nodes (`arrow_markup`).
+- Not yet checked with the real models: the three analytic Hessian paths (UMA settings in particular) — run
+  Calculate Hessian (auto) on the UMA TS and compare with finite differences; expect one imaginary mode.
+
 ## Ideas not done
 
 - Delete/rename of built-in references is blocked; no "duplicate" or "compare two results side by side"

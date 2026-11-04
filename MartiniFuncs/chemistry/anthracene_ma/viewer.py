@@ -31,6 +31,13 @@ and export to / import from JSON; opened as a file the page keeps them in memory
 The forming C...C pairs (minimax matching) are drawn as a line or, below a
 cutoff distance, as bonds (two extra cylinders styled like McUtils' bonds).
 
+Forces and vibrations (server): the shown geometry's forces (a single point) or
+Hessian (analytic, finite differences or auto) with any model; force arrows,
+and normal modes listed by frequency, animated, with displacement arrows.
+Optimization frames carry their own forces. Each calculation attaches to the
+shown saved result (its final geometry, same model, charge and spin) or is
+saved as a new single-point result, so it reloads and exports with the results.
+
 The page recomputes the shared Diels-Alder metrics (as structure_metrics) for
 every shown geometry, exports it (or the whole optimization path) as XYZ, and
 prints the build_pair call for builder geometries. Opened as a file it works as
@@ -156,6 +163,25 @@ def forming_bond_markup(markup, cylinders, symbols):
                    f'</cylinder></shape></transform></switch>' for k in range(2))
 
 
+ARROW_COLOURS = {"force": "0.10 0.45 0.80", "mode": "0.88 0.00 0.48"}
+
+
+def arrow_markup(kind, count, colour):
+    """count hidden X3D arrows (shaft cylinder + cone head, each in a Switch) for the page to place.
+
+    Ids: KIND-arrow-switch-I, KIND-arrow-I (origin, rotation), KIND-arrow-I-shaft,
+    KIND-arrow-I-head; the page sets them from a vector per atom (force or mode).
+    """
+    material = f'<appearance><material diffuseColor="{colour}" specularColor="0.3 0.3 0.3"></material></appearance>'
+    return "".join(
+        f'<switch id="{kind}-arrow-switch-{i}" whichChoice="-1"><transform id="{kind}-arrow-{i}" translation="0 0 0" '
+        f'rotation="1 0 0 0"><transform id="{kind}-arrow-{i}-shaft" translation="0 0.5 0" scale="0.045 1 0.045">'
+        f'<shape>{material}<cylinder radius="1" height="1"></cylinder></shape></transform>'
+        f'<transform id="{kind}-arrow-{i}-head" translation="0 1.15 0" scale="1 1 1"><shape>{material}'
+        f'<cone bottomRadius="0.11" height="0.3"></cone></shape></transform></transform></switch>'
+        for i in range(count))
+
+
 def reference_entries(frames):
     """The page's UMA reference rows: metrics, energy and builder-frame positions of each REFERENCE_LABELS
     structure (to_builder_frame), then the separated reactants (energy only: anthracene + MA)."""
@@ -215,6 +241,8 @@ def builder_page(frames=None, *, presets=None, title="Anthracene + MA Pair Build
             .replace("@@ANTHRACENE@@", ant_markup).replace("@@ANHYDRIDE@@", ma_markup)
             .replace("@@FORMING_BONDS@@", forming_bond_markup(ant_markup, ant_cylinders,
                                                               anthracene.get_chemical_symbols()))
+            .replace("@@ARROWS@@", "".join(arrow_markup(kind, n + len(anhydride), colour)
+                                           for kind, colour in ARROW_COLOURS.items()))
             .replace("@@DATA@@", json.dumps(data).replace("</", "<\\/")))
 
 
@@ -300,6 +328,9 @@ _PAGE = r"""<!doctype html>
   .results td:nth-child(2) small { display: block; line-height: 1.3; }
   button.mini { padding: 1px 6px; font-size: 12px; margin: 0 0 2px 2px; }
   #metrics th { font-size: 12px; color: var(--muted); font-weight: 600; }
+  .vib-info { font-size: 13px; margin: 6px 0; }
+  .vib-info .warn { color: var(--bad); }
+  #vib-box[hidden] { display: none; }
   .checks select, .checks input { font: inherit; font-size: 12px; }
 </style>
 </head>
@@ -329,6 +360,7 @@ _PAGE = r"""<!doctype html>
           </shape>
         </switch>
         @@FORMING_BONDS@@
+        @@ARROWS@@
         <switch id="axes-switch" whichChoice="-1">
           <shape>
             <appearance><material emissiveColor="1 1 1" diffuseColor="0 0 0"></material></appearance>
@@ -422,6 +454,36 @@ _PAGE = r"""<!doctype html>
           <input type="range" id="opt-frame" min="0" max="0" value="0" disabled>
           <span id="opt-frame-label">no frames</span>
         </div>
+      </div>
+    </section>
+
+    <section class="panel" id="analysis-panel">
+      <h2>Forces &amp; vibrations</h2>
+      <div class="row">
+        <button id="calc-forces">Calculate forces</button>
+        <button id="calc-hessian">Calculate Hessian</button>
+        <select id="hessian-method" title="Hessian: the model's own second derivatives, central finite differences of the forces (6N force calls), or analytic when the model has it">
+          <option value="auto">auto</option><option value="analytic">analytic</option>
+          <option value="finite_diff">finite differences</option></select>
+      </div>
+      <p class="hint">On the shown geometry, with the model, charge and spin of the Optimize panel. The result attaches
+        to the shown saved result (same model), otherwise it is saved as a new single-point result.</p>
+      <div class="status" id="analysis-status"></div>
+      <div class="row">
+        <label><input type="checkbox" id="show-forces" checked> force arrows</label>
+        <label title="longest arrow 1.5 Å"><input type="checkbox" id="force-auto" checked> auto scale</label>
+        <label>or <input type="number" id="force-scale" value="1" step="0.1" min="0.01" style="width:60px"> Å per eV/Å</label>
+      </div>
+      <div class="hint" id="force-info"></div>
+      <div id="vib-box" hidden>
+        <div class="field"><label for="vib-mode">Mode</label><select id="vib-mode"></select></div>
+        <div class="control"><label for="vib-amp">amplitude</label>
+          <input type="range" id="vib-amp" min="0.05" max="1" step="0.05" value="0.4"><span id="vib-amp-label">0.40 Å</span></div>
+        <div class="row">
+          <button id="vib-play">Play</button>
+          <label><input type="checkbox" id="vib-arrows" checked> mode arrows</label>
+        </div>
+        <div class="vib-info" id="vib-info"></div>
       </div>
     </section>
 
@@ -775,8 +837,15 @@ _PAGE = r"""<!doctype html>
       }
       if (f.restraint_energy) rows.push('<tr><td>restraint energy</td><td>' + fmt(f.restraint_energy, 4) + ' eV</td><td></td></tr>');
       if (f.fmax !== null && f.fmax !== undefined) rows.push('<tr><td>max force</td><td>' + fmt(f.fmax, 4) + ' eV/Å</td><td></td></tr>');
+      var shownF = shownAnalysis().forces;
+      if (shownF) {
+        var norms = shownF.map(norm), rms = Math.sqrt(norms.reduce(function (a, v) { return a + v * v; }, 0) / norms.length);
+        rows.push('<tr title="largest atomic force, any calculation on this geometry"><td>max |F|</td><td>' +
+                  fmt(Math.max.apply(null, norms), 4) + ' eV/Å<br><small>RMS ' + fmt(rms, 4) + '</small></td><td></td></tr>');
+      }
     }
     document.getElementById("metrics").innerHTML = rows.join("");
+    updateAnalysisDisplay();
     var what = view.source && view.source.kind === "result" ? view.source.name : "optimization";
     document.getElementById("mode-label").textContent = view.mode === "builder" ? "builder" :
       what + " · frame " + view.frame + " / " + (view.frames.length - 1) + " (" + view.model + ")";
@@ -1021,7 +1090,179 @@ _PAGE = r"""<!doctype html>
     if (!any) setStatus("no model available on the server", "bad");
   }).catch(function () {
     el("opt-controls").querySelectorAll("input, select, button").forEach(function (x) { x.disabled = true; });
+    ["calc-forces", "calc-hessian", "hessian-method"].forEach(function (id) { el(id).disabled = true; });
+    el("analysis-status").textContent = "Calculations need the server; saved forces and modes still display.";
   });
+
+  // --- forces and vibrations of the shown geometry ---
+  var anim = {on: false, raf: 0, start: 0, last: 0}, analysisJob = null;
+  function hideArrows(kind) {
+    for (var i = 0; i < SYMBOLS.length; i++) { var sw = node(kind + "-arrow-switch-" + i); if (sw) sw.setAttribute("whichChoice", "-1"); }
+  }
+  function setArrow(kind, i, origin, v) {
+    var sw = node(kind + "-arrow-switch-" + i), length = norm(v);
+    if (!sw) return;
+    if (length < 0.03) { sw.setAttribute("whichChoice", "-1"); return; }
+    var head = Math.min(0.3, 0.45 * length), shaft = length - head;
+    node(kind + "-arrow-" + i).setAttribute("translation", vec(origin));
+    node(kind + "-arrow-" + i).setAttribute("rotation", vec(alignY(unit(v))));
+    node(kind + "-arrow-" + i + "-shaft").setAttribute("translation", "0 " + (shaft / 2).toFixed(4) + " 0");
+    node(kind + "-arrow-" + i + "-shaft").setAttribute("scale", "0.045 " + Math.max(shaft, 1e-4).toFixed(4) + " 0.045");
+    node(kind + "-arrow-" + i + "-head").setAttribute("translation", "0 " + (shaft + head / 2).toFixed(4) + " 0");
+    node(kind + "-arrow-" + i + "-head").setAttribute("scale", "1 " + (head / 0.3).toFixed(4) + " 1");
+    sw.setAttribute("whichChoice", "0");
+  }
+  // What is known for the shown geometry: frame forces, or the shown saved result's own calculations.
+  function shownAnalysis() {
+    if (view.mode !== "frames" || !view.source || !view.frames.length) return {};
+    var f = view.frames[view.frame], out = {};
+    var r = view.source.kind === "result" ? findResult(view.source.id) : null;
+    if (r && r.analysis && view.frame === view.frames.length - 1) {
+      out.vib = r.analysis.vib || null;
+      if (r.analysis.forces) out.forces = r.analysis.forces.forces;
+    }
+    if (!out.forces && f.forces) out.forces = f.forces;
+    out.result = r;
+    return out;
+  }
+  function vibLabel(f) { return f < 0 ? fmt(-f, 1) + "i cm⁻¹" : fmt(f, 1) + " cm⁻¹"; }
+  var vibShown = null;     // the vib object the mode list was built for
+  function updateAnalysisDisplay() {
+    var a = shownAnalysis(), P = view.positions;
+    // force arrows
+    if (a.forces && el("show-forces").checked) {
+      var big = Math.max.apply(null, a.forces.map(norm)) || 1;
+      var k = el("force-auto").checked ? 1.5 / big : parseFloat(el("force-scale").value) || 1;
+      a.forces.forEach(function (F, i) { setArrow("force", i, P[i], scale(F, k)); });
+      el("force-info").textContent = "Force arrows: " + fmt(k, 2) + " Å per eV/Å; largest " + fmt(big, 4) + " eV/Å.";
+    } else {
+      hideArrows("force");
+      el("force-info").textContent = a.forces ? "" : "No forces for the shown geometry: Calculate forces, or show an optimization frame.";
+    }
+    // modes
+    if (a.vib !== vibShown) {
+      vibShown = a.vib || null;
+      stopAnimation(true);
+      el("vib-box").hidden = !vibShown;
+      if (vibShown) {
+        var select = el("vib-mode"), first = -1;
+        select.innerHTML = "";
+        vibShown.frequencies.forEach(function (f, j) {
+          var o = document.createElement("option");
+          o.value = j; o.textContent = (j + 1) + ": " + vibLabel(f) + (f < 0 ? " (imaginary)" : "");
+          select.appendChild(o);
+          if (f < 0 && first < 0) first = j;
+        });
+        select.value = first >= 0 ? first : 0;
+      }
+    }
+    if (vibShown) drawMode(); else hideArrows("mode");
+  }
+  function currentMode() { return vibShown ? vibShown.modes[parseInt(el("vib-mode").value, 10) || 0] : null; }
+  function drawMode() {
+    var v = vibShown, j = parseInt(el("vib-mode").value, 10) || 0, amp = parseFloat(el("vib-amp").value), mode = v.modes[j];
+    el("vib-amp-label").textContent = amp.toFixed(2) + " Å";
+    if (el("vib-arrows").checked) {
+      mode.forEach(function (d, i) { setArrow("mode", i, view.positions[i], scale(d, 3 * amp)); });
+    } else hideArrows("mode");
+    var imaginary = v.frequencies.filter(function (f) { return f < 0; }).length;
+    var lines = ["<b>Mode " + (j + 1) + " of " + v.frequencies.length + "</b>: " + vibLabel(v.frequencies[j]) +
+                 " · μ " + fmt(v.reduced_masses[j], 2) + " amu · k " + fmt(v.force_constants[j], 3) + " mdyn/Å",
+                 imaginary + " imaginary · Hessian " + (v.method === "analytic" ? "analytic" : "finite differences") +
+                 (v.requested === "auto" ? " (auto)" : "") + " · " + esc(v.model) + (v.check !== null && v.check !== undefined ?
+                 " · FD check " + fmt(100 * v.check, 2) + "%" : "")];
+    if (v.note) lines.push('<span class="warn">' + esc(v.note) + "</span>");
+    if (v.fmax !== undefined && v.fmax > 0.05) lines.push('<span class="warn">max |F| ' + fmt(v.fmax, 3) +
+      " eV/Å: not a stationary point, so the frequencies are approximate (low modes most).</span>");
+    el("vib-info").innerHTML = lines.join("<br>");
+  }
+  function frameLoop(ts) {
+    if (!anim.on) return;
+    anim.raf = requestAnimationFrame(frameLoop);
+    if (ts - anim.last < 33) return;
+    anim.last = ts;
+    var mode = currentMode(), amp = parseFloat(el("vib-amp").value), P0 = view.positions;
+    if (!mode) return stopAnimation();
+    var w = amp * Math.sin(2 * Math.PI * (ts - anim.start) / 1400);
+    var P = P0.map(function (p, i) { return add(p, scale(mode[i], w)); });
+    showPerAtom(P);
+    updateForming(P, metrics(P));
+  }
+  function startAnimation() {
+    anim.on = true; anim.start = performance.now(); anim.last = 0;
+    el("vib-play").textContent = "Pause";
+    anim.raf = requestAnimationFrame(frameLoop);
+  }
+  function stopAnimation(quiet) {
+    var was = anim.on;
+    anim.on = false; cancelAnimationFrame(anim.raf);
+    el("vib-play").textContent = "Play";
+    if (was && !quiet) {      // back to the resting geometry
+      if (view.mode === "builder") showRigid(view.built); else showPerAtom(view.positions);
+      updateForming(view.positions, metrics(view.positions));
+    }
+  }
+  el("vib-play").addEventListener("click", function () { if (anim.on) stopAnimation(); else startAnimation(); });
+  el("vib-mode").addEventListener("change", function () { if (vibShown) drawMode(); });
+  el("vib-amp").addEventListener("input", function () { if (vibShown) drawMode(); });
+  el("vib-arrows").addEventListener("change", function () { if (vibShown) drawMode(); });
+  ["show-forces", "force-auto"].forEach(function (id) { el(id).addEventListener("change", updateAnalysisDisplay); });
+  el("force-scale").addEventListener("change", function () { el("force-auto").checked = false; updateAnalysisDisplay(); });
+
+  function analysisStatus(text, kind) { var s = el("analysis-status"); s.textContent = text; s.className = "status " + (kind || ""); }
+  function runAnalysis(task) {
+    if (analysisJob) return;
+    var r = view.mode === "frames" && view.source && view.source.kind === "result" ? findResult(view.source.id) : null;
+    var body = {model: el("opt-model").value, symbols: SYMBOLS, positions: view.positions,
+                charge: parseInt(el("opt-charge").value, 10), spin: parseInt(el("opt-spin").value, 10)};
+    if (task === "hessian") body.method = el("hessian-method").value;
+    var target = {task: task, body: body, label: startLabel(), parentId: r ? r.id : null,
+                  attach: r && !r.builtin && view.frame === view.frames.length - 1 && comparable(r, body) ? r : null,
+                  base: r ? r.name : view.mode === "builder" ? "builder pose" : "optimization frame " + view.frame};
+    analysisJob = target;
+    el("calc-forces").disabled = el("calc-hessian").disabled = true;
+    analysisStatus("submitting…");
+    send("POST", task, body).then(function (j) {
+      target.id = j.job;
+      var timer = setInterval(function () {
+        fetch("jobs/" + j.job + "?since=0").then(function (x) { return x.json(); }).then(function (state) {
+          var done = ["done", "cancelled", "error"].indexOf(state.status) >= 0;
+          analysisStatus(state.message, state.status === "error" ? "bad" : state.status === "done" ? "good" : "");
+          if (!done) return;
+          clearInterval(timer); finishAnalysis();
+          if (state.status === "done") storeAnalysis(target, state.result);
+        }).catch(function (err) { clearInterval(timer); finishAnalysis(); analysisStatus("lost contact with the server: " + err.message, "bad"); });
+      }, 500);
+    }).catch(function (err) { finishAnalysis(); analysisStatus(err.message, "bad"); });
+  }
+  function finishAnalysis() { analysisJob = null; el("calc-forces").disabled = el("calc-hessian").disabled = false; }
+  function storeAnalysis(t, res) {
+    var b = t.body, stamp = {model: b.model, charge: b.charge, spin: b.spin, computed: new Date().toISOString()};
+    var forces = Object.assign({energy: res.energy, forces: res.forces, fmax: res.fmax}, stamp);
+    var vib = t.task === "hessian" ? Object.assign({method: res.method, requested: res.requested, step: res.step,
+      check: res.check, note: res.note, energy: res.energy, fmax: res.fmax, frequencies: res.frequencies,
+      reduced_masses: res.reduced_masses, force_constants: res.force_constants, modes: res.modes, masses: res.masses,
+      hessian: res.hessian}, stamp) : null;
+    var r = t.attach;
+    if (r) {
+      r.analysis = r.analysis || {};
+      r.analysis.forces = forces;
+      if (vib) r.analysis.vib = vib;
+      saveResult(r); renderResults(); render();
+      analysisStatus(el("analysis-status").textContent + " · stored with “" + r.name + "”", "good");
+      return;
+    }
+    r = {id: "r" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+         name: t.base + " · " + b.model + (vib ? " Hessian" : " forces"), created: stamp.computed,
+         model: b.model, charge: b.charge, spin: b.spin, status: "single point", steps: 0,
+         energy: res.energy, restraint_energy: 0, fmax: res.fmax, fmax_kind: "raw",
+         positions: b.positions, metrics: metrics(b.positions), start: t.label, parent: t.parentId, path: null,
+         analysis: {forces: forces, vib: vib}};
+    saveResult(r); showResult(r);
+    analysisStatus(el("analysis-status").textContent + " · saved as “" + r.name + "”", "good");
+  }
+  el("calc-forces").addEventListener("click", function () { runAnalysis("forces"); });
+  el("calc-hessian").addEventListener("click", function () { runAnalysis("hessian"); });
 
   // --- saved results: the built-in UMA references plus every finished optimization ---
   var RESULTS = [], refId = "ref:reactant_complex", store = {mode: "page", location: ""};
@@ -1116,6 +1357,9 @@ _PAGE = r"""<!doctype html>
       var detail = r.builtin ? r.start : [r.status ? r.status + (r.steps !== undefined ? ", " + r.steps + " steps" : "") : "",
         r.optimizer && OPTIMIZER_LABELS[r.optimizer],
         constraintText(r.constraint), r.fmax !== null && r.fmax !== undefined ? "fmax " + fmt(r.fmax, 3) + " (" + (r.fmax_kind === "raw" ? "raw" : "projected") + ")" : "",
+        r.analysis && r.analysis.vib ? r.analysis.vib.frequencies.length + " modes, " +
+          r.analysis.vib.frequencies.filter(function (f) { return f < 0; }).length + " imaginary" :
+          r.analysis && r.analysis.forces ? "forces" : "",
         r.parent ? "from " + ((findResult(r.parent) || {}).name || r.parent) : "", r.created ? localTime(r.created) : ""]
         .filter(Boolean).join(" · ");
       var model = r.model + " · q " + r.charge + ", 2S+1 " + r.spin;
@@ -1206,6 +1450,14 @@ _PAGE = r"""<!doctype html>
               max_forming_distance: r.metrics ? r.metrics.max_forming_distance : null, path: r.path ? r.path.length : 0}; })};
   };
   window.showResult = function (id) { showResult(findResult(id)); };
+  window.analysisState = function () {
+    var a = shownAnalysis();
+    var shown = function (kind) { var n = 0; for (var i = 0; i < SYMBOLS.length; i++) {
+      var sw = node(kind + "-arrow-switch-" + i); if (sw && sw.getAttribute("whichChoice") === "0") n++; } return n; };
+    return {forces: !!a.forces, modes: a.vib ? a.vib.frequencies.length : 0, animating: anim.on,
+            forceArrows: shown("force"), modeArrows: shown("mode"), busy: !!analysisJob,
+            status: el("analysis-status").textContent, vibInfo: el("vib-info").innerText};
+  };
   window.setReference = function (id) { refId = id; renderResults(); render(); };
   fetch("results").then(function (r) { if (!r.ok) throw new Error(); return r.json(); }).then(function (j) {
     store = {mode: j.persistent ? "folder" : "server", location: j.location || ""};
