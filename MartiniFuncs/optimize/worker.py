@@ -7,7 +7,8 @@ Protocol: one JSON object per line. The worker first prints
 
     {"type": "run", "job": ID, "request": {"task", "model", "symbols", "positions", "charge", "spin", ...}}
 
-task "optimize" (default; "constraint", "optimizer", "fmax", "steps"), "forces"
+task "optimize" (default; "constraint", "optimizer", "fmax", "steps"; for Sella "sella_hessian":
+sella | model | every, "sella_hessian_every", "hessian_method"), "forces"
 (a single point) or "hessian" ("method": auto | analytic | finite_diff, "step");
     {"type": "cancel", "job": ID}
     {"type": "quit"}
@@ -100,6 +101,24 @@ def run_job(job, request, cache, cancel):
         if task != "optimize":
             raise ValueError(f"unknown task {task!r}")
         send({"type": "status", "job": job, "message": f"optimizing with {model}"})
+        hessian_function, every = None, None
+        optimizer = request.get("optimizer", "BFGS")
+        if optimizer.startswith("sella") and request.get("sella_hessian", "sella") != "sella":
+            method = request.get("hessian_method", "auto")
+            analytic = None if method == "finite_diff" else cache.analytic_hessian(model, charge=charge, spin=spin)
+            calls = {"n": 0}
+
+            def hessian_function(atoms):
+                if cancel.is_set():
+                    raise Cancelled()
+                calls["n"] += 1
+                send({"type": "status", "job": job, "message": f"optimizing with {model}: model Hessian #{calls['n']}"})
+                matrix, _ = hessian(request["symbols"], atoms.positions, calculator=calculator, method=method,
+                                    analytic=analytic, charge=charge, spin=spin)
+                return matrix
+
+            if request.get("sella_hessian") == "every":
+                every = max(1, int(request.get("sella_hessian_every", 5)))
 
         def frame(data):
             if cancel.is_set():
@@ -109,7 +128,8 @@ def run_job(job, request, cache, cancel):
         _, converged, steps = optimize(request["symbols"], request["positions"], calculator=calculator,
                                        constraint=request.get("constraint"), optimizer=request.get("optimizer", "BFGS"),
                                        fmax=request.get("fmax", 0.05), steps=request.get("steps", 500),
-                                       charge=request.get("charge", 0), spin=request.get("spin", 1), callback=frame)
+                                       charge=request.get("charge", 0), spin=request.get("spin", 1), callback=frame,
+                                       hessian_function=hessian_function, diag_every_n=every)
         send({"type": "done", "job": job, "status": "converged" if converged else "not_converged", "steps": steps,
               "message": f"{'converged' if converged else 'stopped at the step limit'} after {steps} steps"})
     except Cancelled:

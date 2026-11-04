@@ -437,6 +437,13 @@ _PAGE = r"""<!doctype html>
             <option value="BFGS">BFGS</option><option value="LBFGS">LBFGS</option><option value="FIRE">FIRE</option>
             <option value="sella_min">Sella (minimum)</option><option value="sella_ts">Sella (transition state)</option>
           </select></div>
+        <div class="field" id="opt-sella-row"><label for="opt-sella-hessian">Sella Hessian</label>
+          <select id="opt-sella-hessian" title="Sella's own iterative estimate, or the model's Hessian (method as under Forces &amp; vibrations)">
+            <option value="sella">Sella's own (iterative)</option>
+            <option value="model">model Hessian when Sella needs one</option>
+            <option value="every">model Hessian every N steps</option></select></div>
+        <div class="field" id="opt-sella-every-row"><label for="opt-sella-every">N (steps)</label>
+          <input id="opt-sella-every" type="number" value="5" step="1" min="1"></div>
         <div class="pair">
           <div class="field"><label for="opt-fmax">fmax (eV/&Aring;)</label><input id="opt-fmax" type="number" value="0.05" step="0.01" min="0.001"></div>
           <div class="field"><label for="opt-steps">max steps</label><input id="opt-steps" type="number" value="300" step="10" min="1"></div>
@@ -1025,8 +1032,17 @@ _PAGE = r"""<!doctype html>
     return {model: el("opt-model").value, symbols: SYMBOLS, positions: view.positions, constraint: constraint,
             optimizer: el("opt-optimizer").value, fmax: parseFloat(el("opt-fmax").value),
             steps: parseInt(el("opt-steps").value, 10), charge: parseInt(el("opt-charge").value, 10),
-            spin: parseInt(el("opt-spin").value, 10)};
+            spin: parseInt(el("opt-spin").value, 10), sella_hessian: el("opt-sella-hessian").value,
+            sella_hessian_every: parseInt(el("opt-sella-every").value, 10), hessian_method: el("hessian-method").value};
   }
+  function sellaRows() {
+    var sella = el("opt-optimizer").value.indexOf("sella") === 0;
+    el("opt-sella-row").style.display = sella ? "" : "none";
+    el("opt-sella-every-row").style.display = sella && el("opt-sella-hessian").value === "every" ? "" : "none";
+  }
+  el("opt-optimizer").addEventListener("change", sellaRows);
+  el("opt-sella-hessian").addEventListener("change", sellaRows);
+  sellaRows();
   function running(on) {
     el("opt-run").disabled = on; el("opt-cancel").disabled = !on;
   }
@@ -1296,6 +1312,9 @@ _PAGE = r"""<!doctype html>
       name: req.model + " " + OPTIMIZER_LABELS[req.optimizer] + ", " + constraintText(req.constraint) + " #" + (mine + 1),
       created: new Date().toISOString(), job: run.id, model: req.model, charge: req.charge, spin: req.spin,
       optimizer: req.optimizer, fmax_target: req.fmax, max_steps: req.steps, constraint: req.constraint,
+      sella_hessian: req.optimizer.indexOf("sella") === 0 ? req.sella_hessian : undefined,
+      sella_hessian_every: req.sella_hessian === "every" ? req.sella_hessian_every : undefined,
+      hessian_method: req.optimizer.indexOf("sella") === 0 && req.sella_hessian !== "sella" ? req.hessian_method : undefined,
       status: status, converged: status === "converged", steps: last.step,
       energy: last.energy - (last.restraint_energy || 0), restraint_energy: last.restraint_energy || 0,
       fmax: last.fmax, fmax_kind: req.optimizer.indexOf("sella") === 0 ? "raw" : "constraint-projected",
@@ -1334,6 +1353,8 @@ _PAGE = r"""<!doctype html>
     if (option && !option.disabled) el("opt-model").value = r.model;
     else resultsMessage("model " + r.model + " is not available on this server; the other settings were copied", "bad");
     setValue("opt-optimizer", r.optimizer); setValue("opt-fmax", r.fmax_target); setValue("opt-steps", r.max_steps);
+    setValue("opt-sella-hessian", r.sella_hessian); setValue("opt-sella-every", r.sella_hessian_every);
+    setValue("hessian-method", r.hessian_method); sellaRows();
     setValue("opt-charge", r.charge); setValue("opt-spin", r.spin);
     if (r.constraint) {
       setValue("opt-constraint", r.constraint.mode); setValue("opt-k", r.constraint.k);
@@ -1356,6 +1377,7 @@ _PAGE = r"""<!doctype html>
     RESULTS.forEach(function (r) {
       var detail = r.builtin ? r.start : [r.status ? r.status + (r.steps !== undefined ? ", " + r.steps + " steps" : "") : "",
         r.optimizer && OPTIMIZER_LABELS[r.optimizer],
+        r.sella_hessian === "model" ? "model Hessian" : r.sella_hessian === "every" ? "model Hessian every " + r.sella_hessian_every : "",
         constraintText(r.constraint), r.fmax !== null && r.fmax !== undefined ? "fmax " + fmt(r.fmax, 3) + " (" + (r.fmax_kind === "raw" ? "raw" : "projected") + ")" : "",
         r.analysis && r.analysis.vib ? r.analysis.vib.frequencies.length + " modes, " +
           r.analysis.vib.frequencies.filter(function (f) { return f < 0; }).length + " imaginary" :

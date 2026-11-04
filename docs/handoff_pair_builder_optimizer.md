@@ -197,6 +197,12 @@ reference switch, reload from the results folder, import, offline file mode; no 
 - Not yet checked with the real models: the three analytic Hessian paths (UMA settings in particular) — run
   Calculate Hessian (auto) on the UMA TS and compare with finite differences; expect one imaginary mode.
 
+- Sella Hessian (Optimize panel, Sella only): "Sella's own (iterative)" (default, as before), "model Hessian
+  when Sella needs one" (Sella `hessian_function`, `eig=True`: at the start and whenever Sella rediagonalizes),
+  or "every N steps" (`diag_every_n=N`). The model Hessian uses the Forces & vibrations method (auto / analytic /
+  finite differences); for restrained runs `restraint_hessian` adds the restraint term. Recorded in saved results
+  (`sella_hessian`, `sella_hessian_every`, `hessian_method`) and copied by Settings.
+
 ## Ideas not done
 
 - Delete/rename of built-in references is blocked; no "duplicate" or "compare two results side by side"

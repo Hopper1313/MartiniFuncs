@@ -191,9 +191,28 @@ def _check(constraint, n_atoms):
     return mode, atoms, pairs
 
 
+def restraint_hessian(positions, pairs, targets, k):
+    """Cartesian Hessian (3N x 3N, eV/Angstrom^2) of the harmonic distance restraints 0.5 k (d - d0)^2."""
+    xyz = np.asarray(positions, dtype=float)
+    matrix = np.zeros((3 * len(xyz), 3 * len(xyz)))
+    for (i, j), target in zip(pairs, targets):
+        vector = xyz[j] - xyz[i]
+        d = np.linalg.norm(vector)
+        u = vector / d
+        block = k * ((1 - target / d) * np.eye(3) + (target / d) * np.outer(u, u))
+        for a, b, sign in ((i, i, 1), (j, j, 1), (i, j, -1), (j, i, -1)):
+            matrix[3 * a:3 * a + 3, 3 * b:3 * b + 3] += sign * block
+    return matrix
+
+
 def optimize(symbols, positions, *, calculator, constraint=None, optimizer="BFGS", fmax=0.05, steps=500,
-             charge=0, spin=1, callback=None):
+             charge=0, spin=1, callback=None, hessian_function=None, diag_every_n=None):
     """Optimize one structure; return (final Atoms, converged, number of steps).
+
+    Sella only: hessian_function (atoms -> 3N x 3N model Hessian, eV/Angstrom^2)
+    replaces Sella's iterative Hessian estimate: it is called at the start and
+    whenever Sella would rediagonalize, and with diag_every_n also every that many
+    steps. Restraint terms (restrain_distances) are added to it here.
 
     callback(frame) is called for the start geometry (step 0) and after every
     step with {"step", "energy", "restraint_energy", "fmax", "positions"};
@@ -249,8 +268,18 @@ def optimize(symbols, positions, *, calculator, constraint=None, optimizer="BFGS
 
     if sella:
         from sella import Sella
+        options = {}
+        if hessian_function is not None:
+            model_hessian = hessian_function
+            if mode == "restrain_distances":
+                restraint = (calculator.pairs, calculator.targets, calculator.k)
+
+                def model_hessian(a, base=hessian_function):
+                    return base(a) + restraint_hessian(a.positions, *restraint)
+            options.update(hessian_function=model_hessian, eig=True,
+                           diag_every_n=int(diag_every_n) if diag_every_n else None)
         runner = Sella(atoms, order=1 if optimizer == "sella_ts" else 0, internal=True,
-                       constraints=sella_constraints, logfile=None)
+                       constraints=sella_constraints, logfile=None, **options)
     else:
         from ase import optimize as ase_optimize
         runner = getattr(ase_optimize, optimizer)(atoms, logfile=None)

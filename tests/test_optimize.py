@@ -152,6 +152,34 @@ class VibrationTests(unittest.TestCase):
         np.testing.assert_allclose(frames[0]["forces"], point["forces"], atol=1e-5)
 
 
+class SellaHessianTests(unittest.TestCase):
+    def test_restraint_hessian_matches_finite_differences(self):
+        from MartiniFuncs.optimize.engine import restraint_hessian
+        atoms, pairs = stacked_pair()
+        targets, k = [2.6, 2.9], 7.0
+        calc = RestrainedCalculator(EMT(), pairs, targets, k)
+        full, _ = hessian(atoms.get_chemical_symbols(), atoms.positions, calculator=calc, method="finite_diff", step=1e-4)
+        base, _ = hessian(atoms.get_chemical_symbols(), atoms.positions, calculator=EMT(), method="finite_diff", step=1e-4)
+        np.testing.assert_allclose(full - base, restraint_hessian(atoms.positions, pairs, targets, k), atol=2e-4)
+
+    def test_sella_uses_the_model_hessian(self):
+        atoms, pairs = stacked_pair()
+        symbols, calls = atoms.get_chemical_symbols(), []
+
+        def model_hessian(a):
+            calls.append(1)
+            return hessian(symbols, a.positions, calculator=EMT(), method="finite_diff")[0]
+
+        for every, constraint in ((None, {"mode": "fix_distances", "pairs": pairs}),
+                                  (2, {"mode": "restrain_distances", "pairs": pairs, "k": 5.0})):
+            calls.clear()
+            final, _, n = optimize(symbols, atoms.positions, calculator=EMT(), constraint=constraint,
+                                   optimizer="sella_ts", steps=5, hessian_function=model_hessian, diag_every_n=every)
+            self.assertGreaterEqual(len(calls), 1)
+            if every:
+                self.assertGreaterEqual(len(calls), 2)
+
+
 class WorkerTests(unittest.TestCase):
     def test_protocol(self):
         env = dict(os.environ, PYTHONPATH=os.pathsep.join(filter(None, [ROOT, os.environ.get("PYTHONPATH")])))
