@@ -23,7 +23,8 @@ imbalance, axis/plane/approach angles) and `measure_diels_alder` (minimax
 forming-bond matching, plane normals, acute angles). A Diels-Alder model
 supplies only its chemistry: `classify`, `sites` in the form
 `(termini, diene_plane, ...)` / `(alkene, dienophile_plane, ...)`, `screen_atoms`
-and a collection radius; `cpd_n4t` adds its ring dihedral on top.
+and a collection radius; `cpd_n4t` adds its ring dihedral on top, `anthracene_ma`
+uses the shared metrics only.
 
 ## The cpd_n4t model
 
@@ -41,6 +42,27 @@ observed experimentally.
 | export labels | `pair_role` = `CPD` / `MAL` / `shell`; columns `cpd_molecule`, `dienophile_molecule`; index field `cpd_shift` |
 
 The equations are in `chemistry/cpd_n4t/selection.py` (`measure_pair_geometry`).
+
+## The anthracene_ma model
+
+`MartiniFuncs.chemistry.anthracene_ma`: anthracene (C14H10, 24 atoms) is the
+diene, the first member, and maleic anhydride (C4H2O3, 9 atoms) the
+dienophile, the second. 33-atom adducts take no part.
+
+| | |
+|---|---|
+| collection | `AnthraceneMaCollection(reactive_radius=4.0)`: anthracene central-ring centroid (C9, C10 and the four fusion carbons) to anhydride C=C midpoint, minimum image (`--reactive-radius`). UMA references: reactant complex 3.17, TS 2.33, adduct 1.90 Angstrom |
+| sites | anthracene C9/C10 termini and the six central-ring carbons; anhydride C=C, its four ring carbons and the bridging O (`anthracene_ma/sites.py`) |
+| metrics | the shared ones: `max_forming_distance`, `distance_imbalance` (Angstrom); `axis_angle`, `plane_angle`, `approach_angle` (acute degrees) |
+| criteria | `AnthraceneMaCriteria(max_screen_distance, require_geometry, max_forming_distance, max_distance_imbalance, max_axis_angle, max_plane_angle, max_approach_angle)` |
+| export labels | `pair_role` = `ANT` / `MA` / `shell`; columns `anthracene_molecule`, `anhydride_molecule`; index field `anthracene_shift` |
+
+The screen uses the central ring, not the whole-molecule COM, so it is the
+same distance as the pair builder's `screen_distance`
+(`anthracene_ma.build.structure_metrics`); a bent anthracene (TS) moves the
+COM about 0.2 Angstrom away from the dienophile. There is no endo/exo metric:
+the two faces of the central ring, and the two benzo rings the anhydride ring
+can point toward, are equivalent by symmetry.
 
 ## Collection and selection
 

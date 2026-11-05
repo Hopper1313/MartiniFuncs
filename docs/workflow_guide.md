@@ -1142,9 +1142,13 @@ print(max(geometry.forming_distances))               # 3.2
 
 Everything in this guide that does not name a pair model works for any
 molecules: molecular statistics, diffusion, reaction (topology) events, reports.
-Pair analysis needs a model for the chemistry; the anthracene + maleic
-anhydride model (`--pair-model anthracene_ma`) is not built yet, so until then
-analyze these runs with `--no-pairs`.
+Pair analysis uses `--pair-model anthracene_ma` (details in
+[pair models](pair_models.md)): the screen is the anthracene central-ring
+centroid to maleic anhydride C=C midpoint distance, collected below 4.0
+Angstrom by default (`--reactive-radius`), and the metrics are the five shared
+Diels-Alder ones. For orientation, the UMA references have a screen distance of
+3.17 (reactant complex), 2.33 (TS) and 1.90 Angstrom (adduct) and a longer
+forming C...C of 3.25, 2.23 and 1.56 Angstrom.
 
 **Starting box.** `examples/build_from_smiles.py` packs molecules given as
 SMILES (RDKit templates, rigid random insertion: dilute, not equilibrated) and
@@ -1164,13 +1168,20 @@ already dump with `element C H O`; in the restart templates set
 `variable element_list string "C H O"`. The UMA references for this system
 used charge 0 and spin 1; set the same in the fairchem config.
 
-**Analysis.** Molecular statistics and reaction events, with the adduct
-(C18H12O3, 33 atoms) detected as a new molecule:
+**Analysis.** Molecular statistics, reaction events (the adduct, C18H12O3,
+33 atoms, is detected as a new molecule) and pairs:
 
 ```bash
-python -m MartiniFuncs run ./ --output ./postprocess_no_pairs --units metal --timestep-ps 0.0005 \
-    --no-pairs --temperature-dof 3N-3 --workers 2
+python -m MartiniFuncs run ./ --pair-model anthracene_ma --output ./postprocess --units metal \
+    --timestep-ps 0.0005 --temperature-dof 3N-3 --workers 2
 ```
+
+Selection, reports, extraction and per-pair trajectories work as for cpd_n4t,
+with the shared thresholds only (`--max-forming-distance`,
+`--max-distance-imbalance`, `--max-axis-angle`, `--max-plane-angle`,
+`--max-approach-angle`, `--max-screen-distance`); there is no ring-dihedral
+threshold, because the two faces and the two benzo rings are equivalent by
+symmetry. `--no-pairs` still gives molecular statistics only.
 
 `--reaction-events record` (the default) logs the frame where an adduct forms
 and keeps going; `stop` ends the analysis cleanly before it. The older
