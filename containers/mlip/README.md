@@ -26,12 +26,12 @@ You need Linux, or Windows with WSL2 (Ubuntu), and [Apptainer](https://apptainer
 (on Ubuntu/WSL2: `sudo add-apt-repository -y ppa:apptainer/ppa && sudo apt install -y apptainer`).
 Run everything below in a Linux / WSL terminal, from a clone of this repository.
 
-1. **Get the image** (release [mlip-bb6e1dc](https://github.com/Hopper1313/MartiniFuncs/releases/tag/mlip-bb6e1dc),
+1. **Get the image** (release [mlip-b742b5b](https://github.com/Hopper1313/MartiniFuncs/releases/tag/mlip-b742b5b),
    about 1 GB) into `~/containers/` and check the download:
    ```bash
    mkdir -p ~/containers && cd ~/containers
-   curl -LO https://github.com/Hopper1313/MartiniFuncs/releases/download/mlip-bb6e1dc/mlip.sif
-   curl -LO https://github.com/Hopper1313/MartiniFuncs/releases/download/mlip-bb6e1dc/mlip.sif.sha256
+   curl -LO https://github.com/Hopper1313/MartiniFuncs/releases/download/mlip-b742b5b/mlip.sif
+   curl -LO https://github.com/Hopper1313/MartiniFuncs/releases/download/mlip-b742b5b/mlip.sif.sha256
    sha256sum -c mlip.sif.sha256
    ```
    Or build the image yourself (see Build below). Use the release whose name matches the commit

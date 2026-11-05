@@ -22,7 +22,7 @@ sudo apt update && sudo apt install -y apptainer git curl
 ```bash
 git clone https://github.com/Hopper1313/MartiniFuncs.git ~/MartiniFuncs
 mkdir -p ~/containers && cd ~/containers
-R=https://github.com/Hopper1313/MartiniFuncs/releases/download/mlip-bb6e1dc
+R=https://github.com/Hopper1313/MartiniFuncs/releases/download/mlip-b742b5b
 curl -LO $R/mlip.sif && curl -LO $R/mlip.sif.sha256 && sha256sum -c mlip.sif.sha256
 ```
 
@@ -39,7 +39,7 @@ No UMA: `bash containers/mlip/fetch_models.sh --accept-asl mace aimnet`. `--acce
 ## 5. Run
 
 ```bash
-cd ~/MartiniFuncs && bash containers/mlip/run_server.sh
+cd ~/MartiniFuncs && bash containers/mlip/run_server.sh   # --ncpus N to limit CPUs (default: all)
 ```
 
 Open http://127.0.0.1:8000/. Details: [containers/mlip/README.md](../containers/mlip/README.md).
