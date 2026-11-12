@@ -117,6 +117,17 @@ def miller_basis(cell, hkl):
     return P
 
 
+def wrap_fraction(x, tol=1e-9):
+    """Fractions wrapped into [0, 1), with values within tol of an integer snapped to 0.
+
+    np.mod(-1e-17, 1.0) is 1.0, which would put a molecule on a special position
+    (an inversion centre at height 0) one whole layer too high.
+    """
+    x = np.asarray(x, dtype=float)
+    wrapped = x - np.floor(x + tol)
+    return np.where(np.abs(wrapped) < tol, 0.0, wrapped)
+
+
 def _wrap_molecules(positions, mol_id, masses, cell, axes=(0, 1, 2)):
     """Translate each molecule by a lattice vector so its COM fraction is in [0, 1) on the given axes."""
     positions = positions.copy()
@@ -158,7 +169,7 @@ def orient(crystal: MolecularCrystal, hkl):
     atoms.set_cell(cell, scale_atoms=False)
     atoms.positions = _wrap_molecules(atoms.positions, atoms.arrays["mol_id"], masses, cell)
     _, coms = _coms(atoms.positions, atoms.arrays["mol_id"], masses)
-    heights = np.mod((coms @ np.linalg.inv(cell))[:, 2], 1.0)
+    heights = wrap_fraction((coms @ np.linalg.inv(cell))[:, 2])
     return OrientedBulk(atoms, hkl, P, d_spacing(crystal.atoms.cell.array, hkl), heights)
 
 
@@ -198,7 +209,7 @@ def terminations(crystal_or_bulk, hkl=None, *, height_tol=0.25, contact_cutoff=4
     for k in range(len(groups)):
         top = centers_high[k]
         bottom_next = centers_low[(k + 1) % len(groups)] + (1 if k + 1 == len(groups) else 0)
-        cuts.append((np.mod((top + bottom_next) / 2, 1.0), (bottom_next - top) * d))
+        cuts.append((float(wrap_fraction((top + bottom_next) / 2)), (bottom_next - top) * d))
     atoms = bulk.atoms
     mol_id = atoms.arrays["mol_id"]
     i, j, S, _ = periodic_pairs(atoms.positions, atoms.cell.array, np.ones(3, bool), contact_cutoff)

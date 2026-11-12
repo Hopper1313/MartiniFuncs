@@ -36,14 +36,17 @@ def crystal_calculator(name, *, model=None, task="omc", device="cpu", dispersion
         set_threads(ncpus)
     name = name.lower()
     if name == "uma":
-        from fairchem.core import FAIRChemCalculator, pretrained_mlip
+        from fairchem.core import FAIRChemCalculator
         model = model or os.environ.get("UMA_CHECKPOINT") or "uma-s-1p2"
         if inference_settings is None:
             inference_settings = uma_settings()
         if Path(str(model)).is_file():
-            unit = pretrained_mlip.load_predict_unit(str(model), device=device,
-                                                     inference_settings=inference_settings)
+            # units.mlip_unit works in every fairchem 2.x layout, including trimmed installs whose
+            # fairchem.core does not re-export pretrained_mlip
+            from fairchem.core.units.mlip_unit import load_predict_unit
+            unit = load_predict_unit(str(model), device=device, inference_settings=inference_settings)
         else:
+            from fairchem.core.calculate import pretrained_mlip
             unit = pretrained_mlip.get_predict_unit(str(model), device=device,
                                                     inference_settings=inference_settings)
         return FAIRChemCalculator(unit, task_name=task)

@@ -12,6 +12,9 @@ run_crystal_workflow(cif, calculator, out_dir) does, in order:
    slabs cut from the relaxed bulk
 8. Wulff shape from the surface energies: area fraction of each face; faces are
    ranked by surface energy and by area fraction
+9. optional (removal_energies=True): energy to remove one surface molecule from
+   the lowest-energy termination of each face (molecule_removal_energy), on a
+   slab whose in-plane vectors are at least removal_min_length long
 
 Everything is written to out_dir: results.json (updated after every step, so
 a killed run keeps what it finished), the relaxed bulk (bulk_relaxed.cif /
@@ -34,8 +37,8 @@ from .bulk import elastic_constants, equation_of_state, gas_references, lattice_
 from .calculators import CALCULATORS, describe, resolve
 from .cif import read_cif, write_cif
 from .morphology import bfdh, wulff
-from .slabs import primitive_miller
-from .surfaces import face_energies
+from .slabs import build_slab, primitive_miller
+from .surfaces import face_energies, molecule_removal_energy
 
 
 def _save(path, results):
@@ -45,7 +48,8 @@ def _save(path, results):
 def run_crystal_workflow(cif, calculator, out_dir, *, faces=None, max_index=2, n_faces=6, n_terminations=2,
                          min_thickness=12.0, layers=None, vacuum=15.0, min_lengths=10.0, max_atoms=None,
                          bulk_fmax=0.01, slab_fmax=0.02, relax_slabs=True, n_fixed_layers=1, symmetrize=True,
-                         compute_eos=True, compute_elastic=False, gas_box=None, read_options=None, log=print):
+                         compute_eos=True, compute_elastic=False, removal_energies=False, removal_min_length=15.0,
+                         gas_box=None, read_options=None, log=print):
     """Run the full workflow; returns the results dict (also in out_dir/results.json)."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -128,6 +132,22 @@ def run_crystal_workflow(cif, calculator, out_dir, *, faces=None, max_index=2, n
         ({"hkl": h, "gamma_J_m2": energies[h], "termination": best[h]["termination"],
           "area_fraction": fractions.get(h)} for h in energies),
         key=lambda r: r["gamma_J_m2"])
+    if removal_energies:
+        removal_rows = []
+        for h, r in best.items():
+            slab = build_slab(relaxed, h, layers=layers, min_thickness=min_thickness, termination=r["termination"],
+                              vacuum=vacuum, min_lengths=removal_min_length, max_atoms=max_atoms)
+            rem = molecule_removal_energy(slab, calc, results["gas"], relax=relax_slabs,
+                                          n_fixed_layers=n_fixed_layers, fmax=slab_fmax,
+                                          lattice_energy=results["lattice_energy"]["lattice_energy_eV"])
+            name = "removal_{}_t{}.extxyz".format("".join(map(str, h)).replace("-", "m"), r["termination"])
+            write(out / name, rem.pop("vacancy_atoms"))
+            write(out / name.replace("removal_", "removal_intact_"), rem.pop("slab_atoms"))
+            removal_rows.append(rem | {"file": name})
+            results["removal"] = removal_rows
+            _save(path, results)
+            log(f"[removal] {h} T{r['termination']}: vertical {rem['vertical_kJ_mol']:.1f} kJ/mol"
+                + (f", adiabatic {rem['adiabatic_kJ_mol']:.1f} kJ/mol" if "adiabatic_kJ_mol" in rem else ""))
     results["elapsed_s"] = time.time() - t0
     _save(path, results)
     if shape:
@@ -160,6 +180,8 @@ def main(argv=None):
     parser.add_argument("--no-slab-relax", action="store_true")
     parser.add_argument("--no-eos", action="store_true", help="skip the equation of state")
     parser.add_argument("--elastic", action="store_true", help="compute the elastic tensor")
+    parser.add_argument("--removal", action="store_true", help="energy to remove one surface molecule per face")
+    parser.add_argument("--removal-min-length", type=float, default=15.0)
     parser.add_argument("--ncpus", type=int, default=None)
     args = parser.parse_args(argv)
     from .calculators import crystal_calculator
@@ -169,7 +191,8 @@ def main(argv=None):
     run_crystal_workflow(args.cif, calc, args.out, faces=faces, max_index=args.max_index, n_faces=args.n_faces,
                          n_terminations=args.n_terminations, min_thickness=args.min_thickness,
                          min_lengths=args.min_lengths, max_atoms=args.max_atoms, vacuum=args.vacuum,
-                         relax_slabs=not args.no_slab_relax, compute_eos=not args.no_eos, compute_elastic=args.elastic)
+                         relax_slabs=not args.no_slab_relax, compute_eos=not args.no_eos, compute_elastic=args.elastic,
+                         removal_energies=args.removal, removal_min_length=args.removal_min_length)
 
 
 def _parse_face(text):

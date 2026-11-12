@@ -16,6 +16,30 @@ face_energies         gamma of several faces and terminations; the lowest
 thickness_convergence gamma against slab thickness, plus the linear-fit
                       estimate (E_slab(n) = n E_layer + 2 gamma A), which does not
                       depend on e_bulk and so removes bulk-reference error
+molecule_removal_energy  energy to take one surface molecule out of a slab
+                      (a terrace vacancy) into the gas phase
+
+Removal energies (eV and kJ/mol, positive = costs energy):
+
+    vertical   = E(slab - m) + E(m frozen) - E(slab)    nothing relaxes: the binding of
+                 that molecule to the cleaved surface (its intermolecular interaction energy)
+    vertical_relaxed  the same, taken on the relaxed slab: the binding once the surface
+                 has reorganised (larger than `vertical` when relaxation draws the surface
+                 molecules into stronger contacts, e.g. reoriented carbonyls)
+    adiabatic  = E(slab - m, relaxed) + E_gas - E(slab, relaxed)   the desorption energy
+                 to an isolated, relaxed molecule
+    deformation = E(m frozen) - E_gas    strain the crystal imposes on the molecule
+
+with the same central layer(s) fixed in both slab relaxations. In a pair-additive
+picture |E_latt| is half of one molecule's total binding (each pair is shared),
+so removing a bulk molecule costs 2|E_latt|, a kink-site molecule (half its
+neighbours) exactly |E_latt|, and a molecule in a flat terrace, which keeps
+more than half its neighbours, between |E_latt| and 2|E_latt|. The ratio to
+|E_latt| is reported when the lattice energy is given: a terrace value near 1
+means the face is weakly bound, near 2 that the surface molecule is held almost
+as tightly as in the bulk. The in-plane cell must be large
+enough that the vacancy's periodic images do not interact: build the slab with
+min_lengths of at least ~15 Angstrom.
 """
 from __future__ import annotations
 
@@ -120,3 +144,109 @@ def thickness_convergence(crystal: MolecularCrystal, calculator, hkl, bulk_energ
     area = rows[0]["area"]
     return {"rows": rows, "gamma_linear_fit_J_m2": float(intercept / (2 * area) * EV_A2_TO_J_M2),
             "energy_per_layer_fit": float(slope)}
+
+
+KJ_MOL_PER_EV = 96.48533212
+
+
+def _fixed_layer_atoms(atoms, layers, n_fixed):
+    """Indices of atoms in the n_fixed central layers (by the slab's "layer" array)."""
+    if not n_fixed:
+        return None
+    start = (layers - n_fixed) // 2
+    return np.flatnonzero(np.isin(atoms.arrays["layer"], list(range(start, start + n_fixed))))
+
+
+def surface_molecule(slab: Slab, side="top"):
+    """mol_id of the outermost molecule (highest COM on the top face, lowest on the bottom)."""
+    atoms = slab.atoms
+    mol, masses = atoms.arrays["mol_id"], atoms.get_masses()
+    ids = np.unique(mol)
+    z = np.array([masses[mol == m] @ atoms.positions[mol == m, 2] / masses[mol == m].sum() for m in ids])
+    return int(ids[np.argmax(z)] if side == "top" else ids[np.argmin(z)])
+
+
+def molecule_removal_energy(slab: Slab, calculator, gas_energy, *, molecule=None, side="top", relax=True,
+                            n_fixed_layers=1, fmax=0.02, steps=600, optimizer="BFGS", lattice_energy=None,
+                            min_image_distance=12.0):
+    """Energy to remove one surface molecule from slab (see the module docstring).
+
+    gas_energy: energy (eV) of the relaxed isolated molecule from the same
+    calculator, or {formula: energy} (results.json "gas") to pick the removed
+    molecule's species. molecule: mol_id to remove (default:
+    the outermost one on `side`). lattice_energy: E_latt per molecule (eV,
+    negative) to report the removal energies as a fraction of |E_latt|.
+    Returns a dict of energies plus "slab_atoms" (the intact slab, relaxed when relax=True)
+    and "vacancy_atoms" (the slab without the molecule, relaxed when relax=True).
+    """
+    calculator = resolve(calculator)
+    in_plane = np.linalg.norm(slab.atoms.cell.array[:2], axis=1)
+    if in_plane.min() < min_image_distance:
+        warnings.warn(f"in-plane cell vectors {np.round(in_plane, 1).tolist()} Angstrom: the vacancy is closer than "
+                      f"{min_image_distance} Angstrom to its periodic images; build the slab with larger min_lengths")
+    m = surface_molecule(slab, side) if molecule is None else int(molecule)
+    atoms = slab.atoms.copy()
+    gone = atoms.arrays["mol_id"] == m
+    if not gone.any():
+        raise ValueError(f"no molecule {m} in the slab")
+    atoms.calc = calculator
+    e_slab = float(atoms.get_potential_energy())
+
+    def isolated(a):
+        mol = a[gone].copy()
+        for name in ("mol_id", "layer"):
+            mol.arrays.pop(name, None)
+        mol.set_cell(None)
+        mol.pbc = False
+        return mol
+
+    frozen = isolated(atoms)
+    if isinstance(gas_energy, dict):
+        formula = frozen.get_chemical_formula(mode="hill")
+        if formula not in gas_energy:
+            raise ValueError(f"no gas-phase energy for {formula}; have {sorted(gas_energy)}")
+        gas_energy = gas_energy[formula]
+    frozen.calc = calculator
+    e_frozen = float(frozen.get_potential_energy())
+    vacancy = atoms[~gone]
+    vacancy.calc = calculator
+    e_vacancy = float(vacancy.get_potential_energy())
+    vertical = e_vacancy + e_frozen - e_slab
+    out = {
+        "hkl": tuple(slab.hkl), "termination": slab.termination.index, "side": side, "molecule": m,
+        "formula": frozen.get_chemical_formula(mode="hill"), "n_atoms_slab": len(atoms), "layers": slab.layers,
+        "in_plane_lengths": in_plane.tolist(), "gas_energy": float(gas_energy),
+        "vertical_eV": vertical, "vertical_kJ_mol": vertical * KJ_MOL_PER_EV,
+        "deformation_eV": e_frozen - gas_energy, "deformation_kJ_mol": (e_frozen - gas_energy) * KJ_MOL_PER_EV,
+    }
+    result_atoms = vacancy
+    if relax:
+        relaxed = atoms.copy()
+        e_slab_rel, conv_slab, n_slab = relax_positions(relaxed, calculator, fmax=fmax, steps=steps, optimizer=optimizer,
+                                                        fixed=_fixed_layer_atoms(relaxed, slab.layers, n_fixed_layers))
+        # vertical removal from the RELAXED surface: the molecule's binding once the surface has reorganised
+        frozen_rel = isolated(relaxed)
+        frozen_rel.calc = calculator
+        vac_rel = relaxed[~gone]
+        vac_rel.calc = calculator
+        vertical_rel = float(vac_rel.get_potential_energy()) + float(frozen_rel.get_potential_energy()) - e_slab_rel
+        e_vac_rel, conv_vac, n_vac = relax_positions(vac_rel, calculator, fmax=fmax, steps=steps, optimizer=optimizer,
+                                                     fixed=_fixed_layer_atoms(vac_rel, slab.layers, n_fixed_layers))
+        adiabatic = e_vac_rel + gas_energy - e_slab_rel
+        out.update(vertical_relaxed_eV=vertical_rel, vertical_relaxed_kJ_mol=vertical_rel * KJ_MOL_PER_EV,
+                   adiabatic_eV=adiabatic, adiabatic_kJ_mol=adiabatic * KJ_MOL_PER_EV,
+                   converged=bool(conv_slab and conv_vac), steps_slab=n_slab, steps_vacancy=n_vac)
+        if not (conv_slab and conv_vac):
+            warnings.warn(f"removal-energy relaxations for {slab.hkl} not converged in {steps} steps")
+        result_atoms = vac_rel
+        relaxed.calc = None
+        out["slab_atoms"] = relaxed
+    else:
+        out["slab_atoms"] = atoms
+    if lattice_energy:
+        out["vertical_over_lattice"] = vertical / abs(lattice_energy)
+        if relax:
+            out["vertical_relaxed_over_lattice"] = out["vertical_relaxed_eV"] / abs(lattice_energy)
+            out["adiabatic_over_lattice"] = out["adiabatic_eV"] / abs(lattice_energy)
+    out["vacancy_atoms"] = result_atoms
+    return out

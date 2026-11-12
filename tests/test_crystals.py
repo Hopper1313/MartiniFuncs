@@ -186,6 +186,27 @@ class SlabTests(unittest.TestCase):
                 d = periodic_pairs(s.atoms.positions, s.atoms.cell.array, s.atoms.pbc, 1.5)[3]
                 self.assertEqual(len(d) // 2, s.n_molecules * 12)        # only the C-C and C-H bonds
 
+    def test_layers_hold_their_molecules(self):
+        # Molecule 0 moved onto the origin: its COM height is 0 up to round-off, the case
+        # (inversion centres, e.g. anthracene) where np.mod(-1e-17, 1) = 1 put it a layer too high.
+        atoms = self.crystal.atoms.copy()
+        atoms.positions -= self.crystal.centers_of_mass[0]
+        shifted = cif.crystal_from_atoms(atoms)
+        for crystal in (self.crystal, shifted):
+            for hkl in [(0, 0, 1), (1, 0, 0), (0, 1, 1), (1, 1, -1)]:
+                bulk = slabs.orient(crystal, hkl)
+                self.assertTrue(np.all((bulk.com_heights >= 0) & (bulk.com_heights < 1)))
+                for term in slabs.terminations(bulk):
+                    s = slabs.build_slab(crystal, hkl, layers=3, termination=term)
+                    a = s.atoms
+                    m, mol, layer = a.get_masses(), a.arrays["mol_id"], a.arrays["layer"]
+                    z = np.array([m[mol == k] @ a.positions[mol == k, 2] / m[mol == k].sum() for k in range(s.n_molecules)])
+                    lay = np.array([layer[mol == k][0] for k in range(s.n_molecules)])
+                    # COMs of layer k lie within one d_hkl band above the band of layer k - 1
+                    bottom = z[lay == 0].min()
+                    band = np.floor((z - bottom) / s.d_spacing + 1e-6)
+                    self.assertTrue(np.array_equal(band, lay), (hkl, term.index, band, lay))
+
     def test_thickness_and_size_limits(self):
         s = slabs.build_slab(self.crystal, (0, 1, 0), min_thickness=20)
         self.assertGreaterEqual(s.thickness, 20)
@@ -251,6 +272,14 @@ class PropertyTests(unittest.TestCase):
         np.testing.assert_allclose(atoms.get_stress(), calculate_numerical_stress(atoms, eps=1e-5), atol=1e-6)
         np.testing.assert_allclose(atoms.get_forces(), calculate_numerical_forces(atoms, eps=1e-5), atol=1e-6)
 
+    def test_gas_reference_carries_no_charge_or_spin_by_default(self):
+        # UMA reads atoms.info charge/spin; the crystal has none, so the gas molecule must not either
+        mol, _ = bulk.relax_molecule(self.crystal.molecule(0), self.calc, fmax=0.1, steps=20)
+        self.assertNotIn("spin", mol.info)
+        self.assertNotIn("charge", mol.info)
+        mol, _ = bulk.relax_molecule(self.crystal.molecule(0), self.calc, fmax=0.1, steps=20, charge=0, spin=1)
+        self.assertEqual((mol.info["charge"], mol.info["spin"]), (0, 1))
+
     def test_lattice_energy_bookkeeping(self):
         result = bulk.lattice_energy(self.crystal, crystal_energy=-4.0, gas_energies={"C6H6": 0.5})
         self.assertAlmostEqual(result["lattice_energy_eV"], -1.5)
@@ -262,6 +291,39 @@ class PropertyTests(unittest.TestCase):
         slab = slabs.build_slab(relaxed, (0, 0, 1), layers=2)
         r = surfaces.surface_energy(slab, self.calc, info["energy_per_molecule"], relax=False, crystal=relaxed)
         self.assertGreater(r["gamma_J_m2"], 0)
+
+    def test_molecule_removal_energy(self):
+        relaxed, info = bulk.relax_bulk(self.crystal, self.calc, fmax=0.05, steps=200, symmetrize=False)
+        gas = bulk.relax_molecule(relaxed.molecule(0), self.calc)[1]
+        latt = bulk.lattice_energy(relaxed, info["energy"], {"C6H6": gas})["lattice_energy_eV"]
+        slab = slabs.build_slab(relaxed, (0, 0, 1), layers=3, min_lengths=12)
+        r = surfaces.molecule_removal_energy(slab, self.calc, {"C6H6": gas}, relax=True, fmax=0.1, steps=100,
+                                             lattice_energy=latt)
+        # the removed molecule is the outermost one and leaves one molecule's worth of atoms behind
+        self.assertEqual(r["molecule"], surfaces.surface_molecule(slab))
+        self.assertEqual(len(r["vacancy_atoms"]), len(slab.atoms) - 12)
+        # pulling a molecule out of a bound surface costs energy, less than from the bulk (2 |E_latt|)
+        self.assertGreater(r["vertical_eV"], 0)
+        self.assertGreater(r["adiabatic_eV"], 0)
+        self.assertGreater(r["vertical_relaxed_eV"], 0)
+        self.assertLess(r["vertical_over_lattice"], 2.0)
+        self.assertEqual(len(r["slab_atoms"]), len(slab.atoms))
+        # vertical = intermolecular binding: E(vacancy) + E(frozen) - E(slab), checked directly
+        a = slab.atoms.copy(); a.calc = self.calc
+        gone = a.arrays["mol_id"] == r["molecule"]
+        v = a[~gone]; v.calc = self.calc
+        m = a[gone]; m.set_cell(None); m.pbc = False; del m.arrays["mol_id"]; del m.arrays["layer"]; m.calc = self.calc
+        self.assertAlmostEqual(r["vertical_eV"], v.get_potential_energy() + m.get_potential_energy()
+                               - a.get_potential_energy(), places=8)
+        # the same check for the vertical energy on the relaxed slab that the function returns
+        rs = r["slab_atoms"].copy(); rs.calc = self.calc
+        rv = rs[~gone]; rv.calc = self.calc
+        rm = rs[gone]; rm.set_cell(None); rm.pbc = False; del rm.arrays["mol_id"]; del rm.arrays["layer"]; rm.calc = self.calc
+        self.assertAlmostEqual(r["vertical_relaxed_eV"], rv.get_potential_energy() + rm.get_potential_energy()
+                               - rs.get_potential_energy(), places=6)
+        with self.assertWarnsRegex(UserWarning, "periodic images"):
+            surfaces.molecule_removal_energy(slabs.build_slab(relaxed, (0, 0, 1), layers=2), self.calc, gas,
+                                             relax=False)
 
     def test_workflow_end_to_end(self):
         from MartiniFuncs.crystals.workflow import run_crystal_workflow
@@ -275,6 +337,7 @@ class PropertyTests(unittest.TestCase):
             self.assertEqual(len(saved["surfaces"]), 3)
             self.assertAlmostEqual(sum(results["wulff"]["area_fractions"].values()), 1.0, places=6)
             self.assertTrue((Path(tmp) / "out" / "bulk_relaxed.cif").exists())
+            self.assertNotIn("removal", saved)
             # two face families cannot close a Wulff shape: reported, not raised
             partial = run_crystal_workflow(path, self.calc, Path(tmp) / "out2", faces=[(0, 1, 0), (0, 0, 1)],
                                            n_terminations=1, layers=2, min_lengths=None, bulk_fmax=0.05,

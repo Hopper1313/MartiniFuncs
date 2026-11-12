@@ -99,16 +99,28 @@ def relax_bulk(crystal: MolecularCrystal, calculator, *, fmax=0.01, steps=1000, 
     return relaxed, result
 
 
-def relax_molecule(molecule, calculator, *, fmax=0.01, steps=1000, optimizer="BFGS", box=None, charge=0, spin=1):
+def relax_molecule(molecule, calculator, *, fmax=0.01, steps=1000, optimizer="BFGS", box=None, charge=None, spin=None):
     """Relaxed isolated molecule and its energy (eV).
 
     box=None keeps it non-periodic; box=L puts it in a periodic L x L x L cell
     (for calculators that need a cell; L must exceed twice the model cutoff
     plus the molecule size).
+
+    charge/spin are written to atoms.info only when given. Leave them unset for
+    UMA's omc (and omat) heads: the crystal and slabs carry no charge/spin, and
+    UMA's energy depends on them (spin=1 shifts maleic anhydride by 0.28 eV under
+    omc), so setting them on the gas molecule alone makes lattice and removal
+    energies inconsistent. The omol head needs them (charge=0, spin=1 for a
+    closed-shell molecule), and then every structure must carry them.
     """
     mol = molecule.copy()
     mol.arrays.pop("mol_id", None)
-    mol.info.update(charge=charge, spin=spin)
+    for key in ("charge", "spin"):
+        mol.info.pop(key, None)
+    if charge is not None:
+        mol.info["charge"] = int(charge)
+    if spin is not None:
+        mol.info["spin"] = int(spin)
     if box:
         mol.set_cell([box] * 3)
         mol.center()
