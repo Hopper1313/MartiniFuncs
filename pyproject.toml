@@ -20,6 +20,7 @@ dependencies = [
 
 [project.optional-dependencies]
 uma = ["fairchem-core>=2.22,<3"]
+crystals = ["pymatgen>=2024.1", "spglib>=2.0"]
 notebooks = ["ipython", "ipykernel", "jupyterlab", "matplotlib"]
 
 [project.scripts]
