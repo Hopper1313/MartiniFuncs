@@ -297,6 +297,47 @@ class InterfaceTests(unittest.TestCase):
             interfaces.build_interface(self.slab, other, match, strain_fraction=1.5)
 
 
+    def test_repeat_keeps_strain_and_scales_cell(self):
+        other = slabs.build_slab(self.crystal, (0, 0, 1), layers=2)
+        other.atoms.set_cell(other.atoms.cell.array * [[1.02], [1.01], [1]], scale_atoms=True)
+        match = interfaces.match_lattices(self.slab, other, max_area=200, max_length_tol=0.05)[0]
+        one = interfaces.build_interface(self.slab, other, match, strain_fraction=0.5)
+        two = interfaces.build_interface(self.slab, other, match, strain_fraction=0.5, repeat=(2, 1))
+        self.assertEqual(len(two), 2 * len(one))
+        np.testing.assert_allclose(two.cell.array[0, :2], 2 * one.cell.array[0, :2], atol=1e-9)
+        np.testing.assert_allclose(two.cell.array[1, :2], one.cell.array[1, :2], atol=1e-9)
+        np.testing.assert_allclose(two.info["strain_b"], one.info["strain_b"], atol=1e-12)
+        seam1 = interfaces.build_interface(self.slab, other, match, strain_fraction=None).info["seam_misfit_A"]
+        seam2 = interfaces.build_interface(self.slab, other, match, strain_fraction=None,
+                                           repeat=2).info["seam_misfit_A"]
+        np.testing.assert_allclose(seam2, 2 * np.asarray(seam1), rtol=1e-9)
+        with self.assertRaisesRegex(ValueError, "repeat"):
+            interfaces.build_interface(self.slab, other, match, repeat=0)
+
+    def test_interface_options_predict_real_builds(self):
+        # second crystal: the same benzene cell stretched 3 %, so the two faces need a coincident cell
+        stretched = cif.crystal_from_atoms(self.crystal.atoms.copy())
+        stretched.atoms.set_cell(stretched.atoms.cell.array * 1.03, scale_atoms=True)
+        stretched = cif.crystal_from_atoms(stretched.atoms)
+        opts = interfaces.interface_options(self.crystal, (0, 0, 1), stretched, (0, 0, 1), thicknesses=(8.0, (8.0, 14.0)),
+                                            repeats=((1, 1), (2, 1)), max_area=600, max_strain=0.05,
+                                            max_length_tol=0.06, max_angle_tol=0.06)
+        self.assertTrue(opts)
+        self.assertEqual([o.n_atoms for o in opts], sorted(o.n_atoms for o in opts))
+        self.assertTrue(all(o.max_strain <= 0.05 for o in opts))
+        for o in (opts[0], opts[-1]):
+            built = o.build(strain_fraction=0.5)
+            self.assertEqual(len(built), o.n_atoms)
+            np.testing.assert_allclose(np.linalg.norm(built.cell.array[:2, :2], axis=1),
+                                       o.cell_lengths, rtol=0.06)
+            seam = o.build(strain_fraction=None).info["seam_misfit_A"]
+            np.testing.assert_allclose(seam, o.seam_misfit, atol=1e-6)
+        capped = interfaces.interface_options(self.crystal, (0, 0, 1), stretched, (0, 0, 1), thicknesses=(8.0,),
+                                              max_area=600, max_strain=0.05, max_length_tol=0.06, max_angle_tol=0.06,
+                                              max_atoms=opts[0].n_atoms)
+        self.assertTrue(all(o.n_atoms <= opts[0].n_atoms for o in capped))
+
+
 class PropertyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

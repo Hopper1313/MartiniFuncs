@@ -72,6 +72,35 @@ vector (0.26 and 0.30 Angstrom for anthracene (1 1 0) / maleic anhydride (1 1 0)
 incommensurate lattices cannot share one periodic cell without either strain or a seam; pick the
 seam when the slabs' own lattices matter more than a defect line at the cell edge.
 
+### Interface size
+
+The atom count is the in-plane area times each slab's thickness. Three controls set it:
+
+| Control | What it changes |
+|---|---|
+| which `LatticeMatch` you pass | the coincident cell: smaller cells need more strain |
+| `build_interface(..., repeat=(n, m))` | the matched cell repeated n x m times; strain unchanged, a seam misfit grows by n and m |
+| `build_slab(layers=... / min_thickness=...)` | each slab's thickness, separately |
+
+`interface_options` lists every combination within your limits, with exact atom counts:
+
+```python
+from MartiniFuncs.crystals import interface_options
+
+opts = interface_options(ant, (1, 1, 0), mal, (1, 1, 0), thicknesses=(10, 15, 20, 30),
+                         repeats=((1, 1), (2, 1), (1, 2), (2, 2)), max_strain=0.015,
+                         min_atoms=2000, max_atoms=12000)
+for o in opts:
+    print(o.n_atoms, round(o.area), o.cell_lengths, o.max_strain, o.repeat, o.layers_a, o.layers_b, o.seam_misfit)
+interface = opts[1].build(strain_fraction=0.5, gap=3.0, vacuum=20)      # or strain_fraction=None
+```
+
+`thicknesses` also takes `(thickness_a, thickness_b)` pairs to size the slabs separately. By default
+only cells on the size/strain front are kept (no smaller cell has less or equal strain);
+`all_cells=True` keeps every match. For anthracene (1 1 0) / maleic anhydride (1 1 0) on the
+UMA-relaxed cells, the smallest interfaces under 1.5 % strain are 2,736 atoms (1,141 Å², 1.33 %)
+and 3,240 atoms (1,348 Å², 0.81 %), both with 12–14 Å slabs.
+
 ## Properties with an MLIP
 
 ```python

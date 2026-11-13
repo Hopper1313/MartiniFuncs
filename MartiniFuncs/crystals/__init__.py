@@ -5,7 +5,8 @@ Modules
 cif           read_cif (symmetry operators from the CIF, disorder, whole molecules), MolecularCrystal
 slabs         Miller-plane bases, molecule-preserving terminations, build_slab, in-plane supercells,
               flip_slab
-interfaces    match_lattices (pymatgen ZSL + strain), build_interface (rigid-molecule strain),
+interfaces    match_lattices (pymatgen ZSL + strain), build_interface (rigid-molecule strain, or a
+              seam with strain_fraction=None; repeat=(n, m)), interface_options (sizes),
               set_collision_velocities, separation_curve
 calculators   crystal_calculator: UMA (task omc), MACE-OFF, MACE-MP, any ASE calculator
 bulk          relax_bulk, gas references, lattice_energy, equation_of_state, elastic_constants
@@ -22,7 +23,7 @@ from importlib import import_module
 _API = {
     "MolecularCrystal": "cif", "read_cif": "cif", "crystal_from_atoms": "cif", "write_cif": "cif",
     "build_slab": "slabs", "terminations": "slabs", "flip_slab": "slabs", "slab_supercell": "slabs",
-    "match_lattices": "interfaces", "build_interface": "interfaces", "set_collision_velocities": "interfaces",
+    "match_lattices": "interfaces", "build_interface": "interfaces", "interface_options": "interfaces", "set_collision_velocities": "interfaces",
     "crystal_calculator": "calculators",
     "relax_bulk": "bulk", "lattice_energy": "bulk", "gas_references": "bulk",
     "equation_of_state": "bulk", "elastic_constants": "bulk",

@@ -23,20 +23,27 @@ either strain or such a seam. B is stacked above A with the closest A-B atom pai
 gap along z; c has vacuum above and below. Per-atom arrays: "slab" (0 = A,
 1 = B), "mol_id" (unique over both), "layer".
 
+Size: the atom count is (in-plane area) x (each slab's thickness). match_lattices
+lists the coincident cells (smaller cells need more strain); build_interface's
+repeat=(n, m) enlarges any matched cell n x m times at the same strain; slab
+thickness is set per crystal with build_slab(layers=... or min_thickness=...).
+interface_options tabulates all of it for a pair of faces, filtered by atom
+count and strain, and each option's build() makes that interface.
+
 set_collision_velocities gives each slab a rigid velocity along z toward the
 other (relative speed in m/s), optionally on top of a Maxwell-Boltzmann
 thermal distribution with zero net momentum per slab.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 import warnings
 
 import numpy as np
 from ase import Atoms, units
 from scipy.linalg import fractional_matrix_power, polar
 
-from .slabs import Slab, repeat_inplane
+from .slabs import Slab, build_slab, flip_slab, repeat_inplane
 
 
 @dataclass
@@ -56,10 +63,33 @@ class LatticeMatch:
     def area_strain(self):
         return float(np.linalg.det(self.strain + np.eye(2)) - 1)
 
+    def repeated(self, repeat):
+        """The same match on a larger cell: both supercells repeated n x m times (strain unchanged).
+
+        repeat: an integer n (n x n), a pair (n, m), or a 2x2 integer matrix
+        acting on the matched supercell vectors.
+        """
+        N = _repeat_matrix(repeat)
+        k = round(abs(np.linalg.det(N)))
+        return replace(self, matrix_a=N @ np.asarray(self.matrix_a), matrix_b=N @ np.asarray(self.matrix_b),
+                       area=self.area * k, n_atoms=self.n_atoms * k)
+
     def summary(self):
         return {"matrix_a": self.matrix_a.tolist(), "matrix_b": self.matrix_b.tolist(), "area": self.area,
                 "max_strain": self.max_strain, "area_strain": self.area_strain,
                 "strain": self.strain.tolist(), "rotation_deg": self.rotation_deg, "n_atoms": self.n_atoms}
+
+
+def _repeat_matrix(repeat):
+    if np.ndim(repeat) == 0:
+        N = np.diag([int(repeat)] * 2)
+    elif np.ndim(repeat) == 1:
+        N = np.diag([int(x) for x in repeat])
+    else:
+        N = np.asarray(repeat, dtype=int)
+    if N.shape != (2, 2) or round(np.linalg.det(N)) < 1:
+        raise ValueError(f"repeat must be a positive integer, a pair of them or a 2x2 matrix with det >= 1: {repeat}")
+    return N
 
 
 def _vectors(x):
@@ -149,7 +179,7 @@ def _apply_inplane(atoms, M, rigid):
 
 
 def build_interface(slab_a: Slab, slab_b: Slab, match: LatticeMatch, *, gap=3.0, vacuum=20.0,
-                    strain_fraction=1.0, rigid_molecules=True):
+                    strain_fraction=1.0, rigid_molecules=True, repeat=1):
     """B stacked above A in the matched supercell, the closest A-B atoms gap (Angstrom) apart along z.
 
     B's bottom face (-h -k -l) meets A's top face (h k l). To bring B's top face
@@ -161,7 +191,10 @@ def build_interface(slab_a: Slab, slab_b: Slab, match: LatticeMatch, *, gap=3.0,
     strain_fraction: 1 strains only B onto A's lattice, 0 only A onto B's, 0.5
     shares it; None strains neither (A's cell, B only rotated, the mismatch
     left as a seam at the cell boundary; see the module docstring).
+    repeat: enlarge the matched cell, e.g. (2, 1) doubles it along its first
+    vector; strain is unchanged, a seam misfit grows with the cell.
     """
+    match = match.repeated(repeat)
     A = repeat_inplane(slab_a.atoms, match.matrix_a)
     B = repeat_inplane(slab_b.atoms, match.matrix_b)
     ca, cb = A.cell.array[:2, :2], B.cell.array[:2, :2]
@@ -266,3 +299,102 @@ def separation_curve(interface, calculator, gaps, *, area=None):
     energies = np.array(energies)
     work = (energies[np.argmax(gaps)] - energies.min()) / area * 16.02176634
     return {"gaps": gaps.tolist(), "energies": energies.tolist(), "work_of_separation_J_m2": float(work)}
+
+
+@dataclass
+class InterfaceOption:
+    """One interface size: a coincident cell (possibly repeated) and a thickness for each slab."""
+
+    match: LatticeMatch           # already repeated
+    repeat: tuple
+    layers_a: int
+    layers_b: int
+    thickness_a: float            # layers * d_hkl (Angstrom)
+    thickness_b: float
+    n_atoms: int
+    cell_lengths: tuple           # in-plane cell vector lengths (Angstrom)
+    seam_misfit: tuple            # Angstrom per cell vector if built with strain_fraction=None
+    _source: dict = field(default=None, repr=False)
+
+    @property
+    def area(self):
+        return self.match.area
+
+    @property
+    def max_strain(self):
+        return self.match.max_strain
+
+    def summary(self):
+        return {"area": self.area, "cell_lengths": list(self.cell_lengths), "max_strain": self.max_strain,
+                "repeat": list(self.repeat), "layers_a": self.layers_a, "layers_b": self.layers_b,
+                "thickness_a": self.thickness_a, "thickness_b": self.thickness_b, "n_atoms": self.n_atoms,
+                "seam_misfit": list(self.seam_misfit), "matrix_a": self.match.matrix_a.tolist(),
+                "matrix_b": self.match.matrix_b.tolist()}
+
+    def build(self, *, gap=3.0, vacuum=20.0, strain_fraction=0.5, rigid_molecules=True):
+        """Build this interface (the slabs are cut again from the crystals given to interface_options)."""
+        s = self._source
+        a = build_slab(s["crystal_a"], s["hkl_a"], layers=self.layers_a, termination=s["termination_a"],
+                       vacuum=vacuum)
+        b = build_slab(s["crystal_b"], s["hkl_b"], layers=self.layers_b, termination=s["termination_b"],
+                       vacuum=vacuum)
+        if s["flip_b"]:
+            b = flip_slab(b)
+        return build_interface(a, b, self.match, gap=gap, vacuum=vacuum, strain_fraction=strain_fraction,
+                               rigid_molecules=rigid_molecules)
+
+
+def interface_options(crystal_a, hkl_a, crystal_b, hkl_b, *, termination_a=0, termination_b=0, flip_b=False,
+                      thicknesses=(10.0, 15.0, 20.0, 30.0), repeats=((1, 1), (2, 1), (1, 2), (2, 2)),
+                      min_atoms=None, max_atoms=None, max_strain=0.02, max_area=1500.0,
+                      max_length_tol=0.04, max_angle_tol=0.04, all_cells=False):
+    """Interface sizes for two faces: every (cell, repeat, thickness) within the limits, smallest first.
+
+    thicknesses: slab thicknesses in Angstrom (each slab gets the fewest whole
+    layers reaching it), or (thickness_a, thickness_b) pairs to size them
+    separately. repeats: in-plane repeats of each matched cell. Coincident
+    cells come from match_lattices; by default only cells on the size/strain
+    front are kept (no smaller cell has less or equal strain), all_cells=True
+    keeps every match. min_atoms/max_atoms/max_strain filter the result.
+    Returns InterfaceOption objects sorted by atom count, then strain; call
+    option.build(strain_fraction=...) to make one. Atom counts are exact.
+    """
+    from .slabs import terminations as _terminations
+    ta = _terminations(crystal_a, hkl_a)[termination_a]
+    tb = _terminations(crystal_b, hkl_b)[termination_b]
+    a1 = build_slab(crystal_a, hkl_a, layers=1, termination=ta)
+    b1 = build_slab(crystal_b, hkl_b, layers=1, termination=tb)
+    if flip_b:
+        b1 = flip_slab(b1)
+    matches = match_lattices(a1, b1, max_area=max_area, max_length_tol=max_length_tol,
+                             max_angle_tol=max_angle_tol, max_strain=max_strain, max_matches=10 ** 6, sort="area")
+    if not all_cells:
+        front, lowest = [], np.inf
+        for m in sorted(matches, key=lambda m: (round(m.area, 3), m.max_strain)):
+            if m.max_strain < lowest - 1e-9:
+                front.append(m)
+                lowest = m.max_strain
+        matches = front
+    pairs = [(t, t) if np.ndim(t) == 0 else tuple(t) for t in thicknesses]
+    va, vb = a1.atoms.cell.array[:2, :2], b1.atoms.cell.array[:2, :2]
+    source = {"crystal_a": crystal_a, "crystal_b": crystal_b, "hkl_a": tuple(hkl_a), "hkl_b": tuple(hkl_b),
+              "termination_a": ta, "termination_b": tb, "flip_b": flip_b}
+    options = []
+    for m0 in matches:
+        for rep in repeats:
+            m = m0.repeated(rep)
+            ca, cb = m.matrix_a @ va, m.matrix_b @ vb
+            _, R, _ = deformation(cb, ca)
+            seam = tuple(float(x) for x in np.linalg.norm(ca - cb @ R.T, axis=1))
+            na, nb = round(abs(np.linalg.det(m.matrix_a))), round(abs(np.linalg.det(m.matrix_b)))
+            for t_a, t_b in pairs:
+                la = max(1, int(np.ceil(float(t_a) / a1.d_spacing - 1e-9)))
+                lb = max(1, int(np.ceil(float(t_b) / b1.d_spacing - 1e-9)))
+                n = la * na * len(a1.atoms) + lb * nb * len(b1.atoms)
+                if (min_atoms and n < min_atoms) or (max_atoms and n > max_atoms):
+                    continue
+                options.append(InterfaceOption(m, tuple(int(x) for x in np.diag(_repeat_matrix(rep))), la, lb,
+                                               la * a1.d_spacing, lb * b1.d_spacing, int(n),
+                                               tuple(float(x) for x in np.linalg.norm(ca, axis=1)), seam, source))
+    options.sort(key=lambda o: (o.n_atoms, o.max_strain))
+    return options
