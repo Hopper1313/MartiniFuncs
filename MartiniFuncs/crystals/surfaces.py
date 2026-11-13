@@ -18,6 +18,9 @@ thickness_convergence gamma against slab thickness, plus the linear-fit
                       depend on e_bulk and so removes bulk-reference error
 molecule_removal_energy  energy to take one surface molecule out of a slab
                       (a terrace vacancy) into the gas phase
+surface_sites         the distinct exposed molecules of a face (different
+                      positions or heights in the surface cell)
+site_removal_energies removal energies of every one of those sites
 
 Removal energies (eV and kJ/mol, positive = costs energy):
 
@@ -250,3 +253,134 @@ def molecule_removal_energy(slab: Slab, calculator, gas_energy, *, molecule=None
             out["adiabatic_over_lattice"] = out["adiabatic_eV"] / abs(lattice_energy)
     out["vacancy_atoms"] = result_atoms
     return out
+
+
+def surface_sites(slab: Slab, side="top", depth=3.0, tol=0.3):
+    """Distinct exposed molecules of a slab face.
+
+    A molecule is exposed when one of its atoms lies within `depth` Angstrom of
+    the outermost atom on `side`. Exposed molecules that are copies of each
+    other under the primitive surface lattice (the slab may be an in-plane
+    supercell) form one site; molecules related only by a point operation
+    (a 2-fold axis or a glide) stay separate sites, and their removal energies
+    then come out equal. Returns a list of dicts, most exposed first: site
+    index, representative mol_id (the copy nearest the middle of the cell), all
+    member mol_ids, depth below the outermost atom of the molecule's outermost
+    atom and of its centre of mass, and its fractional position in the
+    primitive surface cell.
+    """
+    atoms = slab.atoms
+    mol, masses, pos = atoms.arrays["mol_id"], atoms.get_masses(), atoms.positions
+    sign = 1.0 if side == "top" else -1.0
+    outer = (pos[:, 2] * sign).max()
+    S = np.asarray(slab.inplane, dtype=float)
+    prim = np.linalg.inv(S) @ atoms.cell.array[:2, :2]           # primitive in-plane vectors, slab frame
+    inv_prim = np.linalg.inv(prim)
+    inv_cell = np.linalg.inv(atoms.cell.array[:2, :2])
+
+    def com_of(m):
+        idx = mol == m
+        return masses[idx] @ pos[idx] / masses[idx].sum()
+
+    sites = []
+    for m in np.unique(mol):
+        extreme = (pos[mol == m, 2] * sign).max()
+        if outer - extreme > depth:
+            continue
+        com = com_of(m)
+        frac = com[:2] @ inv_prim
+        frac -= np.floor(frac + 1e-9)
+        com_depth = outer - sign * com[2]
+        for s in sites:
+            d = frac - s["frac"]
+            d -= np.round(d)
+            if np.linalg.norm(d @ prim) < tol and abs(com_depth - s["com_depth"]) < tol:
+                s["members"].append(int(m))
+                break
+        else:
+            sites.append({"frac": frac, "com_depth": float(com_depth), "atom_depth": float(outer - extreme),
+                          "members": [int(m)]})
+    for s in sites:
+        s["molecule"] = min(s["members"], key=lambda mm: np.linalg.norm(com_of(mm)[:2] @ inv_cell - 0.5))
+        s["frac"] = [float(x) for x in s["frac"]]
+    sites.sort(key=lambda s: (round(s["atom_depth"], 2), s["com_depth"]))
+    for k, s in enumerate(sites):
+        s["site"] = k
+    return sites
+
+
+def site_removal_energies(slab: Slab, calculator, gas_energy, *, side="top", depth=3.0, relax=True,
+                          n_fixed_layers=1, fmax=0.02, steps=600, optimizer="BFGS", lattice_energy=None,
+                          min_image_distance=12.0, sites=None):
+    """Removal energies (as in molecule_removal_energy) of every distinct exposed molecule (surface_sites).
+
+    The intact slab is evaluated, and relaxed, once; each site then costs two
+    single points and one vacancy relaxation. gas_energy: eV or {formula: eV}.
+    Returns {"sites": [rows], "slab_atoms": intact (relaxed) slab, "vacancies":
+    {site: vacancy Atoms}, ...}; each row holds the site description and its
+    vertical, vertical_relaxed and adiabatic energies (eV, kJ/mol, / |E_latt|).
+    """
+    calculator = resolve(calculator)
+    in_plane = np.linalg.norm(slab.atoms.cell.array[:2], axis=1)
+    if in_plane.min() < min_image_distance:
+        warnings.warn(f"in-plane cell vectors {np.round(in_plane, 1).tolist()} Angstrom: each vacancy is closer than "
+                      f"{min_image_distance} Angstrom to its periodic images; build the slab with larger min_lengths")
+    sites = surface_sites(slab, side, depth) if sites is None else sites
+    atoms = slab.atoms.copy()
+    atoms.calc = calculator
+    e_slab = float(atoms.get_potential_energy())
+    relaxed, e_slab_rel, conv_slab, n_slab = atoms, e_slab, True, 0
+    if relax:
+        relaxed = atoms.copy()
+        e_slab_rel, conv_slab, n_slab = relax_positions(relaxed, calculator, fmax=fmax, steps=steps,
+                                                        optimizer=optimizer,
+                                                        fixed=_fixed_layer_atoms(relaxed, slab.layers, n_fixed_layers))
+
+    def isolated(a, gone):
+        part = a[gone].copy()
+        for name in ("mol_id", "layer"):
+            part.arrays.pop(name, None)
+        part.set_cell(None)
+        part.pbc = False
+        part.calc = calculator
+        return part
+
+    def single(a):
+        a = a.copy()
+        a.calc = calculator
+        return float(a.get_potential_energy())
+
+    rows, vacancies = [], {}
+    for s in sites:
+        gone = atoms.arrays["mol_id"] == s["molecule"]
+        frozen = isolated(atoms, gone)
+        formula = frozen.get_chemical_formula(mode="hill")
+        e_gas = gas_energy[formula] if isinstance(gas_energy, dict) else float(gas_energy)
+        e_frozen = float(frozen.get_potential_energy())
+        row = dict(s, hkl=tuple(slab.hkl), termination=slab.termination.index, side=side, formula=formula,
+                   multiplicity=len(s["members"]), n_atoms_slab=len(atoms), layers=slab.layers,
+                   in_plane_lengths=in_plane.tolist(), gas_energy=e_gas,
+                   vertical_eV=single(atoms[~gone]) + e_frozen - e_slab, deformation_eV=e_frozen - e_gas)
+        vacancy = atoms[~gone]
+        if relax:
+            row["vertical_relaxed_eV"] = (single(relaxed[~gone]) + float(isolated(relaxed, gone).get_potential_energy())
+                                          - e_slab_rel)
+            vacancy = relaxed[~gone]
+            e_vac, conv_vac, n_vac = relax_positions(vacancy, calculator, fmax=fmax, steps=steps, optimizer=optimizer,
+                                                     fixed=_fixed_layer_atoms(vacancy, slab.layers, n_fixed_layers))
+            vacancy.calc = None
+            row.update(adiabatic_eV=e_vac + e_gas - e_slab_rel, converged=bool(conv_slab and conv_vac),
+                       steps_slab=n_slab, steps_vacancy=n_vac)
+            if not (conv_slab and conv_vac):
+                warnings.warn(f"site {s['site']} of {slab.hkl}: relaxations not converged in {steps} steps")
+        for key in ("vertical", "vertical_relaxed", "adiabatic", "deformation"):
+            if f"{key}_eV" in row:
+                row[f"{key}_kJ_mol"] = row[f"{key}_eV"] * KJ_MOL_PER_EV
+                if lattice_energy and key != "deformation":
+                    row[f"{key}_over_lattice"] = row[f"{key}_eV"] / abs(lattice_energy)
+        rows.append(row)
+        vacancies[s["site"]] = vacancy
+    relaxed = relaxed.copy()
+    relaxed.calc = None
+    return {"sites": rows, "slab_atoms": relaxed, "vacancies": vacancies,
+            "slab_energy": e_slab, "slab_energy_relaxed": e_slab_rel}

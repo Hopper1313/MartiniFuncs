@@ -62,7 +62,15 @@ least strained). `build_interface` puts B above A. By default B's bottom face (-
 A's top face (h k l). To bring B's (h k l) face down instead, match and build with
 `flip_slab(b)`: flipping mirrors the in-plane lattice, so it must be done before matching.
 `strain_fraction` puts the strain all in B (1), all in A (0) or splits it (0.5). With
-`rigid_molecules=True` only molecular centres move with the strain, so no bond is stretched.
+`rigid_molecules=True` only molecular centres move with the strain, so no bond is stretched,
+but the in-plane spacing of the molecules changes by up to the lattice mismatch.
+
+`strain_fraction=None` strains neither slab: the cell is A's, B is only rotated and keeps its own
+spacing, and the mismatch collects at the cell boundary as a seam. `atoms.info["seam_misfit_A"]`
+gives how far molecules across the boundary sit from their crystal positions, one value per cell
+vector (0.26 and 0.30 Angstrom for anthracene (1 1 0) / maleic anhydride (1 1 0)). Two
+incommensurate lattices cannot share one periodic cell without either strain or a seam; pick the
+seam when the slabs' own lattices matter more than a defect line at the cell edge.
 
 ## Properties with an MLIP
 

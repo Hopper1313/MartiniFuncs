@@ -13,7 +13,13 @@ build_interface repeats both slabs, rotates B in plane by R, and strains it
 by U (strain_fraction=1: all strain in B; 0: all in A; 0.5: shared). With
 rigid_molecules=True (default) only molecular centres of mass are strained
 and each molecule keeps its internal geometry, so bond lengths are not
-distorted. B is stacked above A with the closest A-B atom pair separated by
+distorted, but the spacing of the molecules in plane is, by up to the
+mismatch. strain_fraction=None strains neither slab: both keep their own
+lattice spacing, the cell is A's, B is only rotated, and the mismatch collects
+at the cell boundary as a seam (molecules across it are closer or farther
+apart than in the crystal by info["seam_misfit_A"], one value per cell
+vector). Two incommensurate lattices cannot share one periodic cell without
+either strain or such a seam. B is stacked above A with the closest A-B atom pair separated by
 gap along z; c has vacuum above and below. Per-atom arrays: "slab" (0 = A,
 1 = B), "mol_id" (unique over both), "layer".
 
@@ -151,16 +157,35 @@ def build_interface(slab_a: Slab, slab_b: Slab, match: LatticeMatch, *, gap=3.0,
     the in-plane lattice, so it must happen before match_lattices. Returns an
     Atoms object with "slab", "mol_id" and "layer" arrays and the match and the
     strains applied to each slab in atoms.info.
+
+    strain_fraction: 1 strains only B onto A's lattice, 0 only A onto B's, 0.5
+    shares it; None strains neither (A's cell, B only rotated, the mismatch
+    left as a seam at the cell boundary; see the module docstring).
     """
     A = repeat_inplane(slab_a.atoms, match.matrix_a)
     B = repeat_inplane(slab_b.atoms, match.matrix_b)
     ca, cb = A.cell.array[:2, :2], B.cell.array[:2, :2]
-    F, _, _ = deformation(cb, ca)
-    target = cb @ np.real(fractional_matrix_power(F, strain_fraction))
-    Fa = np.linalg.solve(ca, target)
-    Fb = np.linalg.solve(cb, target)
+    F, R, _ = deformation(cb, ca)
+    seam = None
+    if strain_fraction is None:
+        target = ca
+        Fa = np.eye(2)
+        Fb = R.T                                    # rotation only (row-vector convention)
+        seam = target - cb @ Fb                     # A's cell vectors minus B's own, rotated
+    else:
+        if not 0.0 <= float(strain_fraction) <= 1.0:
+            raise ValueError("strain_fraction must be between 0 and 1, or None for no strain")
+        target = cb @ np.real(fractional_matrix_power(F, strain_fraction))
+        Fa = np.linalg.solve(ca, target)
+        Fb = np.linalg.solve(cb, target)
     A = _apply_inplane(A, Fa, rigid_molecules)
     B = _apply_inplane(B, Fb, rigid_molecules)
+    if seam is not None:
+        # B keeps its lattice; put each B molecule's centre of mass inside the common cell
+        from .slabs import _wrap_molecules
+        common = np.eye(3)
+        common[:2, :2] = target
+        B.positions = _wrap_molecules(B.positions, B.arrays["mol_id"], B.get_masses(), common, axes=(0, 1))
     # stack along z
     za, zb = A.positions[:, 2], B.positions[:, 2]
     A.positions[:, 2] -= za.min()
@@ -183,10 +208,14 @@ def build_interface(slab_a: Slab, slab_b: Slab, match: LatticeMatch, *, gap=3.0,
     interface.pbc = (True, True, False)
     interface.info = {
         "hkl_a": list(slab_a.hkl), "hkl_b": list(slab_b.hkl), "gap": float(gap), "vacuum": float(vacuum),
-        "strain_fraction_b": float(strain_fraction), "match": match.summary(),
+        "strain_fraction_b": None if strain_fraction is None else float(strain_fraction), "match": match.summary(),
+        "strained": strain_fraction is not None,
         "strain_a": (polar(Fa.T)[1] - np.eye(2)).tolist(), "strain_b": (polar(Fb.T)[1] - np.eye(2)).tolist(),
         "match_area": match.area, "area": float(abs(np.linalg.det(target))),
     }
+    if seam is not None:
+        interface.info["seam_misfit"] = seam.tolist()
+        interface.info["seam_misfit_A"] = np.linalg.norm(seam, axis=1).tolist()
     return interface
 
 

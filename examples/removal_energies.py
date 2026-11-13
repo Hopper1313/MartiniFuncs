@@ -19,7 +19,7 @@ import time
 from ase.io import read, write
 
 from MartiniFuncs.crystals import build_slab, crystal_calculator, crystal_from_atoms, terminations
-from MartiniFuncs.crystals.surfaces import molecule_removal_energy
+from MartiniFuncs.crystals.surfaces import molecule_removal_energy, site_removal_energies
 from MartiniFuncs.crystals.workflow import _parse_face
 
 
@@ -38,6 +38,10 @@ def main(argv=None):
     parser.add_argument("--steps", type=int, default=600)
     parser.add_argument("--no-relax", action="store_true")
     parser.add_argument("--out", default="removal_energies.json")
+    parser.add_argument("--all-sites", action="store_true",
+                        help="every distinct exposed molecule (surface_sites), not just the outermost one")
+    parser.add_argument("--depth", type=float, default=3.0,
+                        help="with --all-sites: molecules with an atom within this depth of the surface")
     parser.add_argument("--model", default=None)
     parser.add_argument("--task", default="omc")
     parser.add_argument("--device", default="cpu")
@@ -63,6 +67,25 @@ def main(argv=None):
             slab = build_slab(crystal, hkl, layers=max(args.min_layers, probe.layers), termination=terms[k],
                               vacuum=args.vacuum, min_lengths=args.min_lengths)
             t0 = time.time()
+            if args.all_sites:
+                res = site_removal_energies(slab, calc, previous["gas"], side=args.side, depth=args.depth,
+                                            relax=not args.no_relax, n_fixed_layers=args.n_fixed_layers,
+                                            fmax=args.fmax, steps=args.steps, lattice_energy=latt)
+                stem = "{}_t{}_{}".format("".join(map(str, hkl)).replace("-", "m"), k, args.side)
+                write(run / f"sites_intact_{stem}.extxyz", res["slab_atoms"])
+                for site, vac in res["vacancies"].items():
+                    write(run / f"sites_vacancy_{stem}_s{site}.extxyz", vac)
+                for r in res["sites"]:
+                    r.update(hkl=list(hkl), intact_file=f"sites_intact_{stem}.extxyz",
+                             vacancy_file=f"sites_vacancy_{stem}_s{r['site']}.extxyz", lattice_energy_eV=latt)
+                    done["rows"].append(r)
+                    print(f"{hkl} T{k} site {r['site']} (atom depth {r['atom_depth']:.2f} A, COM depth "
+                          f"{r['com_depth']:.2f} A): vertical {r['vertical_kJ_mol']:.1f}, on relaxed "
+                          f"{r.get('vertical_relaxed_kJ_mol', float('nan')):.1f}, adiabatic "
+                          f"{r.get('adiabatic_kJ_mol', float('nan')):.1f} kJ/mol", flush=True)
+                out_path.write_text(json.dumps(done, indent=2, default=str))
+                print(f"{hkl} T{k}: {len(res['sites'])} sites in {time.time() - t0:.0f} s", flush=True)
+                continue
             r = molecule_removal_energy(slab, calc, previous["gas"], side=args.side, relax=not args.no_relax,
                                         n_fixed_layers=args.n_fixed_layers, fmax=args.fmax, steps=args.steps,
                                         lattice_energy=latt)

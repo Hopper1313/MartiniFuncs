@@ -9,7 +9,8 @@ interfaces    match_lattices (pymatgen ZSL + strain), build_interface (rigid-mol
               set_collision_velocities, separation_curve
 calculators   crystal_calculator: UMA (task omc), MACE-OFF, MACE-MP, any ASE calculator
 bulk          relax_bulk, gas references, lattice_energy, equation_of_state, elastic_constants
-surfaces      surface_energy, face_energies, thickness_convergence, molecule_removal_energy
+surfaces      surface_energy, face_energies, thickness_convergence, molecule_removal_energy,
+              surface_sites, site_removal_energies
 morphology    distinct_miller_indices, systematic absences, bfdh, wulff
 workflow      run_crystal_workflow and its command line (python -m MartiniFuncs.crystals.workflow)
 
@@ -26,7 +27,7 @@ _API = {
     "relax_bulk": "bulk", "lattice_energy": "bulk", "gas_references": "bulk",
     "equation_of_state": "bulk", "elastic_constants": "bulk",
     "surface_energy": "surfaces", "face_energies": "surfaces", "thickness_convergence": "surfaces",
-    "molecule_removal_energy": "surfaces",
+    "molecule_removal_energy": "surfaces", "surface_sites": "surfaces", "site_removal_energies": "surfaces",
     "bfdh": "morphology", "wulff": "morphology", "distinct_miller_indices": "morphology",
     "run_crystal_workflow": "workflow",
 }

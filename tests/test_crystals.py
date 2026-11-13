@@ -258,6 +258,45 @@ class InterfaceTests(unittest.TestCase):
         self.assertAlmostEqual(vz[1], -500.0, places=6)
 
 
+    def test_strained_and_unstrained_interfaces(self):
+        other = slabs.build_slab(self.crystal, (0, 0, 1), layers=2)
+        other.atoms.set_cell(other.atoms.cell.array * [[1.02], [1.01], [1]], scale_atoms=True)
+        match = interfaces.match_lattices(self.slab, other, max_area=200, max_length_tol=0.05)[0]
+        B0 = slabs.repeat_inplane(other.atoms, match.matrix_b)
+
+        def coms(atoms):
+            mol, w = atoms.arrays["mol_id"], atoms.get_masses()
+            return np.array([w[mol == k] @ atoms.positions[mol == k] / w[mol == k].sum() for k in np.unique(mol)])
+
+        # strained (all strain in B): B's centre-of-mass spacing changes, its molecules do not
+        it = interfaces.build_interface(self.slab, other, match, strain_fraction=1.0)
+        self.assertTrue(it.info["strained"])
+        self.assertGreater(np.abs(np.linalg.eigvalsh(it.info["strain_b"])).max(), 0.005)
+        b = it[it.arrays["slab"] == 1]
+        self.assertGreater(abs(pdist(coms(b)[:, :2]).mean() / pdist(coms(B0)[:, :2]).mean() - 1), 1e-3)
+        self.assertEqual(intramolecular_signatures(b), intramolecular_signatures(B0))
+
+        # unstrained: A's cell, B only rotated, every B molecule a lattice translate (of A's cell) of its
+        # rotated original, and the seam equals A's cell vectors minus B's own rotated ones
+        un = interfaces.build_interface(self.slab, other, match, strain_fraction=None)
+        self.assertFalse(un.info["strained"])
+        np.testing.assert_allclose(un.info["strain_a"], 0, atol=1e-12)
+        np.testing.assert_allclose(un.info["strain_b"], 0, atol=1e-12)
+        a_cell = slabs.repeat_inplane(self.slab.atoms, match.matrix_a).cell.array[:2, :2]
+        np.testing.assert_allclose(un.cell.array[:2, :2], a_cell, atol=1e-9)
+        _, R, _ = interfaces.deformation(B0.cell.array[:2, :2], a_cell)
+        rotated = coms(B0)[:, :2] @ R.T
+        shift = coms(un[un.arrays["slab"] == 1])[:, :2] - rotated
+        frac = shift @ np.linalg.inv(a_cell)
+        np.testing.assert_allclose(frac, np.round(frac), atol=1e-6)
+        expected = np.linalg.norm(a_cell - B0.cell.array[:2, :2] @ R.T, axis=1)
+        np.testing.assert_allclose(un.info["seam_misfit_A"], expected, atol=1e-9)
+        self.assertGreater(min(un.info["seam_misfit_A"]), 0.01)
+        self.assertEqual(intramolecular_signatures(un[un.arrays["slab"] == 1]), intramolecular_signatures(B0))
+        with self.assertRaisesRegex(ValueError, "between 0 and 1"):
+            interfaces.build_interface(self.slab, other, match, strain_fraction=1.5)
+
+
 class PropertyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -324,6 +363,28 @@ class PropertyTests(unittest.TestCase):
         with self.assertWarnsRegex(UserWarning, "periodic images"):
             surfaces.molecule_removal_energy(slabs.build_slab(relaxed, (0, 0, 1), layers=2), self.calc, gas,
                                              relax=False)
+
+    def test_surface_sites_and_per_site_removal(self):
+        relaxed, info = bulk.relax_bulk(self.crystal, self.calc, fmax=0.05, steps=200, symmetrize=False)
+        gas = bulk.relax_molecule(relaxed.molecule(0), self.calc)[1]
+        slab = slabs.build_slab(relaxed, (0, 0, 1), layers=3, min_lengths=12)
+        n_cells = round(abs(np.linalg.det(slab.inplane)))
+        sites = surfaces.surface_sites(slab, depth=3.0)
+        self.assertGreaterEqual(len(sites), 1)
+        # every site holds one copy per primitive surface cell, and no molecule is in two sites
+        self.assertTrue(all(len(s["members"]) == n_cells for s in sites))
+        members = [m for s in sites for m in s["members"]]
+        self.assertEqual(len(members), len(set(members)))
+        self.assertEqual(sites[0]["atom_depth"], 0.0)            # the outermost atom belongs to site 0
+        # a deeper criterion can only add sites
+        self.assertGreaterEqual(len(surfaces.surface_sites(slab, depth=6.0)), len(sites))
+        out = surfaces.site_removal_energies(slab, self.calc, {"C6H6": gas}, relax=True, fmax=0.1, steps=60)
+        self.assertEqual(len(out["sites"]), len(sites))
+        self.assertTrue(all(r["vertical_eV"] > 0 and r["adiabatic_eV"] > 0 for r in out["sites"]))
+        self.assertEqual(set(out["vacancies"]), {s["site"] for s in sites})
+        # site 0 by the single-molecule function (same representative) gives the same vertical energy
+        single = surfaces.molecule_removal_energy(slab, self.calc, gas, molecule=sites[0]["molecule"], relax=False)
+        self.assertAlmostEqual(single["vertical_eV"], out["sites"][0]["vertical_eV"], places=8)
 
     def test_workflow_end_to_end(self):
         from MartiniFuncs.crystals.workflow import run_crystal_workflow
