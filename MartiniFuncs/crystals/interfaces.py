@@ -179,7 +179,7 @@ def _apply_inplane(atoms, M, rigid):
 
 
 def build_interface(slab_a: Slab, slab_b: Slab, match: LatticeMatch, *, gap=3.0, vacuum=20.0,
-                    strain_fraction=1.0, rigid_molecules=True, repeat=1):
+                    strain_fraction=1.0, rigid_molecules=True, repeat=1, shift=(0.0, 0.0)):
     """B stacked above A in the matched supercell, the closest A-B atoms gap (Angstrom) apart along z.
 
     B's bottom face (-h -k -l) meets A's top face (h k l). To bring B's top face
@@ -193,6 +193,11 @@ def build_interface(slab_a: Slab, slab_b: Slab, match: LatticeMatch, *, gap=3.0,
     left as a seam at the cell boundary; see the module docstring).
     repeat: enlarge the matched cell, e.g. (2, 1) doubles it along its first
     vector; strain is unchanged, a seam misfit grows with the cell.
+    shift: lateral registry of B over A, as fractions (s1, s2) of the final
+    in-plane cell vectors. The rotation is fixed by the lattice match; the
+    registry is free, and it decides which B molecules sit over which A
+    molecules (e.g. dienophile C=C over diene C9/C10). Default (0, 0) is the
+    arbitrary registry the two slab origins give.
     """
     match = match.repeated(repeat)
     A = repeat_inplane(slab_a.atoms, match.matrix_a)
@@ -213,8 +218,11 @@ def build_interface(slab_a: Slab, slab_b: Slab, match: LatticeMatch, *, gap=3.0,
         Fb = np.linalg.solve(cb, target)
     A = _apply_inplane(A, Fa, rigid_molecules)
     B = _apply_inplane(B, Fb, rigid_molecules)
-    if seam is not None:
-        # B keeps its lattice; put each B molecule's centre of mass inside the common cell
+    shift = np.asarray(shift, dtype=float).reshape(2)
+    if shift.any():
+        B.positions[:, :2] += shift @ target       # lateral registry of B over A
+    if seam is not None or shift.any():
+        # put each B molecule's centre of mass inside the common cell (B keeps its own lattice in seam mode)
         from .slabs import _wrap_molecules
         common = np.eye(3)
         common[:2, :2] = target
@@ -225,9 +233,9 @@ def build_interface(slab_a: Slab, slab_b: Slab, match: LatticeMatch, *, gap=3.0,
     top_a = za.max() - za.min()
     B.positions[:, 2] += top_a + gap - zb.min()
     total = B.positions[:, 2].max()
-    shift = vacuum / 2
-    A.positions[:, 2] += shift
-    B.positions[:, 2] += shift
+    lift = vacuum / 2
+    A.positions[:, 2] += lift
+    B.positions[:, 2] += lift
     n_mol_a = int(A.arrays["mol_id"].max()) + 1
     B.arrays["mol_id"] = B.arrays["mol_id"] + n_mol_a
     A.arrays["slab"] = np.zeros(len(A), int)
@@ -242,6 +250,7 @@ def build_interface(slab_a: Slab, slab_b: Slab, match: LatticeMatch, *, gap=3.0,
     interface.info = {
         "hkl_a": list(slab_a.hkl), "hkl_b": list(slab_b.hkl), "gap": float(gap), "vacuum": float(vacuum),
         "strain_fraction_b": None if strain_fraction is None else float(strain_fraction), "match": match.summary(),
+        "registry_shift": shift.tolist(), "rotation_deg_b": float(np.degrees(np.arctan2(R[1, 0], R[0, 0]))),
         "strained": strain_fraction is not None,
         "strain_a": (polar(Fa.T)[1] - np.eye(2)).tolist(), "strain_b": (polar(Fb.T)[1] - np.eye(2)).tolist(),
         "match_area": match.area, "area": float(abs(np.linalg.det(target))),
@@ -314,6 +323,7 @@ class InterfaceOption:
     n_atoms: int
     cell_lengths: tuple           # in-plane cell vector lengths (Angstrom)
     seam_misfit: tuple            # Angstrom per cell vector if built with strain_fraction=None
+    scores: dict = field(default_factory=dict)     # scorer output for this coincident cell
     _source: dict = field(default=None, repr=False)
 
     @property
@@ -329,10 +339,17 @@ class InterfaceOption:
                 "repeat": list(self.repeat), "layers_a": self.layers_a, "layers_b": self.layers_b,
                 "thickness_a": self.thickness_a, "thickness_b": self.thickness_b, "n_atoms": self.n_atoms,
                 "seam_misfit": list(self.seam_misfit), "matrix_a": self.match.matrix_a.tolist(),
-                "matrix_b": self.match.matrix_b.tolist()}
+                "matrix_b": self.match.matrix_b.tolist(), "rotation_deg": self.match.rotation_deg,
+                "scores": dict(self.scores)}
 
-    def build(self, *, gap=3.0, vacuum=20.0, strain_fraction=0.5, rigid_molecules=True):
-        """Build this interface (the slabs are cut again from the crystals given to interface_options)."""
+    def build(self, *, gap=3.0, vacuum=20.0, strain_fraction=0.5, rigid_molecules=True, shift=(0.0, 0.0)):
+        """Build this interface (the slabs are cut again from the crystals given to interface_options).
+
+        shift: lateral registry of B (fractions of the cell), or a function
+        interface -> shift (e.g. chemistry.anthracene_ma.contact.best_shift),
+        evaluated on this interface built at zero shift; the interface is then
+        rebuilt at that shift, recorded in atoms.info["registry_shift"].
+        """
         s = self._source
         a = build_slab(s["crystal_a"], s["hkl_a"], layers=self.layers_a, termination=s["termination_a"],
                        vacuum=vacuum)
@@ -340,14 +357,17 @@ class InterfaceOption:
                        vacuum=vacuum)
         if s["flip_b"]:
             b = flip_slab(b)
-        return build_interface(a, b, self.match, gap=gap, vacuum=vacuum, strain_fraction=strain_fraction,
-                               rigid_molecules=rigid_molecules)
+        kwargs = dict(gap=gap, vacuum=vacuum, strain_fraction=strain_fraction, rigid_molecules=rigid_molecules)
+        if callable(shift):
+            shift = shift(build_interface(a, b, self.match, **kwargs))
+        return build_interface(a, b, self.match, shift=shift, **kwargs)
 
 
 def interface_options(crystal_a, hkl_a, crystal_b, hkl_b, *, termination_a=0, termination_b=0, flip_b=False,
                       thicknesses=(10.0, 15.0, 20.0, 30.0), repeats=((1, 1), (2, 1), (1, 2), (2, 2)),
                       min_atoms=None, max_atoms=None, max_strain=0.02, max_area=1500.0,
-                      max_length_tol=0.04, max_angle_tol=0.04, all_cells=False):
+                      max_length_tol=0.04, max_angle_tol=0.04, all_cells=False, scorer=None, sort="atoms",
+                      keep=None):
     """Interface sizes for two faces: every (cell, repeat, thickness) within the limits, smallest first.
 
     thicknesses: slab thicknesses in Angstrom (each slab gets the fewest whole
@@ -356,8 +376,18 @@ def interface_options(crystal_a, hkl_a, crystal_b, hkl_b, *, termination_a=0, te
     cells come from match_lattices; by default only cells on the size/strain
     front are kept (no smaller cell has less or equal strain), all_cells=True
     keeps every match. min_atoms/max_atoms/max_strain filter the result.
-    Returns InterfaceOption objects sorted by atom count, then strain; call
-    option.build(strain_fraction=...) to make one. Atom counts are exact.
+    scorer: optional function interface -> dict with a "score" (higher is
+    better), e.g. chemistry.anthracene_ma.contact.contact_alignment. It is
+    evaluated once per coincident cell, on a thin build (one layer per slab,
+    shared strain), because cell-level properties such as reacting-group
+    alignment do not depend on thickness or repeat; the result is in
+    option.scores. keep: optional function scores -> bool to keep a cell
+    (applied with all_cells=True it also restores cells off the strain front),
+    e.g. lambda s: s["orientation_compatible"] > 0.
+    sort: "atoms" (default; then strain), "strain" (then atoms) or "score"
+    (best score first, then atoms).
+    Returns InterfaceOption objects; call option.build(strain_fraction=...,
+    shift=...) to make one. Atom counts are exact.
     """
     from .slabs import terminations as _terminations
     ta = _terminations(crystal_a, hkl_a)[termination_a]
@@ -375,6 +405,13 @@ def interface_options(crystal_a, hkl_a, crystal_b, hkl_b, *, termination_a=0, te
                 front.append(m)
                 lowest = m.max_strain
         matches = front
+    cell_scores = {}
+    if scorer is not None:
+        for m0 in matches:
+            thin = build_interface(a1, b1, m0, gap=3.0, vacuum=10.0, strain_fraction=0.5)
+            cell_scores[id(m0)] = dict(scorer(thin))
+        if keep is not None:
+            matches = [m0 for m0 in matches if keep(cell_scores[id(m0)])]
     pairs = [(t, t) if np.ndim(t) == 0 else tuple(t) for t in thicknesses]
     va, vb = a1.atoms.cell.array[:2, :2], b1.atoms.cell.array[:2, :2]
     source = {"crystal_a": crystal_a, "crystal_b": crystal_b, "hkl_a": tuple(hkl_a), "hkl_b": tuple(hkl_b),
@@ -395,6 +432,14 @@ def interface_options(crystal_a, hkl_a, crystal_b, hkl_b, *, termination_a=0, te
                     continue
                 options.append(InterfaceOption(m, tuple(int(x) for x in np.diag(_repeat_matrix(rep))), la, lb,
                                                la * a1.d_spacing, lb * b1.d_spacing, int(n),
-                                               tuple(float(x) for x in np.linalg.norm(ca, axis=1)), seam, source))
-    options.sort(key=lambda o: (o.n_atoms, o.max_strain))
+                                               tuple(float(x) for x in np.linalg.norm(ca, axis=1)), seam,
+                                               cell_scores.get(id(m0), {}), source))
+    if sort == "score":
+        options.sort(key=lambda o: (-o.scores.get("score", -np.inf), o.n_atoms, o.max_strain))
+    elif sort == "strain":
+        options.sort(key=lambda o: (o.max_strain, o.n_atoms))
+    elif sort == "atoms":
+        options.sort(key=lambda o: (o.n_atoms, o.max_strain))
+    else:
+        raise ValueError("sort must be 'atoms', 'strain' or 'score'")
     return options

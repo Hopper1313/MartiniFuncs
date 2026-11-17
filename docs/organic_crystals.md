@@ -101,6 +101,44 @@ only cells on the size/strain front are kept (no smaller cell has less or equal 
 UMA-relaxed cells, the smallest interfaces under 1.5 % strain are 2,736 atoms (1,141 Å², 1.33 %)
 and 3,240 atoms (1,348 Å², 0.81 %), both with 12–14 Å slabs.
 
+### Rotation, registry and Diels–Alder alignment
+
+Two faces can be joined through several coincident cells. Each cell fixes the in-plane rotation
+of B (`LatticeMatch.rotation_deg`, the R of F = R·U): any other angle breaks the periodic match,
+so choosing the rotation means choosing the cell. The lateral registry of B over A is free:
+`build_interface(..., shift=(s1, s2))`, in fractions of the cell.
+
+Neither is chosen for chemistry by default. `MartiniFuncs.chemistry.anthracene_ma.contact` scores
+an anthracene / maleic anhydride contact: an anthracene site is *lined up* when a maleic
+anhydride C=C midpoint lies within 1.5 Å of its C9/C10 midpoint in plane and the two axes are
+within 30° of parallel; *orientation-compatible* sites have such a C=C anywhere in the cell, a
+number fixed by the rotation. Use it to rank cells and to build at the best registry:
+
+```python
+from MartiniFuncs.chemistry.anthracene_ma.contact import best_shift, contact_alignment
+
+opts = interface_options(ant, (1, 1, 0), mal, (1, 1, 0), thicknesses=(18,), max_strain=0.02,
+                         all_cells=True, scorer=contact_alignment, sort="score")
+for o in opts:
+    print(round(o.area), o.max_strain, o.match.rotation_deg, o.scores["orientation_compatible"],
+          o.scores["lined_up_best"], o.scores["n_sites"])
+interface = opts[0].build(strain_fraction=0.5, shift=best_shift)   # rebuilt at its best registry
+```
+
+For anthracene (1 1 0) / maleic anhydride (1 1 0) T0 the least-strained cell (1,348 Å², 0.81 %,
+B rotated 88.3°) crosses every C=C with the C9···C10 axes (0 of 26 compatible). The same-size
+cell at 0.99 % (−32.6°) makes all 26 compatible and lines up 6 at its best registry; the
+1,141 Å² cell at 1.51 % (6.1°) lines up 11 of 22. The showcase page uses the least-strained fully
+compatible cell (−32.6°) as its default. This is a geometric screen: the groups are still about
+8 Å apart vertically at a 3 Å atom-to-atom gap, and no energies are involved.
+
+Maleic anhydride (1 0 0) T2 is a strong alternative to (1 1 0). BFDH ranks it only 8th (the 2₁ axis
+halves its layer spacing), but its relaxed γ is the lowest computed (111.6 mJ/m²). On anthracene
+(1 1 0) its fully compatible cell (1,452 Å², 1.17 %) lines up 13 of 28 sites. Its least-strain cell
+(0.62 %) again crosses every C=C. For orthorhombic (h 0 0) and (0 0 l) faces the
+terminations related by the 2₁ axis along the normal score identically: their contact layers are
+180° in-plane copies, and a C=C axis is unchanged by a 180° turn.
+
 ## Properties with an MLIP
 
 ```python
@@ -133,6 +171,39 @@ The workflow writes `results.json` after every step, plus the relaxed bulk, the 
 Surface energy is gamma = (E_slab - N e_bulk) / 2A, with slabs cut from the relaxed bulk.
 `thickness_convergence` checks the number of layers and also gives the linear-fit gamma, which
 does not depend on the bulk reference.
+
+The workflow's `--n-faces` takes the top BFDH faces only, so a low-energy face with a small d_eff can
+be missed. Compute a few more with `examples/relax_surface_energies.py --faces ...`. Maleic anhydride
+(1 0 0), 8th by BFDH, turned out to have the lowest γ.
+
+### How big a slab
+
+`examples/surface_size_convergence.py` varies each size separately: layers (relaxed and cleaved γ,
+plus the linear fit), the in-plane supercell (relaxed), and the vacuum (cleaved).
+
+```bash
+python examples/surface_size_convergence.py mleica_uma --faces 110 101 --terminations 0 \
+    --layers 3 4 5 6 8 --supercells 1x1 2x1 1x2 2x2 --vacuums 10 15 20 30 \
+    --model uma_data/uma-s-1p2p1.pt --ncpus 24
+```
+
+Pass `--rattle 0.1` when testing supercells. Without it a supercell keeps the primitive cell's
+symmetry through the relaxation, so it reproduces the 1×1 result by construction.
+
+UMA `omc` results for anthracene (1 1 0), (0 0 1) and maleic anhydride (1 1 0), (1 0 1), (1 0 0),
+(0 0 1), (1 1 1):
+
+| Size | Effect on γ |
+|---|---|
+| vacuum 10–30 Å | none (6 Å cutoff, no long-range electrostatics) |
+| in-plane 1×1 → 2×2, rattled | < 1 mJ/m²; no reconstruction found by local relaxation |
+| 3 → 8 layers | 2–4 mJ/m² on the thinnest slabs (anthracene (1 1 0): 95.2 → 91.9), then within ~1 mJ/m² from 4–5 layers |
+| relaxation scatter (rattled starts) | 1–4 mJ/m² |
+
+The linear fit can differ from the direct value. For anthracene (1 1 0) it gives 96.1 against 92.6,
+because molecules inside the slab sit 3–4 meV below the bulk reference. The likely cause is a small
+dependence of UMA's energy on the cell, not yet tested. Read γ as ±2–4 mJ/m²: face orderings closer
+than that are not resolved.
 
 ## Caveats
 

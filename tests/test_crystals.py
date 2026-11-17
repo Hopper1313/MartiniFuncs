@@ -314,6 +314,27 @@ class InterfaceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "repeat"):
             interfaces.build_interface(self.slab, other, match, repeat=0)
 
+    def test_registry_shift_moves_only_b(self):
+        other = slabs.build_slab(self.crystal, (0, 0, 1), layers=2)
+        other.atoms.set_cell(other.atoms.cell.array * [[1.02], [1.01], [1]], scale_atoms=True)
+        match = interfaces.match_lattices(self.slab, other, max_area=200, max_length_tol=0.05)[0]
+        base = interfaces.build_interface(self.slab, other, match, strain_fraction=0.5)
+        moved = interfaces.build_interface(self.slab, other, match, strain_fraction=0.5, shift=(0.25, 0.4))
+        a = base.arrays["slab"] == 0
+        np.testing.assert_allclose(moved.positions[a], base.positions[a], atol=1e-9)        # A untouched
+        cell2 = base.cell.array[:2, :2]
+
+        def coms(atoms, sel):
+            mol, w = atoms.arrays["mol_id"], atoms.get_masses()
+            return np.array([w[mol == k] @ atoms.positions[mol == k] / w[mol == k].sum()
+                             for k in np.unique(mol[sel])])
+        d = coms(moved, ~a)[:, :2] - coms(base, ~a)[:, :2] - np.array([0.25, 0.4]) @ cell2
+        frac = d @ np.linalg.inv(cell2)                     # every B molecule moved by the shift, mod the cell
+        np.testing.assert_allclose(frac, np.round(frac), atol=1e-6)
+        np.testing.assert_allclose(moved.positions[~a, 2], base.positions[~a, 2], atol=1e-9)
+        self.assertEqual(moved.info["registry_shift"], [0.25, 0.4])
+        self.assertEqual(intramolecular_signatures(moved[~a]), intramolecular_signatures(base[~a]))
+
     def test_interface_options_predict_real_builds(self):
         # second crystal: the same benzene cell stretched 3 %, so the two faces need a coincident cell
         stretched = cif.crystal_from_atoms(self.crystal.atoms.copy())
@@ -336,6 +357,99 @@ class InterfaceTests(unittest.TestCase):
                                               max_area=600, max_strain=0.05, max_length_tol=0.06, max_angle_tol=0.06,
                                               max_atoms=opts[0].n_atoms)
         self.assertTrue(all(o.n_atoms <= opts[0].n_atoms for o in capped))
+
+
+class AlignmentTests(unittest.TestCase):
+    """Diels-Alder contact alignment on a hand-built two-molecule contact with a known answer."""
+
+    @staticmethod
+    def flat(smiles, kind):
+        from ase import Atoms
+        from MartiniFuncs.chemistry.anthracene_ma.sites import anhydride_sites, anthracene_sites
+        from MartiniFuncs.structure.graph import build_bond_graph
+        from MartiniFuncs.structure.molecules import atoms_from_smiles
+        m = atoms_from_smiles(smiles)
+        g = build_bond_graph(m, periodic=False, index_array=None)
+        els = dict(enumerate(m.get_chemical_symbols()))
+        ids = list(range(len(m)))
+        pair = anthracene_sites(g, els, ids)[0] if kind == "ant" else anhydride_sites(g, els, ids)[0]
+        x = m.positions - m.positions.mean(axis=0)
+        normal = np.linalg.svd(x)[2][2]
+        axis = x[pair[1]] - x[pair[0]]
+        axis -= (axis @ normal) * normal
+        e1 = axis / np.linalg.norm(axis)
+        frame = np.array([e1, np.cross(normal, e1), normal])     # reacting axis -> x, molecular plane -> xy
+        return Atoms(m.get_chemical_symbols(), positions=x @ frame.T)
+
+    def contact(self, ma_angle_deg):
+        ant = self.flat("c1ccc2cc3ccccc3cc2c1", "ant")
+        ma = self.flat("O=C1OC(=O)C=C1", "ma")
+        c, s_ = np.cos(np.radians(ma_angle_deg)), np.sin(np.radians(ma_angle_deg))
+        ma.positions = ma.positions @ np.array([[c, s_, 0], [-s_, c, 0], [0, 0, 1]])
+        ant.positions += [4.0, 5.0, 10.0]
+        ma.positions += [10.0, 9.0, 14.0]
+        both = ant + ma
+        both.set_cell([18.0, 15.0, 30.0])
+        both.pbc = (True, True, False)
+        both.arrays["mol_id"] = np.array([0] * len(ant) + [1] * len(ma))
+        both.arrays["slab"] = np.array([0] * len(ant) + [1] * len(ma))
+        both.arrays["layer"] = np.zeros(len(both), int)
+        return both
+
+    def test_aligned_contact_lines_up_at_the_right_shift(self):
+        from MartiniFuncs.chemistry.anthracene_ma import contact
+        it = self.contact(0.0)
+        here = contact.alignment(it)
+        self.assertEqual((here["n_sites"], here["orientation_compatible"], here["lined_up"]), (1, 1, 0))
+        best = contact.best_registry(it, grid=60)
+        self.assertEqual(best["lined_up"], 1)
+        # the C=C midpoint must move onto the C9/C10 midpoint: (4 - 10) / 18 and (5 - 9) / 15, mod 1
+        want = np.array([(4 - 10) / 18 % 1, (5 - 9) / 15 % 1])
+        d = np.array(best["shift"]) - want
+        d -= np.round(d)
+        self.assertLess(np.abs(d * [18, 15]).max(), 1.5)
+        moved = contact.alignment(it, shift=best["shift"])
+        self.assertEqual(moved["lined_up"], 1)
+        self.assertLess(moved["mean_offset"], 1.5)
+
+    def test_crossed_contact_never_lines_up(self):
+        from MartiniFuncs.chemistry.anthracene_ma import contact
+        it = self.contact(80.0)
+        best = contact.best_registry(it, grid=60)
+        self.assertEqual((best["orientation_compatible"], best["lined_up"]), (0, 0))
+        scored = contact.contact_alignment(it, grid=40)
+        self.assertEqual(scored["lined_up_best"], 0)
+        self.assertLess(scored["score"], 0.01)
+
+
+class ScorerTests(unittest.TestCase):
+    def test_interface_options_scorer_sort_keep_and_callable_shift(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            crystal = cif.read_cif(write_cif_text(benzene_cif(), tmp))
+        stretched = cif.crystal_from_atoms(crystal.atoms.copy())
+        stretched.atoms.set_cell(stretched.atoms.cell.array * 1.03, scale_atoms=True)
+        stretched = cif.crystal_from_atoms(stretched.atoms)
+        calls = []
+
+        def scorer(it):
+            calls.append(len(it))
+            return {"score": -float(np.linalg.det(it.cell.array[:2, :2])), "area": float(np.linalg.det(it.cell.array[:2, :2]))}
+
+        kw = dict(thicknesses=(8.0,), repeats=((1, 1), (2, 1)), max_area=600, max_strain=0.05,
+                  max_length_tol=0.06, max_angle_tol=0.06, all_cells=True)
+        opts = interfaces.interface_options(crystal, (0, 0, 1), stretched, (0, 0, 1), scorer=scorer, sort="score", **kw)
+        self.assertTrue(opts and all("score" in o.scores for o in opts))
+        scores = [o.scores["score"] for o in opts]
+        self.assertEqual(scores, sorted(scores, reverse=True))
+        self.assertEqual(2 * len(calls), len(opts))                  # once per coincident cell: 2 repeats x 1 thickness
+        cut = sorted({o.scores["area"] for o in opts})[0]
+        kept = interfaces.interface_options(crystal, (0, 0, 1), stretched, (0, 0, 1), scorer=scorer,
+                                            keep=lambda sc: sc["area"] <= cut + 1e-6, **kw)
+        self.assertTrue(kept and all(o.scores["area"] <= cut + 1e-6 for o in kept))
+        built = opts[0].build(strain_fraction=0.5, shift=lambda it: (0.25, 0.4))
+        self.assertEqual(built.info["registry_shift"], [0.25, 0.4])
+        with self.assertRaisesRegex(ValueError, "sort"):
+            interfaces.interface_options(crystal, (0, 0, 1), stretched, (0, 0, 1), sort="size", **kw)
 
 
 class PropertyTests(unittest.TestCase):
