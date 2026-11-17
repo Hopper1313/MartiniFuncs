@@ -21,6 +21,20 @@ molecule_removal_energy  energy to take one surface molecule out of a slab
 surface_sites         the distinct exposed molecules of a face (different
                       positions or heights in the surface cell)
 site_removal_energies removal energies of every one of those sites
+attachment_energies   slice and attachment energies per face and termination
+                      (Hartman-Perdok): E_latt = E_slice + E_att, from one-layer slabs
+
+Attachment energy: a d_hkl-thick growth slice bounded by two cuts of the same
+termination has energy e_slice per molecule (a one-layer slab, unrelaxed). Then
+
+    E_att = e_bulk - e_slice   (per molecule, negative)
+
+is the energy released when that slice attaches to the crystal face, and
+E_slice = E_latt - E_att the binding inside the slice. In the attachment-energy
+growth model a face grows at a rate proportional to |E_att|, and each face grows
+by the termination whose slice is most strongly bound (smallest |E_att|).
+(e_slice - e_bulk) N / 2A is the cleavage surface energy the slice model
+implies (only the bonds between neighbouring slices broken).
 
 Removal energies (eV and kJ/mol, positive = costs energy):
 
@@ -384,3 +398,45 @@ def site_removal_energies(slab: Slab, calculator, gas_energy, *, side="top", dep
     relaxed.calc = None
     return {"sites": rows, "slab_atoms": relaxed, "vacancies": vacancies,
             "slab_energy": e_slab, "slab_energy_relaxed": e_slab_rel}
+
+
+def attachment_energies(crystal: MolecularCrystal, calculator, bulk_energy_per_molecule, faces, *,
+                        terminations_per_face=None, lattice_energy=None, vacuum=15.0, max_terminations=None):
+    """Slice and attachment energies of each face and termination (Hartman-Perdok).
+
+    crystal must be the relaxed bulk and bulk_energy_per_molecule its energy per
+    molecule with the same calculator. faces: iterable of (h, k, l).
+    terminations_per_face: optional {hkl: [indices]} (default: every termination,
+    or the first max_terminations). lattice_energy (eV per molecule, negative)
+    adds the slice energy E_slice = E_latt - E_att and the fraction E_att/E_latt.
+
+    Each slice is one d_hkl layer cut at the termination, as a slab with vacuum,
+    evaluated without relaxation. Returns a list of dicts with hkl, termination,
+    d_hkl, n_molecules, area, e_slice (eV/molecule), attachment_energy_eV and
+    _kJ_mol, gamma_slice_J_m2 and, with lattice_energy, slice_energy_eV/_kJ_mol
+    and attachment_fraction.
+    """
+    calculator = resolve(calculator)
+    rows = []
+    for hkl in faces:
+        hkl = tuple(int(x) for x in hkl)
+        terms = terminations(crystal, hkl)
+        wanted = (terminations_per_face or {}).get(hkl)
+        chosen = [terms[i] for i in wanted] if wanted is not None else terms[:max_terminations]
+        for term in chosen:
+            piece = build_slab(crystal, hkl, layers=1, termination=term, vacuum=vacuum)
+            _check_stoichiometry(piece, crystal)
+            atoms = piece.atoms.copy()
+            atoms.calc = calculator
+            e_slice = float(atoms.get_potential_energy()) / piece.n_molecules
+            e_att = bulk_energy_per_molecule - e_slice
+            row = {"hkl": hkl, "termination": term.index, "d_hkl": piece.d_spacing, "n_molecules": piece.n_molecules,
+                   "area": piece.area, "broken_contacts_per_nm2": term.contacts_per_nm2, "e_slice": e_slice,
+                   "attachment_energy_eV": e_att, "attachment_energy_kJ_mol": e_att * KJ_MOL_PER_EV,
+                   "gamma_slice_J_m2": -e_att * piece.n_molecules / (2 * piece.area) * EV_A2_TO_J_M2}
+            if lattice_energy is not None:
+                row.update(slice_energy_eV=lattice_energy - e_att,
+                           slice_energy_kJ_mol=(lattice_energy - e_att) * KJ_MOL_PER_EV,
+                           attachment_fraction=e_att / lattice_energy)
+            rows.append(row)
+    return rows

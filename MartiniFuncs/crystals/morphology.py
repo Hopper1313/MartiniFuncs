@@ -11,6 +11,8 @@ bfdh                      Bravais-Friedel-Donnay-Harker ranking: for each face t
                           shape with "energies" 1 / d_eff.
 wulff                     pymatgen WulffShape from {hkl: surface energy}: area fraction of each
                           face family, shape factor, anisotropy, weighted surface energy
+attachment_energy_shape   growth morphology: the same construction with |E_att| of each face's
+                          most strongly bound slice (surfaces.attachment_energies)
 
 BFDH needs no calculator and is the quick screen for which faces to compute;
 surface energies (surfaces.py) then give the Wulff (equilibrium) shape. Note
@@ -91,3 +93,28 @@ def wulff(crystal_or_lattice, energies, *, symprec=1e-5):
         "anisotropy": float(shape.anisotropy), "weighted_surface_energy": float(shape.weighted_surface_energy),
         "expressed": sorted((h for h, a in fractions.items() if a > 1e-6), key=lambda h: -fractions[h]),
     }
+
+
+def attachment_energy_shape(crystal_or_lattice, rows, *, symprec=1e-5):
+    """Growth morphology in the attachment-energy model.
+
+    rows: the output of surfaces.attachment_energies (or {hkl: E_att}). For each
+    face the termination with the smallest |E_att| (the most strongly bound slice)
+    sets the growth rate R_hkl ~ |E_att|, and the shape is the Wulff construction
+    with |E_att| in place of the surface energy. Returns wulff()'s dict plus
+    "chosen": {hkl: row of the termination used} when rows are given.
+    """
+    if isinstance(rows, dict):
+        best = {tuple(int(x) for x in h): abs(float(e)) for h, e in rows.items()}
+        chosen = None
+    else:
+        chosen = {}
+        for r in rows:
+            h = tuple(int(x) for x in r["hkl"])
+            if h not in chosen or abs(r["attachment_energy_eV"]) < abs(chosen[h]["attachment_energy_eV"]):
+                chosen[h] = r
+        best = {h: abs(r["attachment_energy_eV"]) for h, r in chosen.items()}
+    out = wulff(crystal_or_lattice, best, symprec=symprec)
+    if chosen is not None:
+        out["chosen"] = chosen
+    return out

@@ -265,6 +265,37 @@ Relaxed γ (mJ/m², lowest termination) and Wulff area fractions:
 | maleic anhydride (0 0 1) T0 | 133.1 | 133.4 | 132.9 | 2.7 % |
 
 The three Wulff shapes (20 Å, 50 Å, fit) agree within about 1 % of area for every face.
+
+### Fracture and growth: cleavage and attachment energies
+
+The Wulff shape is the equilibrium shape. Two other questions need other quantities.
+
+**Which planes a crystal breaks along** (milling, impact). Use the cleavage work W<sub>cl</sub> = 2γ
+of the surface as cut, before it relaxes: the Griffith energy per area of a new crack. Take it from
+`surface_energy(..., relax=False)`, or better from the unrelaxed linear fit over 20–50 Å slabs.
+
+**Which faces a grown crystal shows**. Use the attachment-energy model:
+
+```python
+from MartiniFuncs.crystals import attachment_energies, attachment_energy_shape
+rows = attachment_energies(relaxed, calc, e_bulk, faces, lattice_energy=E_latt)
+shape = attachment_energy_shape(relaxed, rows)   # Wulff construction with |E_att|
+```
+
+- **Attachment energy.** Each termination defines a d<sub>hkl</sub>-thick slice. E<sub>att</sub> = e<sub>bulk</sub> − e<sub>slice</sub> is the energy released per molecule when that slice attaches, and E<sub>latt</sub> = E<sub>slice</sub> + E<sub>att</sub>.
+- **Growth rate.** A face grows at a rate proportional to |E<sub>att</sub>|, using its most strongly bound slice.
+- **Command line:** `examples/attachment_energies.py` runs every termination of the given faces. Each slice is a single unrelaxed point, so the whole set takes about a minute on the cluster.
+
+UMA `omc` results (W<sub>cl</sub> from the unrelaxed 20–50 Å fit, mJ/m²; E<sub>att</sub> in kJ/mol):
+
+| Crystal | Easiest cleavage planes (W<sub>cl</sub>) | Weakest attachment (E<sub>att</sub>/E<sub>latt</sub>) | Growth shape |
+|---|---|---|---|
+| anthracene | (0 0 1) 154; (2 0 −1) 179; (1 1 0) 188 | (0 0 1) −25.9 (0.24) | (0 0 1) 48 %, (1 0 −1) 23 %, (1 1 0) 15 %, (1 1 −1) 11 % |
+| maleic anhydride | (1 0 1) T0 234; (1 0 0) T2 236; (1 1 0) T0 254 | (0 1 0) T2 −18.0 (0.24) | (0 1 0) 43 %, (1 0 0) 30 %, (0 0 1) 15 %, (1 0 1) 12 % |
+
+- **Anthracene:** (0 0 1) is both the easiest cleavage plane and the slowest-growing face, which matches its known (0 0 1) plate habit and flaky cleavage. The equilibrium shape does not show this.
+- **Maleic anhydride:** the two measures differ. Per area, (1 0 1) and (1 0 0) cleave most easily. Per molecule, (0 1 0) attaches most weakly, because its 11 Å slices hold more molecules per area. For fracture experiments the per-area W<sub>cl</sub> is the relevant measure.
+- **After fracture:** fragment surfaces relax locally, but at room temperature molecules don't move far enough to reshape a fragment towards the Wulff shape.
 Anthracene (2 0 −1), 5th by BFDH and missing from the first runs, has the second-lowest γ. Maleic
 anhydride (0 1 0) only appears on the shape through its T2 termination, which the first runs
 skipped.
@@ -281,7 +312,8 @@ skipped.
 
 ## Not yet included (natural next steps)
 
-Attachment energies (growth morphology), surface relaxation with the in-plane cell free,
+Surface relaxation with the in-plane cell free, fracture beyond the Griffith energy (slip planes,
+plasticity, crack paths under realistic stress),
 temperature (NPT MD lattice parameters, quasi-harmonic free energies), polymorph ranking,
 and adhesion / work of separation of matched interfaces (`interfaces.separation_curve`
 gives a rigid scan).

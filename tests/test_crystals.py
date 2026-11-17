@@ -486,6 +486,30 @@ class PropertyTests(unittest.TestCase):
         r = surfaces.surface_energy(slab, self.calc, info["energy_per_molecule"], relax=False, crystal=relaxed)
         self.assertGreater(r["gamma_J_m2"], 0)
 
+    def test_attachment_energies_and_growth_shape(self):
+        relaxed, info = bulk.relax_bulk(self.crystal, self.calc, fmax=0.02, steps=300, symmetrize=False)
+        e_bulk = info["energy_per_molecule"]
+        gas = bulk.relax_molecule(relaxed.molecule(0), self.calc)[1]
+        latt = bulk.lattice_energy(relaxed, info["energy"], {"C6H6": gas})["lattice_energy_eV"]
+        faces = [(0, 0, 1), (0, 1, 0), (1, 0, 0)]
+        rows = surfaces.attachment_energies(relaxed, self.calc, e_bulk, faces, lattice_energy=latt)
+        self.assertEqual({r["hkl"] for r in rows}, set(faces))
+        for r in rows:
+            # attaching a slice releases energy, but never more than the lattice energy
+            self.assertLess(r["attachment_energy_eV"], 0)
+            self.assertGreater(r["attachment_energy_eV"], latt)
+            self.assertAlmostEqual(r["slice_energy_eV"] + r["attachment_energy_eV"], latt, places=10)
+            self.assertGreater(r["gamma_slice_J_m2"], 0)
+            # E_att = e_bulk - e_slice, checked against a one-layer slab directly
+            piece = slabs.build_slab(relaxed, r["hkl"], layers=1, termination=r["termination"])
+            a = piece.atoms.copy(); a.calc = self.calc
+            self.assertAlmostEqual(r["e_slice"], a.get_potential_energy() / piece.n_molecules, places=8)
+        shape = morphology.attachment_energy_shape(relaxed, rows)
+        self.assertAlmostEqual(sum(shape["area_fractions"].values()), 1.0, places=6)
+        for h, r in shape["chosen"].items():     # the most strongly bound slice of each face is used
+            self.assertEqual(abs(r["attachment_energy_eV"]),
+                             min(abs(q["attachment_energy_eV"]) for q in rows if q["hkl"] == h))
+
     def test_molecule_removal_energy(self):
         relaxed, info = bulk.relax_bulk(self.crystal, self.calc, fmax=0.05, steps=200, symmetrize=False)
         gas = bulk.relax_molecule(relaxed.molecule(0), self.calc)[1]
