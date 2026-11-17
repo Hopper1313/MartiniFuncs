@@ -162,15 +162,41 @@ The workflow writes `results.json` after every step, plus the relaxed bulk, the 
 |---|---|
 | `structure` | formula, Z, Z', space group, centrosymmetric, density, disorder sites dropped |
 | `bulk` | relaxed cell, volume and cell changes vs. the CIF (thermal expansion: the CIF is at `source.temperature_K`, the MLIP at 0 K) |
-| `lattice_energy` | E_latt per molecule (eV, kJ/mol) and dH_sub = -E_latt - 2RT |
-| `eos`, `elastic` | Birch-Murnaghan B0; C_ij, Voigt/Reuss/Hill moduli, Born stability |
-| `bfdh` | d_eff with systematic absences, BFDH area fractions |
-| `surfaces` | gamma (unrelaxed and relaxed) per face and termination |
+| `lattice_energy` | E<sub>latt</sub> per molecule (eV, kJ/mol) and ΔH<sub>sub</sub> at 298.15 K |
+| `eos`, `elastic` | Birch–Murnaghan E<sub>0</sub>, V<sub>0</sub>, B<sub>0</sub>, B′<sub>0</sub>; C<sub>ij</sub>, Voigt/Reuss/Hill moduli, Born stability |
+| `bfdh` | d<sub>eff</sub> with systematic absences, BFDH area fractions |
+| `surfaces` | γ (cleaved and relaxed) per face and termination |
 | `wulff`, `face_ranking` | area fraction of each face family; faces by surface energy |
 
-Surface energy is gamma = (E_slab - N e_bulk) / 2A, with slabs cut from the relaxed bulk.
-`thickness_convergence` checks the number of layers and also gives the linear-fit gamma, which
-does not depend on the bulk reference.
+### Equations
+
+Energies are per molecule and are 0 K potential energies unless stated (1 eV = 96.485 kJ/mol;
+1 eV/Å² = 16.02 J/m²).
+
+- **Lattice energy**: E<sub>latt</sub> = E<sub>crystal</sub>/N<sub>mol</sub> − E<sub>gas</sub>.
+  - E<sub>crystal</sub> is the energy of the relaxed bulk cell holding N<sub>mol</sub> molecules.
+  - E<sub>gas</sub> is one isolated molecule relaxed with the same calculator, with no charge or spin set.
+  - It is negative for a bound crystal.
+- **Sublimation enthalpy**: ΔH<sub>sub</sub>(T) ≈ −E<sub>latt</sub> − 2RT.
+  - This is the enthalpy to take one mole of molecules from the crystal to the ideal gas at T, the quantity measured experimentally.
+  - The −2RT comes from the crystal's 6 lattice modes per molecule (6RT, classical) against the gas's 3/2 RT translation, 3/2 RT rotation and RT for pV (4RT in total).
+  - Zero-point energy and changes in intramolecular vibrations are neglected.
+- **Surface energy**: γ = (E<sub>slab</sub> − N e<sub>bulk</sub>) / 2A.
+  - E<sub>slab</sub> is the periodic slab with vacuum, holding N molecules; e<sub>bulk</sub> = E<sub>crystal</sub>/N<sub>mol</sub>.
+  - A is the in-plane cell area, and 2A because the slab has two surfaces.
+  - When the top (h k l) and bottom (−h −k −l) faces differ (non-centrosymmetric crystals), γ is their average.
+- **Linear fit**: E<sub>slab</sub>(n) = n e<sub>layer</sub> + 2γA over slabs of n layers.
+  - The intercept gives γ without e<sub>bulk</sub>.
+  - The slope gives Δe = e<sub>layer</sub>/m − e<sub>bulk</sub> (m molecules per layer). A non-zero Δe is a mismatch between the slab interior and the bulk reference, and makes the direct γ drift with thickness.
+- **Removal energy**:
+  - Vertical: E<sub>rem</sub> = E(slab − m) + E(m) − E(slab), with geometries frozen.
+  - Adiabatic: the vacancy slab and the molecule (E<sub>gas</sub>) both relaxed.
+  - Bounds: |E<sub>latt</sub>| at a kink ≤ E<sub>rem</sub> at a terrace ≤ 2|E<sub>latt</sub>| in the bulk.
+- **Interface strain**: F = R U, mapping B's coincident supercell onto A's.
+  - R is B's in-plane rotation and U the symmetric stretch.
+  - The principal strains are ε<sub>k</sub> = λ<sub>k</sub>(U) − 1; max strain = max |ε<sub>k</sub>|.
+
+`thickness_convergence` checks the number of layers and also gives the linear-fit γ.
 
 The workflow's `--n-faces` takes the top BFDH faces only, so a low-energy face with a small d_eff can
 be missed. Compute a few more with `examples/relax_surface_energies.py --faces ...`. Maleic anhydride
@@ -190,20 +216,58 @@ python examples/surface_size_convergence.py mleica_uma --faces 110 101 --termina
 Pass `--rattle 0.1` when testing supercells. Without it a supercell keeps the primitive cell's
 symmetry through the relaxation, so it reproduces the 1×1 result by construction.
 
-UMA `omc` results for anthracene (1 1 0), (0 0 1) and maleic anhydride (1 1 0), (1 0 1), (1 0 0),
-(0 0 1), (1 1 1):
+To compare faces at matched thickness, give thicknesses in Å and per-face terminations:
+
+```bash
+python examples/surface_size_convergence.py mleica_uma --faces 110:0,1,3 010:0,2 101:0,1 \
+    --thicknesses 20 30 40 50 --skip lateral vacuum --model uma_data/uma-s-1p2p1.pt --ncpus 24
+```
+
+Each computed slab is written to `<out>_structures/` (relaxed when relaxed); pass `--no-structures` to skip.
+
+UMA `omc` results. The supercell and vacuum tests cover anthracene (1 1 0), (0 0 1) and maleic
+anhydride (1 1 0), (1 0 1), (1 0 0), (0 0 1), (1 1 1). The 20–50 Å series covers every distinct
+termination of the top-6 BFDH anthracene faces and all 8 maleic anhydride faces:
 
 | Size | Effect on γ |
 |---|---|
 | vacuum 10–30 Å | none (6 Å cutoff, no long-range electrostatics) |
 | in-plane 1×1 → 2×2, rattled | < 1 mJ/m²; no reconstruction found by local relaxation |
-| 3 → 8 layers | 2–4 mJ/m² on the thinnest slabs (anthracene (1 1 0): 95.2 → 91.9), then within ~1 mJ/m² from 4–5 layers |
+| below ~20 Å (3–4 thin layers) | 2–4 mJ/m² high (anthracene (1 1 0): 95.2 at 14 Å) |
+| 20 → 50 Å | ≤ 2.5 mJ/m², and < 1.3 mJ/m² for all but three terminations |
+| linear fit (20–50 Å) vs 20 Å value | ≤ 1.3 mJ/m² |
 | relaxation scatter (rattled starts) | 1–4 mJ/m² |
 
-The linear fit can differ from the direct value. For anthracene (1 1 0) it gives 96.1 against 92.6,
-because molecules inside the slab sit 3–4 meV below the bulk reference. The likely cause is a small
-dependence of UMA's energy on the cell, not yet tested. Read γ as ±2–4 mJ/m²: face orderings closer
-than that are not resolved.
+The fit's slope puts molecules inside anthracene slabs 1–2 meV below the bulk cell, and inside
+maleic anhydride slabs within 0.7 meV of it. That is why anthracene's direct γ drifts down slightly
+with thickness. Fits that include slabs thinner than about 20 Å overstate the offset (3–4 meV for
+anthracene (1 1 0) over 3–8 layers), because those slabs are not yet in the linear regime. Read γ
+from slabs of 20 Å or more as ±1–2 mJ/m². Face orderings closer than about 3 mJ/m², such as maleic
+anhydride (1 0 0) at 111.6 against (1 0 1) at 113.5, are not resolved.
+
+Relaxed γ (mJ/m², lowest termination) and Wulff area fractions:
+
+| Face | γ at 20 Å | γ at 50 Å | γ from fit | Wulff area (fit) |
+|---|---|---|---|---|
+| anthracene (0 0 1) | 76.5 | 76.2 | 76.7 | 32.7 % |
+| anthracene (1 1 0) | 92.6 | 91.6 | 93.3 | 30.1 % |
+| anthracene (2 0 −1) | 88.7 | 87.0 | 89.9 | 18.9 % |
+| anthracene (1 1 −1) | 106.5 | 105.5 | 107.2 | 16.9 % |
+| anthracene (1 0 −1) | 118.4 | 117.0 | 119.4 | 1.4 % |
+| anthracene (0 1 1) | 125.4 | 123.4 | 126.4 | 0 % |
+| maleic anhydride (1 0 1) T0 | 113.5 | 114.1 | 113.2 | 33.3 % |
+| maleic anhydride (1 2 0) T1 | 125.6 | 126.6 | 125.2 | 21.2 % |
+| maleic anhydride (1 1 0) T0 | 118.1 | 118.4 | 117.8 | 15.1 % |
+| maleic anhydride (1 0 0) T2 | 111.6 | 112.0 | 111.4 | 8.4 % |
+| maleic anhydride (1 1 1) T0 | 137.8 | 137.9 | 137.6 | 7.3 % |
+| maleic anhydride (0 1 0) T2 | 144.4 | 144.7 | 143.8 | 6.1 % |
+| maleic anhydride (0 1 1) T0 | 151.5 | 152.7 | 150.2 | 5.9 % |
+| maleic anhydride (0 0 1) T0 | 133.1 | 133.4 | 132.9 | 2.7 % |
+
+The three Wulff shapes (20 Å, 50 Å, fit) agree within about 1 % of area for every face.
+Anthracene (2 0 −1), 5th by BFDH and missing from the first runs, has the second-lowest γ. Maleic
+anhydride (0 1 0) only appears on the shape through its T2 termination, which the first runs
+skipped.
 
 ## Caveats
 

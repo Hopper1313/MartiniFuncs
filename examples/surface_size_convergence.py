@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 
 import numpy as np
-from ase.io import read
+from ase.io import read, write
 
 from MartiniFuncs.crystals import build_slab, crystal_calculator, crystal_from_atoms, terminations
 from MartiniFuncs.crystals.surfaces import EV_A2_TO_J_M2, surface_energy
@@ -36,9 +36,13 @@ def _supercell(text):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("run_dir")
-    parser.add_argument("--faces", nargs="+", required=True)
+    parser.add_argument("--faces", nargs="+", required=True,
+                        help="faces, e.g. 110 or 11-1; '110:0,1' gives that face its own terminations")
     parser.add_argument("--terminations", type=int, nargs="+", default=[0])
     parser.add_argument("--layers", type=int, nargs="+", default=[3, 4, 5, 6, 8])
+    parser.add_argument("--thicknesses", type=float, nargs="+", default=None,
+                        help="thickness series in Angstrom instead of --layers: for each face, the fewest layers "
+                             "reaching each value (at least --min-layers), so faces with different d_hkl compare")
     parser.add_argument("--supercells", nargs="+", default=["1x1", "2x1", "1x2", "2x2"])
     parser.add_argument("--vacuums", type=float, nargs="+", default=[10.0, 15.0, 20.0, 30.0])
     parser.add_argument("--min-thickness", type=float, default=20.0, help="reference thickness for the lateral and vacuum series")
@@ -53,6 +57,7 @@ def main(argv=None):
                         help="random displacement (Angstrom, std) of the free atoms before relaxing; without it "
                              "a supercell keeps the primitive cell's translational symmetry and cannot reconstruct")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--no-structures", action="store_true", help="do not write each computed slab to <out>_structures/")
     parser.add_argument("--out", default="size_convergence.json")
     parser.add_argument("--calculator", default="uma")
     parser.add_argument("--model", default=None)
@@ -89,6 +94,14 @@ def main(argv=None):
         r = surface_energy(slab, calc, e_bulk, relax=relax, n_fixed_layers=args.n_fixed_layers, fmax=args.fmax,
                            steps=args.steps, crystal=crystal)
         row = {k: v for k, v in r.items() if k != "atoms"}
+        if not args.no_structures:          # the slab as computed (relaxed when relax=True), for inspection
+            sdir = out_path.with_name(out_path.stem + "_structures")
+            sdir.mkdir(exist_ok=True)
+            name = "{}_t{}_{}_{}L_{}x{}_vac{:g}{}.extxyz".format(
+                "".join(map(str, hkl)).replace("-", "m"), term.index, series, layers, supercell[0], supercell[1],
+                vacuum, f"_rattle{rattle:g}" if rattle else "")
+            write(sdir / name, r["atoms"])
+            row["file"] = f"{sdir.name}/{name}"
         row.update(hkl=list(hkl), termination=term.index, series=series, layers=layers, supercell=list(supercell),
                    vacuum=vacuum, relaxed=relax, rattle=rattle, thickness=slab.thickness, n_atoms=len(slab.atoms),
                    cell_lengths=[float(x) for x in slab.atoms.cell.lengths()[:2]], seconds=time.time() - t0)
@@ -100,16 +113,23 @@ def main(argv=None):
               f"{r['gamma_J_m2'] * 1000:6.1f} mJ/m^2 ({r['steps']} steps, {time.time() - t0:.0f} s)", flush=True)
 
     for face in args.faces:
-        hkl = _parse_face(face)
+        name, _, term_spec = face.partition(":")
+        hkl = _parse_face(name)
         terms = terminations(crystal, hkl)
-        for ti in args.terminations:
+        chosen = [int(t) for t in term_spec.split(",")] if term_spec else args.terminations
+        for ti in chosen:
             if ti >= len(terms):
                 continue
             term = terms[ti]
             probe = build_slab(crystal, hkl, min_thickness=args.min_thickness, termination=term)
             ref_layers = max(args.min_layers, probe.layers)
+            if args.thicknesses:
+                layer_list = sorted({max(args.min_layers, build_slab(crystal, hkl, min_thickness=t, termination=term).layers)
+                                     for t in args.thicknesses})
+            else:
+                layer_list = args.layers
             if "thickness" not in args.skip:
-                for n in args.layers:
+                for n in layer_list:
                     run_one(hkl, term, "thickness", n, (1, 1), args.vacuum, True)
             if "lateral" not in args.skip:
                 for sc in args.supercells:
